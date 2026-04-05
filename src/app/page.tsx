@@ -27,6 +27,41 @@ import {
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
 
+// ─── Safe fetch helper: checks content-type, status, timeout ───
+async function safeJsonFetch(url: string, options: RequestInit & { timeoutMs?: number }, errorMsg: string): Promise<any> {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs || 30000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const { timeoutMs: _t, ...fetchOpts } = options;
+
+  try {
+    const resp = await fetch(url, { ...fetchOpts, signal: controller.signal });
+    const contentType = resp.headers.get("content-type") || "";
+
+    // Server returned HTML instead of JSON (Vercel 502, 404 page, etc.)
+    if (!contentType.includes("application/json")) {
+      const text = await resp.text().catch(() => "");
+      const truncated = text.slice(0, 200);
+      throw new Error(`${errorMsg}: сервер повернув HTML замість JSON (${resp.status}). ${truncated}`);
+    }
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      throw new Error(data.error || `${errorMsg} (HTTP ${resp.status})`);
+    }
+
+    return data;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`${errorMsg}: таймаут (${timeoutMs / 1000}с). Спробуйте зменшити кількість результатів.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function getScreenshotUrl(url: string): string {
   if (!url || url === "N/A") return "";
   const cleanUrl = url.startsWith("http") ? url : `https://${url}`;
@@ -113,7 +148,16 @@ export default function Home() {
   const handleExport = useCallback(async (format: "excel" | "csv", hotOnly = false) => {
     const data = hotOnly ? leads.filter((l) => l.score === "HOT") : leads;
     if (data.length === 0) { showToast("Немає даних для експорту"); return; }
-    const resp = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leads: data, format }) });
+    const controller = new AbortController();
+    const exportTimeout = setTimeout(() => controller.abort(), 30000);
+    let resp: Response;
+    try {
+      resp = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leads: data, format }), signal: controller.signal });
+    } catch {
+      clearTimeout(exportTimeout);
+      showToast("Таймаут експорту"); return;
+    }
+    clearTimeout(exportTimeout);
     if (!resp.ok) { showToast("Помилка експорту"); return; }
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
@@ -140,13 +184,12 @@ export default function Home() {
         setProgressLabel(`Пошук у: ${currentCity} (${ci + 1}/${cities.length})`);
         setProgress(Math.round((ci / cities.length) * 30));
 
-        const searchResp = await fetch("/api/search", {
+        const searchData = await safeJsonFetch("/api/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ city: currentCity, query, maxResults: parseInt(maxResults) || 20, radius: parseInt(radius) || 15 }),
-        });
-        const searchData = await searchResp.json();
-        if (!searchResp.ok) throw new Error(searchData.error || "Помилка");
+          timeoutMs: 60000,
+        }, `Помилка пошуку у ${currentCity}`);
 
         const businesses = searchData.businesses || [];
         for (const b of businesses) {
@@ -176,16 +219,18 @@ export default function Home() {
 
         if (b.website && b.website !== "N/A") {
           try {
-            const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: b.website }) });
-            if (r.ok) {
-              const d = await r.json();
-              copyrightYear = d.copyrightYear; isMobileFriendly = d.isMobileFriendly;
-              hasSsl = d.hasSsl; finalUrl = d.finalUrl || b.website;
-              technologies = d.technologies || []; designScore = d.designScore || "unknown";
-              designNotes = d.designNotes || []; pageTitle = d.pageTitle || "";
-              hasContactForm = d.hasContactForm || false;
-            }
-          } catch { /* skip */ }
+            const d = await safeJsonFetch("/api/analyze", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: b.website }),
+              timeoutMs: 30000,
+            }, `Помилка аналізу ${b.website}`);
+            copyrightYear = d.copyrightYear; isMobileFriendly = d.isMobileFriendly;
+            hasSsl = d.hasSsl; finalUrl = d.finalUrl || b.website;
+            technologies = d.technologies || []; designScore = d.designScore || "unknown";
+            designNotes = d.designNotes || []; pageTitle = d.pageTitle || "";
+            hasContactForm = d.hasContactForm || false;
+          } catch { /* skip failed analysis */ }
         }
 
         analyzed.push({

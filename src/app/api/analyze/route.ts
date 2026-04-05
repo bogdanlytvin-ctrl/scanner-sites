@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeWebsite } from "@/lib/website-analyzer";
 
+export const maxDuration = 30; // Website fetching can take time
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTemplates, fillTemplate, getIssuesText, estimatePrice } from "@/lib/outreach-templates";
 import type { LeadBusiness } from "@/lib/scoring";
 
+export const maxDuration = 15;
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();

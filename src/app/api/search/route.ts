@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchOverpass } from "@/lib/osm-search";
 
+export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();

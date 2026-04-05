@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { LeadBusiness } from "@/lib/scoring";
 import { getIssuesText, estimatePrice } from "@/lib/outreach-templates";
 
+export const maxDuration = 30; // Excel generation can be slow
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
