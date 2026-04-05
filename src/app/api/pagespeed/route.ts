@@ -142,6 +142,9 @@ export async function POST(request: NextRequest) {
     apiUrl.searchParams.set("url", normalizedUrl);
     apiUrl.searchParams.set("strategy", strategy);
     apiUrl.searchParams.set("category", "performance");
+    // Optional API key — increases quota from 25 to 25,000 req/day
+    const psiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+    if (psiKey) apiUrl.searchParams.set("key", psiKey);
 
     // Fetch with 28s timeout (within 30s maxDuration)
     const controller = new AbortController();
