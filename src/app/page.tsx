@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   Search, FileSpreadsheet, FileText, Globe, Phone, MapPin,
   Smartphone, Loader2, Target, AlertCircle, ExternalLink,
@@ -8,6 +8,7 @@ import {
   ShieldOff, Monitor, MonitorX, Layout, Eye, DollarSign,
   Filter, StickyNote,
   AlertTriangle, Flame, ShieldCheck, PhoneCall, Send,
+  Star, StarOff, Settings, X, History, Trash2, ThumbsUp, ThumbsDown, Bot, Zap, RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,17 +18,26 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
   type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus,
 } from "@/lib/scoring";
 import {
-  getTemplates, fillTemplate, getIssuesText, estimatePrice,
+  getTemplates, fillTemplate, getIssuesText, estimatePrice, getProblemsForLead,
 } from "@/lib/outreach-templates";
+import {
+  getSearchHistory, saveSearchHistory, removeSearchHistoryItem, clearSearchHistory,
+  getFavorites, toggleFavorite, isFavorite,
+  getTelegramSettings, saveTelegramSettings,
+  type SearchHistoryEntry, type TelegramSettings,
+} from "@/lib/storage";
+import { isWorthContacting } from "@/lib/website-analyzer";
+import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
 
-// ─── Safe fetch helper: checks content-type, status, timeout ───
+// ─── Safe fetch helper ──────────────────────────────────────
 async function safeJsonFetch(url: string, options: RequestInit & { timeoutMs?: number }, errorMsg: string): Promise<any> {
   const controller = new AbortController();
   const timeoutMs = options.timeoutMs || 30000;
@@ -38,7 +48,6 @@ async function safeJsonFetch(url: string, options: RequestInit & { timeoutMs?: n
     const resp = await fetch(url, { ...fetchOpts, signal: controller.signal });
     const contentType = resp.headers.get("content-type") || "";
 
-    // Server returned HTML instead of JSON (Vercel 502, 404 page, etc.)
     if (!contentType.includes("application/json")) {
       const text = await resp.text().catch(() => "");
       const truncated = text.slice(0, 200);
@@ -111,10 +120,31 @@ export default function Home() {
   const [filterScore, setFilterScore] = useState<LeadScore | "ALL">("ALL");
   const [filterStatus, setFilterStatus] = useState<LeadStatus | "ALL">("ALL");
   const [onlyWithIssues, setOnlyWithIssues] = useState(false);
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState("formal-email");
   const [previewOpen, setPreviewOpen] = useState<Set<number>>(new Set());
 
+  // Search History
+  const [searchHistory, setSearchHistory] = useState<SearchHistoryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  // Favorites
+  const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
+
+  // Telegram Settings
+  const [tgSettingsOpen, setTgSettingsOpen] = useState(false);
+  const [tgSettings, setTgSettings] = useState<TelegramSettings>({ botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false });
+  const [tgTesting, setTgTesting] = useState(false);
+
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load history and favorites on mount
+  useEffect(() => {
+    setSearchHistory(getSearchHistory());
+    const favNames = getFavorites().map((f) => f.name);
+    setFavoritesSet(new Set(favNames));
+    setTgSettings(getTelegramSettings());
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -145,6 +175,77 @@ export default function Home() {
     setLeads((prev) => prev.map((l, i) => i === idx ? { ...l, ...updates } : l));
   }, []);
 
+  // ─── Toggle favorite ──────────────────────────────────────
+  const handleToggleFavorite = useCallback((lead: LeadBusiness, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const isNowFav = toggleFavorite(lead);
+    setFavoritesSet((prev) => {
+      const next = new Set(prev);
+      if (isNowFav) next.add(lead.name); else next.delete(lead.name);
+      return next;
+    });
+    showToast(isNowFav ? "⭐ Додано в обране" : "Видалено з обраного");
+  }, [showToast]);
+
+  // ─── Telegram notification ────────────────────────────────
+  const sendTelegramNotification = useCallback(async (lead: LeadBusiness) => {
+    if (!tgSettings.notifyNewLeads) return;
+    if (tgSettings.hotLeadsOnly && lead.score !== "HOT") return;
+    if (!tgSettings.botToken || !tgSettings.chatId) return;
+
+    const worthiness = isWorthContacting(lead);
+    const issues = getIssuesText(lead);
+    const message = buildLeadNotificationMessage({
+      name: lead.name,
+      website: lead.website,
+      score: lead.score,
+      phone: lead.phone,
+      address: lead.address,
+      issues,
+      worthinessScore: worthiness.score,
+      worthinessReason: worthiness.reason,
+    });
+
+    try {
+      await fetch("/api/telegram-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botToken: tgSettings.botToken, chatId: tgSettings.chatId, message }),
+      });
+    } catch { /* silent fail */ }
+  }, [tgSettings]);
+
+  // ─── Telegram test ────────────────────────────────────────
+  const handleTestTelegram = useCallback(async () => {
+    if (!tgSettings.botToken || !tgSettings.chatId) {
+      showToast("Вкажіть Bot Token та Chat ID");
+      return;
+    }
+    setTgTesting(true);
+    try {
+      const resp = await fetch("/api/telegram-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          botToken: tgSettings.botToken,
+          chatId: tgSettings.chatId,
+          message: "✅ <b>Lead Finder</b> — тестове повідомлення.\nTelegram бот налаштований успішно! 🚀",
+        }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast("✅ Тест пройдено успішно!");
+      } else {
+        showToast(`❌ Помилка: ${data.error}`);
+      }
+    } catch {
+      showToast("❌ Не вдалося надіслати повідомлення");
+    } finally {
+      setTgTesting(false);
+    }
+  }, [tgSettings, showToast]);
+
+  // ─── Export ───────────────────────────────────────────────
   const handleExport = useCallback(async (format: "excel" | "csv", hotOnly = false) => {
     const data = hotOnly ? leads.filter((l) => l.score === "HOT") : leads;
     if (data.length === 0) { showToast("Немає даних для експорту"); return; }
@@ -167,12 +268,21 @@ export default function Home() {
     showToast(`Експортовано ${data.length} лідів`);
   }, [leads, showToast]);
 
-  const handleSearch = useCallback(async () => {
-    if (!city || !query) { setErrorMessage("Заповніть місто та нішу"); return; }
+  // ─── Search ───────────────────────────────────────────────
+  const handleSearch = useCallback(async (searchCity?: string, searchQuery?: string, searchMax?: string, searchRadius?: string) => {
+    const c = searchCity || city;
+    const q = searchQuery || query;
+    const mr = searchMax || maxResults;
+    const r = searchRadius || radius;
+
+    if (!c || !q) { setErrorMessage("Заповніть місто та нішу"); return; }
     setErrorMessage(""); setLeads([]); setExpandedIdx(null);
     setPhase("searching"); setProgress(0);
 
-    const cities = city.split(",").map((c) => c.trim()).filter(Boolean);
+    if (searchCity) setCity(searchCity);
+    if (searchQuery) setQuery(searchQuery);
+
+    const cities = c.split(",").map((cc) => cc.trim()).filter(Boolean);
     if (cities.length === 0) { setErrorMessage("Вкажіть місто"); setPhase("error"); return; }
 
     try {
@@ -187,7 +297,7 @@ export default function Home() {
         const searchData = await safeJsonFetch("/api/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city: currentCity, query, maxResults: parseInt(maxResults) || 20, radius: parseInt(radius) || 15 }),
+          body: JSON.stringify({ city: currentCity, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15 }),
           timeoutMs: 60000,
         }, `Помилка пошуку у ${currentCity}`);
 
@@ -202,7 +312,10 @@ export default function Home() {
       }
 
       if (allBusinesses.length === 0) {
-        setPhase("done"); setProgress(100); setProgressLabel("Нічого не знайдено."); return;
+        setPhase("done"); setProgress(100); setProgressLabel("Нічого не знайдено.");
+        saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15, totalResults: 0 });
+        setSearchHistory(getSearchHistory());
+        return;
       }
 
       setPhase("analyzing");
@@ -233,7 +346,7 @@ export default function Home() {
           } catch { /* skip failed analysis */ }
         }
 
-        analyzed.push({
+        const lead: LeadBusiness = {
           name: b.name, phone: b.phone, website: b.website, address: b.address,
           email: b.email, facebook: b.facebook, instagram: b.instagram, telegram: b.telegram,
           openingHours: b.openingHours, description: b.description,
@@ -242,21 +355,32 @@ export default function Home() {
           designScore, designNotes, pageTitle, hasContactForm,
           score: scoreLead(b.website, copyrightYear, isMobileFriendly),
           status: "new", notes: "", contactDate: null,
-        });
-        await new Promise((r) => setTimeout(r, 250));
+        };
+        analyzed.push(lead);
+
+        // Send Telegram notification for this lead
+        await sendTelegramNotification(lead);
+
+        await new Promise((rr) => setTimeout(rr, 250));
         setLeads([...analyzed]);
       }
+
+      // Save to search history
+      saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15, totalResults: analyzed.length });
+      setSearchHistory(getSearchHistory());
+
       setPhase("done"); setProgress(100); setProgressLabel(`Готово! ${analyzed.length} лідів з ${cities.length} міст`);
     } catch (err) {
       setPhase("error"); setErrorMessage(err instanceof Error ? err.message : "Помилка");
     }
-  }, [city, query, maxResults, radius]);
+  }, [city, query, maxResults, radius, sendTelegramNotification]);
 
   // Filtering
   const filteredLeads = leads
     .filter((l) => filterScore === "ALL" || l.score === filterScore)
     .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
     .filter((l) => !onlyWithIssues || hasIssues(l))
+    .filter((l) => !onlyFavorites || favoritesSet.has(l.name))
     .sort((a, b) => {
       const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
       return order[a.score] - order[b.score];
@@ -292,7 +416,7 @@ export default function Home() {
     });
   }, []);
 
-  const handleCopyEmail = useCallback(async (lead: LeadBusiness, idx: number) => {
+  const handleCopyEmail = useCallback(async (lead: LeadBusiness) => {
     const tmpl = templates.find((t) => t.id === selectedTemplateId);
     if (!tmpl) return;
     const issues = getIssuesText(lead);
@@ -319,7 +443,6 @@ export default function Home() {
     const filled = fillTemplate(tmpl, { bizName: lead.name, issues, city: city.split(",")[0].trim() });
     const tgUrl = lead.telegram.startsWith("http") ? lead.telegram : `https://${lead.telegram}`;
     const text = encodeURIComponent(filled.body);
-    // Try to open as a t.me share URL
     const username = tgUrl.match(/t\.me\/([^/]+)/)?.[1];
     if (username) {
       window.open(`https://t.me/${username}?text=${text}`, "_blank");
@@ -336,6 +459,25 @@ export default function Home() {
         : leads[idx].contactDate,
     });
   }, [updateLead, leads]);
+
+  const handleRunHistorySearch = useCallback((entry: SearchHistoryEntry) => {
+    setCity(entry.city);
+    setQuery(entry.query);
+    setMaxResults(String(entry.maxResults));
+    setRadius(String(entry.radius));
+    handleSearch(entry.city, entry.query, String(entry.maxResults), String(entry.radius));
+  }, [handleSearch]);
+
+  const handleRemoveHistoryItem = useCallback((id: string) => {
+    removeSearchHistoryItem(id);
+    setSearchHistory(getSearchHistory());
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    clearSearchHistory();
+    setSearchHistory([]);
+    showToast("Історію очищено");
+  }, [showToast]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
@@ -360,21 +502,26 @@ export default function Home() {
               <p className="text-[10px] text-muted-foreground">Платформа лідогенерації • Глобальний пошук • Скріншоти • Розсилка</p>
             </div>
           </div>
-          {leads.length > 0 && (
-            <div className="flex items-center gap-1.5">
-              <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
-                <FileText className="w-4 h-4" /><span className="hidden sm:inline ml-1">CSV</span>
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
-                <FileSpreadsheet className="w-4 h-4" /><span className="hidden sm:inline ml-1">Excel</span>
-              </Button>
-              {hotCount > 0 && (
-                <Button size="sm" onClick={() => handleExport("excel", true)} className="bg-red-600 hover:bg-red-700 text-white" title="Тільки HOT">
-                  <Flame className="w-4 h-4" /><span className="hidden sm:inline ml-1">HOT ({hotCount})</span>
+          <div className="flex items-center gap-1.5">
+            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} title="Налаштування">
+              <Settings className="w-4 h-4" />
+            </Button>
+            {leads.length > 0 && (
+              <>
+                <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
+                  <FileText className="w-4 h-4" /><span className="hidden sm:inline ml-1">CSV</span>
                 </Button>
-              )}
-            </div>
-          )}
+                <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
+                  <FileSpreadsheet className="w-4 h-4" /><span className="hidden sm:inline ml-1">Excel</span>
+                </Button>
+                {hotCount > 0 && (
+                  <Button size="sm" onClick={() => handleExport("excel", true)} className="bg-red-600 hover:bg-red-700 text-white" title="Тільки HOT">
+                    <Flame className="w-4 h-4" /><span className="hidden sm:inline ml-1">HOT ({hotCount})</span>
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -427,7 +574,7 @@ export default function Home() {
               </div>
             )}
             <div className="mt-3">
-              <Button onClick={handleSearch} disabled={(phase === "searching" || phase === "analyzing") || !city || !query}
+              <Button onClick={() => handleSearch()} disabled={(phase === "searching" || phase === "analyzing") || !city || !query}
                 className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg">
                 {phase === "searching" || phase === "analyzing" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
                 {phase === "searching" ? "Пошук..." : phase === "analyzing" ? "Аналіз сайтів..." : "Знайти ліди"}
@@ -435,6 +582,46 @@ export default function Home() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Search History */}
+        {searchHistory.length > 0 && (
+          <Card className="shadow-sm border-0">
+            <button onClick={() => setHistoryOpen(!historyOpen)} className="w-full text-left p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <History className="w-4 h-4 text-muted-foreground" />
+                Історія пошуків ({searchHistory.length})
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleClearHistory(); }} className="text-xs text-red-500 hover:text-red-600 h-6 px-2">
+                  <Trash2 className="w-3 h-3 mr-1" />Очистити все
+                </Button>
+                {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+              </div>
+            </button>
+            {historyOpen && (
+              <div className="border-t max-h-60 overflow-y-auto">
+                {searchHistory.map((entry) => (
+                  <div key={entry.id} className="flex items-center justify-between px-3 py-2 hover:bg-muted/50 border-b last:border-b-0 group">
+                    <button onClick={() => handleRunHistorySearch(entry)} className="flex-1 text-left min-w-0">
+                      <div className="text-xs font-medium truncate">
+                        {entry.city} → {entry.query}
+                        <span className="text-muted-foreground ml-1.5">({entry.totalResults})</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {new Date(entry.timestamp).toLocaleString("uk-UA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        <span className="ml-2">{entry.maxResults} рез. • {entry.radius} км</span>
+                      </div>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); handleRemoveHistoryItem(entry.id); }}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-red-500 transition-all" title="Видалити">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
 
         {/* Progress */}
         {(phase === "searching" || phase === "analyzing") && (
@@ -460,7 +647,9 @@ export default function Home() {
               <MiniStat label="💰 Сер. оцінка" value={`${avgPrice.min}-${avgPrice.max}$`} color="text-emerald-600" />
             </div>
             <div className="text-center text-xs text-muted-foreground bg-muted/50 rounded-lg py-2 px-4">
-              🎯 <span className="font-semibold text-foreground">{filteredLeads.length}</span> лідів відфільтровано • Готові до контакту
+              🎯 <span className="font-semibold text-foreground">{filteredLeads.length}</span> лідів відфільтровано •
+              {onlyFavorites && <span className="ml-1">⭐ Лише обране •</span>}
+              Готові до контакту
             </div>
           </div>
         )}
@@ -489,9 +678,15 @@ export default function Home() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="flex items-center gap-1.5 ml-auto">
-                <label className="text-xs text-muted-foreground">Тільки з проблемами</label>
-                <Switch checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
+              <div className="flex items-center gap-3 ml-auto">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs text-muted-foreground">⭐ Обране</label>
+                  <Switch checked={onlyFavorites} onCheckedChange={setOnlyFavorites} />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs text-muted-foreground">З проблемами</label>
+                  <Switch checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
+                </div>
               </div>
             </div>
           </div>
@@ -512,6 +707,9 @@ export default function Home() {
             const issues = getIssuesText(lead);
             const selectedTmpl = templates.find((t) => t.id === selectedTemplateId);
             const isPreviewOpen = previewOpen.has(idx);
+            const isFav = favoritesSet.has(lead.name);
+            const worthiness = isWorthContacting(lead);
+            const problems = getProblemsForLead(lead);
 
             return (
               <Card key={`${lead.name}-${realIdx}`} className={`border-l-4 shadow-sm overflow-hidden transition-all ${sc.border} hover:shadow-md`}>
@@ -528,6 +726,14 @@ export default function Home() {
                       <Badge className="bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-[10px] px-1.5">
                         <DollarSign className="w-2.5 h-2.5 mr-0.5" />${price.min}-{price.max}
                       </Badge>
+                      {/* Contact Worthiness Badge */}
+                      <Badge className={`${worthiness.worth
+                        ? "bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800"
+                        : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700"
+                      } text-[10px] px-1.5 border`}>
+                        {worthiness.worth ? <ThumbsUp className="w-2.5 h-2.5 mr-0.5" /> : <ThumbsDown className="w-2.5 h-2.5 mr-0.5" />}
+                        {worthiness.score}/100
+                      </Badge>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs sm:text-sm text-muted-foreground">
                       {lead.phone !== "N/A" && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{lead.phone}</span>}
@@ -536,6 +742,10 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 mt-1">
+                    {/* Favorite star */}
+                    <button onClick={(e) => handleToggleFavorite(lead, e)} className="p-1 rounded-md hover:bg-muted transition-colors" title={isFav ? "Видалити з обраного" : "Додати в обране"}>
+                      {isFav ? <Star className="w-4 h-4 text-amber-500 fill-amber-500" /> : <Star className="w-4 h-4 text-muted-foreground/40" />}
+                    </button>
                     {screenshotUrl && (
                       <div className="hidden sm:block w-16 h-10 rounded overflow-hidden border bg-muted relative">
                         <img src={screenshotUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy" />
@@ -548,11 +758,9 @@ export default function Home() {
                 {/* Expanded Content */}
                 {isExpanded && (
                   <div className="border-t bg-muted/20">
-                    {/* Two-column layout: Screenshots left, Details right */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-3 sm:p-4">
                       {/* LEFT: Screenshots */}
                       <div className="space-y-3">
-                        {/* Desktop Screenshot */}
                         {screenshotUrl && (
                           <div>
                             <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" />Десктоп</p>
@@ -575,7 +783,6 @@ export default function Home() {
                           </div>
                         )}
 
-                        {/* Mobile Screenshot */}
                         {mobileScreenshotUrl && (
                           <div>
                             <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Smartphone className="w-3 h-3" />Мобільний</p>
@@ -606,7 +813,7 @@ export default function Home() {
                         <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-900/50">
                           <h4 className="text-xs font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5" />
-                            Проблеми з сайтом ({(() => {
+                            Проблеми ({(() => {
                               const lines = issues.split("\n").filter((l) => l && !l.startsWith("✅"));
                               return lines.length;
                             })()})
@@ -619,6 +826,35 @@ export default function Home() {
                             ))}
                           </div>
                         </div>
+
+                        {/* Problem Library Details */}
+                        {problems.length > 0 && (
+                          <div className="bg-amber-50 dark:bg-amber-950/20 rounded-lg p-3 border border-amber-200 dark:border-amber-900/50">
+                            <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-2 flex items-center gap-1.5">
+                              <Zap className="w-3.5 h-3.5" />
+                              Детальний аналіз проблем
+                            </h4>
+                            <div className="space-y-2 max-h-48 overflow-y-auto">
+                              {problems.map((prob) => (
+                                <div key={prob.id} className="bg-white dark:bg-slate-900/50 rounded-md p-2 border">
+                                  <div className="flex items-center gap-1.5 mb-1">
+                                    <span>{prob.icon}</span>
+                                    <span className="text-xs font-semibold">{prob.problem}</span>
+                                    <Badge variant="outline" className="text-[9px] ml-auto">${prob.priceRange.min}-${prob.priceRange.max}</Badge>
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mb-1">{prob.solution}</p>
+                                  <div className="flex flex-wrap gap-1">
+                                    {prob.benefits.slice(0, 3).map((b, bi) => (
+                                      <span key={bi} className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800">
+                                        {b}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Technologies & Badges */}
                         {lead.website !== "N/A" && (
@@ -695,7 +931,7 @@ export default function Home() {
                               {lead.telegram && (
                                 <a href={formatUrl(lead.telegram)} target="_blank" rel="noopener noreferrer"
                                   className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 dark:bg-sky-900/30 dark:text-sky-300">
-                                  <MessageCircle className="w-3.5 h-3.5" />Telegram</a>
+                                  <Send className="w-3.5 h-3.5" />Telegram</a>
                               )}
                             </div>
                           )}
@@ -716,7 +952,7 @@ export default function Home() {
                         <Send className="w-3.5 h-3.5" /> Написати власнику
                       </h4>
                       <div className="flex flex-wrap gap-2 mb-2">
-                        <Button size="sm" variant="outline" onClick={() => handleCopyEmail(lead, idx)} className="text-xs">
+                        <Button size="sm" variant="outline" onClick={() => handleCopyEmail(lead)} className="text-xs">
                           <Copy className="w-3 h-3 mr-1" /> Скопіювати Email
                         </Button>
                         {lead.telegram && (
@@ -847,6 +1083,103 @@ export default function Home() {
           Lead Finder • Безкоштовна лідогенерація • OpenStreetMap + thum.io
         </div>
       </footer>
+
+      {/* Telegram Settings Dialog */}
+      <Dialog open={tgSettingsOpen} onOpenChange={setTgSettingsOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bot className="w-5 h-5" />
+              Налаштування Telegram Bot
+            </DialogTitle>
+            <DialogDescription>
+              Отримуйте сповіщення про нові ліди безпосередньо в Telegram
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-4">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Bot Token</label>
+              <Input
+                placeholder="123456789:ABCdefGhIjKlMnOpQrStUvWxYz"
+                value={tgSettings.botToken}
+                onChange={(e) => setTgSettings((s) => ({ ...s, botToken: e.target.value }))}
+                type="password"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Chat ID</label>
+              <Input
+                placeholder="123456789"
+                value={tgSettings.chatId}
+                onChange={(e) => setTgSettings((s) => ({ ...s, chatId: e.target.value }))}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium">Сповіщення про нові ліди</div>
+                <div className="text-[10px] text-muted-foreground">Надсилати повідомлення при пошуку</div>
+              </div>
+              <Switch
+                checked={tgSettings.notifyNewLeads}
+                onCheckedChange={(v) => setTgSettings((s) => ({ ...s, notifyNewLeads: v }))}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium">Тільки HOT ліди</div>
+                <div className="text-[10px] text-muted-foreground">Сповіщати лише про найкращі ліди</div>
+              </div>
+              <Switch
+                checked={tgSettings.hotLeadsOnly}
+                onCheckedChange={(v) => setTgSettings((s) => ({ ...s, hotLeadsOnly: v }))}
+                disabled={!tgSettings.notifyNewLeads}
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <Button
+                onClick={handleTestTelegram}
+                disabled={tgTesting || !tgSettings.botToken || !tgSettings.chatId}
+                variant="outline"
+                className="flex-1"
+              >
+                {tgTesting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Bot className="w-4 h-4 mr-2" />}
+                Тест
+              </Button>
+              <Button
+                onClick={() => {
+                  saveTelegramSettings(tgSettings);
+                  showToast("Налаштування збережено");
+                  setTgSettingsOpen(false);
+                }}
+                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+              >
+                <Check className="w-4 h-4 mr-2" />
+                Зберегти
+              </Button>
+            </div>
+
+            {/* Setup instructions */}
+            <details className="mt-2">
+              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
+                <RotateCcw className="w-3 h-3" />
+                Як налаштувати Telegram Bot?
+              </summary>
+              <div className="mt-2 text-[11px] text-muted-foreground space-y-1 pl-4 border-l-2 border-muted">
+                <p>1. Відкрийте Telegram та знайдіть <b>@BotFather</b></p>
+                <p>2. Надішліть <code className="bg-muted px-1 rounded">/newbot</code> та слідуйте інструкціям</p>
+                <p>3. Скопіюйте отриманий Bot Token</p>
+                <p>4. Для Chat ID: надішліть повідомлення боту, потім відкрийте:</p>
+                <p className="break-all"><code className="bg-muted px-1 rounded text-[10px]">https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></p>
+                <p>5. Знайдіть <code className="bg-muted px-1 rounded">{"{'chat':{'id': ...} "}</code> у відповіді</p>
+              </div>
+            </details>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

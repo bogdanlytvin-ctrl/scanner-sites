@@ -1,5 +1,232 @@
 import type { LeadBusiness } from "./scoring";
 
+// ─── Problem Library ────────────────────────────────────────
+
+export interface ProblemType {
+  id: string;
+  icon: string;
+  problem: string;
+  description: string;
+  solution: string;
+  benefits: string[];
+  priceRange: { min: number; max: number };
+  detectCondition: string;
+}
+
+const problemLibrary: ProblemType[] = [
+  {
+    id: "no-website",
+    icon: "🚫",
+    problem: "Немає вебсайту взагалі",
+    description: "Бізнес не має власного сайту. Клієнти не можуть знайти компанію в інтернеті, що призводить до втрати значної частини потенційних клієнтів.",
+    solution: "Створення сучасного адаптивного сайту з нуля з контактною формою, SEO-оптимізацією та підключенням карт.",
+    benefits: [
+      "Залучення нових клієнтів з Google",
+      "Професійний імідж компанії",
+      "Цілодобова інформація про послуги",
+      "Збільшення довіри клієнтів",
+    ],
+    priceRange: { min: 500, max: 1500 },
+    detectCondition: "website === 'N/A' || !website",
+  },
+  {
+    id: "old-design",
+    icon: "📅",
+    problem: "Дуже старий дизайн сайту",
+    description: "Сайт має копірайт 2016 року або старіший, що вказує на те, що він не оновлювався понад 8 років. Дизайн виглядає застарілим і непривабливим для сучасних користувачів.",
+    solution: "Повний редизайн сайту з використанням сучасних трендів UI/UX, адаптивної верстки та свіжої палітри кольорів.",
+    benefits: [
+      "Сучасний та привабливий вигляд",
+      "Краще враження для відвідувачів",
+      "Вища конверсія у клієнтів",
+      "Адаптивність для всіх пристроїв",
+    ],
+    priceRange: { min: 600, max: 2000 },
+    detectCondition: "copyrightYear && copyrightYear <= 2016",
+  },
+  {
+    id: "not-mobile-friendly",
+    icon: "📱",
+    problem: "Не адаптивний для мобільних",
+    description: "Сайт не має мобільної версії або viewport meta-тегу. Близько 60% користувачів заходять з мобільних пристроїв, і такий сайт їм незручний.",
+    solution: "Створення повністю адаптивної версії сайту, яка коректно відображається на смартфонах, планшетах та десктопах.",
+    benefits: [
+      "Комфорт для 60%+ мобільних користувачів",
+      "Покращення позицій в Google (Mobile-First Index)",
+      "Зменшення показника відмов",
+      "Збільшення конверсії",
+    ],
+    priceRange: { min: 300, max: 1000 },
+    detectCondition: "!isMobileFriendly && website !== 'N/A'",
+  },
+  {
+    id: "no-ssl",
+    icon: "🔒",
+    problem: "Немає SSL сертифікату",
+    description: "Сайт працює по HTTP без SSL. Браузери відображають попередження «Не безпечно», що відлякує відвідувачів та знижує довіру до бізнесу.",
+    solution: "Встановлення безкоштовного SSL сертифікату (Let's Encrypt) та налаштування переадресації з HTTP на HTTPS.",
+    benefits: [
+      "Безпека даних відвідувачів",
+      "Усунення попереджень браузера",
+      "Покращення SEO-ранжування",
+      "Довіра клієнтів",
+    ],
+    priceRange: { min: 50, max: 200 },
+    detectCondition: "!hasSsl && website !== 'N/A'",
+  },
+  {
+    id: "old-technology",
+    icon: "🔧",
+    problem: "Застаріла технологія (CMS)",
+    description: "Сайт побудований на застарілій платформі: Joomla, Drupal, uCoz або 1C-Bitrix. Ці системи складні в обслуговуванні та мають обмежені можливості.",
+    solution: "Міграція на сучасну платформу (Next.js, Tilda, WordPress або кастомний сайт) зі збереженням контенту та покращеним функціоналом.",
+    benefits: [
+      "Швидша робота сайту",
+      "Простіше обслуговування",
+      "Більше можливостей для розширення",
+      "Краща безпека",
+    ],
+    priceRange: { min: 600, max: 1800 },
+    detectCondition: "technologies includes Joomla|Drupal|uCoz|1C-Bitrix|Bitrix",
+  },
+  {
+    id: "no-contact-form",
+    icon: "📋",
+    problem: "Немає контактної форми",
+    description: "На сайті відсутня форма для зв'язку. Клієнти не можуть швидко залишити заявку, що знижує конверсію та призводить до втрати лідів.",
+    solution: "Додавання сучасної контактної форми з валідацією, захистом від спаму та відправкою на email/Telegram.",
+    benefits: [
+      "Отримання заявок 24/7",
+      "Збільшення конверсії сайту",
+      "Зручність для клієнтів",
+      "Автоматичне збирання лідів",
+    ],
+    priceRange: { min: 100, max: 300 },
+    detectCondition: "!hasContactForm && website !== 'N/A'",
+  },
+  {
+    id: "table-layout",
+    icon: "📐",
+    problem: "Table-based layout (застаріла розмітка)",
+    description: "Сайт використовує таблиці для верстки — це застаріла практика, яка ускладнює адаптивність, SEO та доступність сайту.",
+    solution: "Переробка розмітки на сучасну HTML5/CSS3 структуру (Flexbox/Grid) з семантичними тегами.",
+    benefits: [
+      "Правильна адаптивність",
+      "Краще SEO ранжування",
+      "Швидше завантаження",
+      "Доступність для всіх користувачів",
+    ],
+    priceRange: { min: 400, max: 1200 },
+    detectCondition: "designNotes includes table|table-based",
+  },
+  {
+    id: "missing-seo",
+    icon: "🔍",
+    problem: "Відсутні SEO meta-теги",
+    description: "Сайт не має мета-опису, Open Graph тегів або інших SEO-елементів. Це суттєво знижує позиції в пошукових системах.",
+    solution: "Повний SEO-аудит та впровадження мета-тегів, структурованих даних, Open Graph,sitemap.xml та robots.txt.",
+    benefits: [
+      "Кращі позиції в Google",
+      "Привабливі посилання в соцмережах",
+      "Збільшення органічного трафіку",
+      "Професійний вигляд у результатах пошуку",
+    ],
+    priceRange: { min: 150, max: 500 },
+    detectCondition: "no pageTitle || no meta description",
+  },
+  {
+    id: "no-social-links",
+    icon: "🔗",
+    problem: "Немає посилань на соцмережі",
+    description: "На сайті відсутні посилання на Facebook, Instagram або Telegram. Це ускладнює клієнтам зв'язок з бізнесом та зменшує аудиторію.",
+    solution: "Додавання блоку з посиланнями на всі соцмережі бізнесу з іконками, розміщеними у футері та контактній секції.",
+    benefits: [
+      "Зручний зв'язок з клієнтами",
+      "Збільшення аудиторії в соцмережах",
+      "Краща довіра до бізнесу",
+      "Додатковий канал залучення клієнтів",
+    ],
+    priceRange: { min: 50, max: 150 },
+    detectCondition: "!facebook && !instagram && !telegram",
+  },
+  {
+    id: "slow-inline-styles",
+    icon: "🎨",
+    problem: "Повільне завантаження / Inline стилі",
+    description: "Сайт має велику кількість inline-стилів або не використовує сучасні CSS-технології, що призводить до повільного завантаження.",
+    solution: "Оптимізація CSS, видалення inline-стилів, впровадження lazy loading, стиснення зображень та кешування.",
+    benefits: [
+      "Швидке завантаження сторінок",
+      "Кращий досвід користувачів",
+      "Вищі позиції в Google (Core Web Vitals)",
+      "Зниження показника відмов",
+    ],
+    priceRange: { min: 200, max: 600 },
+    detectCondition: "designNotes includes inline",
+  },
+];
+
+export function getProblemLibrary(): ProblemType[] {
+  return problemLibrary;
+}
+
+export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
+  const matched: ProblemType[] = [];
+
+  for (const prob of problemLibrary) {
+    let matches = false;
+
+    switch (prob.id) {
+      case "no-website":
+        matches = !lead.website || lead.website === "N/A";
+        break;
+      case "old-design":
+        matches = !!(lead.copyrightYear && lead.copyrightYear <= 2016);
+        break;
+      case "not-mobile-friendly":
+        matches = lead.website !== "N/A" && !lead.isMobileFriendly;
+        break;
+      case "no-ssl":
+        matches = lead.website !== "N/A" && !lead.hasSsl;
+        break;
+      case "old-technology": {
+        const oldTechs = ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"];
+        matches = lead.technologies.some((t) =>
+          oldTechs.some((ot) => t.toLowerCase().includes(ot.toLowerCase()))
+        );
+        break;
+      }
+      case "no-contact-form":
+        matches = lead.website !== "N/A" && !lead.hasContactForm;
+        break;
+      case "table-layout":
+        matches = !!(lead.designNotes && lead.designNotes.some((n) =>
+          n.toLowerCase().includes("table")
+        ));
+        break;
+      case "missing-seo":
+        matches = lead.website !== "N/A" && !lead.pageTitle;
+        break;
+      case "no-social-links":
+        matches = !lead.facebook && !lead.instagram && !lead.telegram;
+        break;
+      case "slow-inline-styles":
+        matches = !!(lead.designNotes && lead.designNotes.some((n) =>
+          n.toLowerCase().includes("inline")
+        ));
+        break;
+    }
+
+    if (matches) {
+      matched.push(prob);
+    }
+  }
+
+  return matched;
+}
+
+// ─── Outreach Templates ─────────────────────────────────────
+
 export interface OutreachTemplate {
   id: string;
   name: string;
@@ -205,73 +432,16 @@ export function fillTemplate(
 }
 
 export function getIssuesText(lead: LeadBusiness): string {
+  const problems = getProblemsForLead(lead);
   const issues: string[] = [];
 
-  // No website at all
-  if (!lead.website || lead.website === "N/A") {
-    issues.push("🚫 Немає вебсайту взагалі — найкращий prospect для створення нового сайту!");
+  if (problems.length === 0) {
+    issues.push("✅ Сайт виглядає сучасним, але є можливості для покращення SEO та конверсії");
     return issues.join("\n");
   }
 
-  // Copyright year issues
-  if (lead.copyrightYear) {
-    const currentYear = new Date().getFullYear();
-    const age = currentYear - lead.copyrightYear;
-    if (age >= 8) {
-      issues.push(`📅 © ${lead.copyrightYear} — сайт не оновлювався ${age} років`);
-    } else if (age >= 4) {
-      issues.push(`📅 © ${lead.copyrightYear} — сайт не оновлювався ${age} роки`);
-    }
-  }
-
-  // Mobile
-  if (!lead.isMobileFriendly) {
-    issues.push("📱 Не адаптивний для мобільних пристроїв");
-  }
-
-  // SSL
-  if (!lead.hasSsl) {
-    issues.push("🔒 Немає SSL сертифікату (небезпечно для відвідувачів)");
-  }
-
-  // Technologies
-  const oldTechs: string[] = [];
-  const knownOldTech = ["Joomla", "Drupal", "WordPress", "Wix", "uCoz", "Joomla!", "1C-Bitrix", "Bitrix"];
-  lead.technologies.forEach((tech) => {
-    const matched = knownOldTech.find((ot) => tech.toLowerCase().includes(ot.toLowerCase()));
-    if (matched) {
-      oldTechs.push(matched);
-    }
-  });
-  if (oldTechs.length > 0) {
-    issues.push(`🔧 Застаріла технологія: ${oldTechs.join(", ")}`);
-  }
-
-  // Design notes
-  if (lead.designNotes && lead.designNotes.length > 0) {
-    lead.designNotes.forEach((note) => {
-      if (
-        note.toLowerCase().includes("table") ||
-        note.toLowerCase().includes("table-based")
-      ) {
-        issues.push("📐 Table-based layout (застаріла розмітка)");
-      } else if (
-        note.toLowerCase().includes("old") ||
-        note.toLowerCase().includes("стар") ||
-        note.toLowerCase().includes("застар")
-      ) {
-        issues.push(`⚠️ ${note}`);
-      }
-    });
-  }
-
-  // No contact form
-  if (!lead.hasContactForm) {
-    issues.push("📋 Немає форми для зв'язку (клієнти не можуть залишити заявку)");
-  }
-
-  if (issues.length === 0) {
-    issues.push("✅ Сайт виглядає сучасним, але є можливості для покращення SEO та конверсії");
+  for (const prob of problems) {
+    issues.push(`${prob.icon} ${prob.problem} — ${prob.description.split(".")[0]}.`);
   }
 
   return issues.join("\n");

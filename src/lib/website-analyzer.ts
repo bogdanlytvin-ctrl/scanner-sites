@@ -330,3 +330,99 @@ function extractCopyrightYear(
 
   return null;
 }
+
+// ─── Website Validity Check ─────────────────────────────────
+
+import type { LeadBusiness } from "./scoring";
+
+export interface WorthinessResult {
+  worth: boolean;
+  reason: string;
+  score: number;
+}
+
+export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
+  let score = 0;
+  const reasons: string[] = [];
+
+  // No website: best prospect
+  if (!lead.website || lead.website === "N/A") {
+    score = 95;
+    reasons.push("Немає сайту — найкращий prospect для створення нового сайту");
+    return {
+      worth: true,
+      reason: reasons.join("; "),
+      score,
+    };
+  }
+
+  // Ancient design
+  const currentYear = new Date().getFullYear();
+  if (lead.copyrightYear && lead.copyrightYear <= 2016) {
+    score += 30;
+    reasons.push(`Дуже старий дизайн (© ${lead.copyrightYear})`);
+  } else if (lead.designScore === "ancient") {
+    score += 25;
+    reasons.push("Дуже старий дизайн сайту");
+  }
+
+  // No mobile
+  if (!lead.isMobileFriendly) {
+    score += 20;
+    reasons.push("Не адаптивний для мобільних");
+  }
+
+  // No SSL
+  if (!lead.hasSsl) {
+    score += 10;
+    reasons.push("Немає SSL сертифікату");
+  }
+
+  // Old technology
+  const oldTechs = ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"];
+  if (lead.technologies.some((t) => oldTechs.some((ot) => t.toLowerCase().includes(ot.toLowerCase())))) {
+    score += 15;
+    reasons.push(`Застаріла технологія: ${lead.technologies.join(", ")}`);
+  }
+
+  // No contact form
+  if (!lead.hasContactForm) {
+    score += 10;
+    reasons.push("Немає контактної форми");
+  }
+
+  // Table-based layout
+  if (lead.designNotes && lead.designNotes.some((n) => n.toLowerCase().includes("table"))) {
+    score += 10;
+    reasons.push("Table-based layout");
+  }
+
+  // Modern site with minor issues: penalize
+  if (lead.designScore === "modern") {
+    if (score > 0) {
+      score = Math.min(score, 25);
+      reasons.push("Сучасний сайт з дрібними проблемами");
+    } else {
+      score = 5;
+      reasons.push("Сучасний сайт — мало причин для контакту");
+    }
+  }
+
+  // Outdated but okay
+  if (lead.designScore === "outdated" && score <= 10) {
+    score = 15;
+    reasons.push("Застарілий дизайн, але без серйозних проблем");
+  }
+
+  const worth = score >= 40;
+
+  if (reasons.length === 0) {
+    reasons.push(score >= 40 ? "Багато проблем для вирішення" : "Мало причин для контакту");
+  }
+
+  return {
+    worth,
+    reason: reasons.join("; "),
+    score: Math.min(score, 100),
+  };
+}

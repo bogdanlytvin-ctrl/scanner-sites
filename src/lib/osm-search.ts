@@ -216,7 +216,21 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
 
     if (!resp.ok) return null;
 
-    const data = await resp.json();
+    // Check content-type before parsing JSON
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      console.warn(`[Photon] Non-JSON response (content-type: ${contentType}, status: ${resp.status}) for city: ${city}`);
+      return null;
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      console.warn(`[Photon] JSON parse error for city: ${city}`, parseErr);
+      return null;
+    }
+
     const features = data?.features;
     if (!features || features.length === 0) return null;
 
@@ -248,7 +262,21 @@ async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
     // Nominatim returns 403 when rate-limited
     if (!resp.ok) return null;
 
-    const data = await resp.json();
+    // Check content-type before parsing JSON
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      console.warn(`[Nominatim] Non-JSON response (content-type: ${contentType}, status: ${resp.status}) for city: ${city}`);
+      return null;
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      console.warn(`[Nominatim] JSON parse error for city: ${city}`, parseErr);
+      return null;
+    }
+
     if (!data || data.length === 0) return null;
 
     return {
