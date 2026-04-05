@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchOverpass } from "@/lib/osm-search";
+import { searchOverpass, geocodeCity } from "@/lib/osm-search";
 
 export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
 
@@ -19,6 +19,9 @@ export async function POST(request: NextRequest) {
     const trimmedQuery = String(query).trim();
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
     const parsedRadius = Math.min(Math.max(parseInt(radius) || 15, 1), 100);
+
+    // First geocode the city so we can return the resolved location
+    const geo = await geocodeCity(trimmedCity);
 
     const results = await searchOverpass(
       trimmedCity,
@@ -48,6 +51,11 @@ export async function POST(request: NextRequest) {
       total: businesses.length,
       query: `${trimmedQuery} in ${trimmedCity}`,
       source: "OpenStreetMap (Overpass)",
+      geoLocation: {
+        lat: geo.lat,
+        lng: geo.lng,
+        displayName: geo.displayName,
+      },
     });
   } catch (error) {
     console.error("[Search API]", error);

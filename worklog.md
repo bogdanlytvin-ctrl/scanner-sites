@@ -151,3 +151,53 @@ Fix bugs and add major new features: JSON parse bug fix, search history & favori
 - Hydration error fixed by replacing outer `<button>` wrappers with accessible `<div>` elements
 - All 3 button nesting issues resolved
 - No other nested button issues found in the expanded content or dialogs
+
+---
+## Task ID: 4
+### Agent: Main agent
+### Task: Fix geo data accuracy — searching for Dnipro (Ukraine) returned Belarus results
+
+### Work Log:
+- **Root cause**: When user types "Днепр" (Russian spelling), Photon geocoder returns a hamlet in Belarus as first result. The actual city of Dnipro doesn't appear in Photon results for Russian spelling.
+- **Root cause 2**: When user types "Дніпро" (Ukrainian), Photon correctly returns the city, but Nominatim returns the river first (waterway class), city only 4th.
+
+### Fixes applied to `/src/lib/osm-search.ts`:
+
+1. **Photon geocoder** — Complete rewrite with scoring system:
+   - Requests 10 results (was 5) for better filtering
+   - Added excluded types list: rivers, waterways, streams, stations, railways, industrial, garages, hotels etc.
+   - Added type priority scoring: city=10, town=8, municipality=7, village=5, hamlet=3
+   - Cyrillic detection: `+20` bonus for UA countrycode, `+5` for BY/RU
+   - Added bonus for Ukrainian oblast names (Дніпропетровська, Київська, Львівська, etc.)
+   - Builds display name with state + country context
+
+2. **Nominatim geocoder** — Improved with country filtering:
+   - For Cyrillic queries: adds `countrycodes=ua` parameter (only Ukrainian results)
+   - Sets `accept-language=uk,en` for Cyrillic queries
+   - Requests 10 results (was 5)
+   - Added excluded classes: waterway, railway, highway, natural
+   - Added excluded types: river, stream, lake, canal, station, bus_stop
+   - Added scoring by type + importance + class=place bonus
+   - Sorts by score descending, picks best valid result
+
+3. **Cross-validation** for Cyrillic queries:
+   - If Photon returns a result for a Cyrillic query, also queries Nominatim with `countrycodes=ua`
+   - If Nominatim returns a result with "Україн" or "Ukraine" in displayName, prefers it over Photon
+   - This handles the case where Photon returns Belarus for "Днепр" but Nominatim correctly finds Dnipro, Ukraine
+
+4. **Fallback strategy**: If no result found, retries with "місто" (Ukrainian for "city") appended to the query
+
+### Changes to `/src/app/api/search/route.ts`:
+- Added geocodeCity() call to resolve city coordinates before searching
+- Returns `geoLocation` object (lat, lng, displayName) in API response
+
+### Changes to `/src/app/page.tsx`:
+- Added `geoLocations` state to track resolved coordinates per city
+- Added "Знайдені локації" UI section with clickable OpenStreetMap links showing resolved city, coordinates, and country
+- Updated placeholder to show Ukrainian cities first: "Дніпро, Kyiv, Львів, London..."
+
+### Verification:
+- "Дніпро" (Ukrainian) → Photon: city Dnipro, UA ✅
+- "Днепр" (Russian) → Photon returns Belarus, but Nominatim cross-validation overrides with Dnipro, UA ✅
+- "Днепр, місто" fallback → also works via Nominatim ✅
+- Build passes: `npx next build` compiles successfully

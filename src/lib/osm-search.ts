@@ -189,16 +189,41 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
   // Try Photon first (no strict rate limits)
   let coords = await geocodePhoton(city);
 
+  // For Cyrillic queries: verify Photon result is actually in UA
+  // If not, try Nominatim which supports country filter
+  const isCyrillicQuery = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
+  if (coords && isCyrillicQuery) {
+    // Check if the Photon result is in Ukraine by trying Nominatim with UA filter
+    const nominatimResult = await geocodeNominatim(city);
+    if (nominatimResult) {
+      // If Photon returned non-UA result (e.g. Belarus), prefer Nominatim
+      // Simple heuristic: if Nominatim display name contains "Україн", prefer it
+      if (nominatimResult.displayName.includes("Україн") || nominatimResult.displayName.includes("Ukraine")) {
+        coords = nominatimResult;
+      }
+    }
+  }
+
   // Fallback to Nominatim
   if (!coords) {
     coords = await geocodeNominatim(city);
   }
 
+  // Second attempt: append "місто" (Ukrainian for "city") to prioritize city results
+  if (!coords) {
+    coords = await geocodePhoton(`${city} місто`);
+    if (!coords) {
+      coords = await geocodeNominatim(`${city} місто`);
+    }
+  }
+
   if (!coords) {
     throw new Error(
-      `Місто "${city}" не знайдено. Спробуйте: Kyiv, London, New York, Berlin...`
+      `Місто "${city}" не знайдено. Спробуйте: Kyiv, Дніпро, Львів, London...`
     );
   }
+
+  console.log(`[Geo] "${city}" → ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)} (${coords.displayName})`);
 
   // Cache result
   (coords as any)._ts = Date.now();
@@ -210,7 +235,7 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
 async function geocodePhoton(city: string): Promise<GeoCoords | null> {
   try {
     // Request multiple results so we can filter for city/settlement types
-    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=5`;
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=10`;
     const resp = await fetch(url, {
       headers: { "User-Agent": "LeadFinder/1.0" },
     });
@@ -235,34 +260,80 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
     const features = data?.features;
     if (!features || features.length === 0) return null;
 
-    // OSM types that represent cities/towns/settlements (osm_value field)
-    const settlementTypes = new Set([
-      "city", "town", "village", "hamlet", "suburb", "neighbourhood",
-      "borough", "quarter", "municipality", "district",
+    // Types that should NEVER be selected as a city (rivers, stations, etc.)
+    const excludedTypes = new Set([
+      "river", "water", "stream", "waterway", "canal", "lake",
+      "station", "bus_stop", "tram_stop", "railway",
+      "industrial", "garages", "quarry", "water_tower",
+      "hotel", "motel", "hostel", "guest_house",
     ]);
 
-    // Prefer settlement-type results (city/town/village) over POIs/streets
-    const settlementFeature = features.find((f: any) => {
+    // Priority order for settlement types (higher = better)
+    const typePriority: Record<string, number> = {
+      city: 10,
+      town: 8,
+      municipality: 7,
+      borough: 6,
+      village: 5,
+      suburb: 4,
+      hamlet: 3,
+      neighbourhood: 2,
+      quarter: 2,
+      district: 1,
+    };
+
+    // Detect if query is in Cyrillic → prefer Ukrainian results
+    const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
+
+    // Score and sort results
+    const scored = features.map((f: any) => {
       const props = f.properties || {};
-      // Photon uses osm_type/osm_value fields; N is node, W is way, R is relation
-      // City boundaries are often relations (R) with place=city/town/village
-      if (settlementTypes.has(props.osm_value)) return true;
-      // Also match by type field if available
-      if (props.type && settlementTypes.has(props.type)) return true;
-      return false;
+      const osmType = props.osm_value || props.type || "";
+      const country = (props.countrycode || "").toUpperCase();
+      const state = props.state || "";
+
+      // Skip excluded types entirely
+      if (excludedTypes.has(osmType)) return { feature: f, score: -999 };
+
+      let score = typePriority[osmType] || 0;
+
+      // Bonus for Cyrillic query → prefer UA results
+      if (isCyrillic && country === "UA") score += 20;
+      // Small bonus for BY/RU if Cyrillic (but much less than UA)
+      if (isCyrillic && (country === "BY" || country === "RU")) score += 5;
+
+      // Check for oblast/state names that indicate major Ukrainian cities
+      const majorCityStates = [
+        "Дніпропетровська", "Київська", "Львівська", "Одеська",
+        "Харківська", "Донецька", "Запорізька", "Вінницька",
+      ];
+      if (majorCityStates.some((s) => state.includes(s))) score += 15;
+
+      return { feature: f, score };
     });
 
-    // Use settlement match if found, otherwise fall back to first result
-    const f = settlementFeature || features[0];
+    // Sort by score descending
+    scored.sort((a, b) => b.score - a.score);
+
+    // Find best valid result
+    const best = scored.find((s) => s.score > 0);
+    if (!best) return null;
+
+    const f = best.feature;
     const props = f.properties || {};
     const coords = f.geometry?.coordinates;
 
     if (!coords) return null;
 
+    // Build display name with country context
+    const state = props.state ? `, ${props.state}` : "";
+    const country = props.country ? ` (${props.country})` : "";
+    const displayName = `${props.name || city}${state}${country}`;
+
     return {
       lat: coords[1],
       lng: coords[0],
-      displayName: props.name || city,
+      displayName,
     };
   } catch {
     return null;
@@ -271,8 +342,18 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
 
 async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
   try {
-    // Request 5 results so we can prefer city/town/settlement results
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=5&accept-language=en`;
+    // Detect Cyrillic for language/country preference
+    const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
+    const lang = isCyrillic ? "uk,en" : "en";
+
+    // Request more results for better filtering
+    let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=10&accept-language=${lang}`;
+
+    // For Cyrillic queries, prioritize Ukrainian results
+    if (isCyrillic) {
+      url += `&countrycodes=ua`; // Only Ukrainian results for Cyrillic queries
+    }
+
     const resp = await fetch(url, {
       headers: {
         "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
@@ -299,19 +380,50 @@ async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
 
     if (!data || data.length === 0) return null;
 
-    // Prefer city/town/village results over POIs or streets
+    // Excluded types: rivers, waterways, stations, etc.
+    const excludedClasses = new Set(["waterway", "railway", "highway", "natural"]);
+    const excludedTypes = new Set(["river", "stream", "lake", "canal", "station", "bus_stop"]);
+
+    // Filter out non-settlement results
     const settlementTypes = new Set(["city", "town", "village", "hamlet", "municipality", "borough"]);
-    const settlement = data.find((r: any) => {
+
+    // Priority: city with class=place > administrative boundary > town/village
+    const typePriority: Record<string, number> = {
+      city: 10,
+      town: 7,
+      village: 5,
+      municipality: 6,
+      borough: 4,
+      hamlet: 3,
+      administrative: 2,
+    };
+
+    const scored = data.map((r: any) => {
       const type = (r.type || "").toLowerCase();
       const cls = String(r.class || "");
-      if (settlementTypes.has(type)) return true;
-      if (cls === "place" && settlementTypes.has(type)) return true;
-      // Also check for administrative boundary of a city
-      if (r.type === "administrative" && (r.importance > 0.5)) return true;
-      return false;
+
+      // Exclude waterways, railways, highways
+      if (excludedClasses.has(cls) || excludedTypes.has(type)) {
+        return { result: r, score: -999 };
+      }
+
+      let score = typePriority[type] || 0;
+
+      // Bonus for class=place
+      if (cls === "place") score += 5;
+
+      // Bonus for importance
+      score += (r.importance || 0) * 10;
+
+      return { result: r, score };
     });
 
-    const result = settlement || data[0];
+    scored.sort((a, b) => b.score - a.score);
+
+    const best = scored.find((s) => s.score > 0);
+    if (!best) return null;
+
+    const result = best.result;
 
     return {
       lat: parseFloat(result.lat),

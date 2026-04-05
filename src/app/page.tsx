@@ -130,6 +130,7 @@ export default function Home() {
 
   // Favorites
   const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
+  const [geoLocations, setGeoLocations] = useState<Array<{ city: string; displayName: string; lat: number; lng: number }>>([]);
 
   // Telegram Settings
   const [tgSettingsOpen, setTgSettingsOpen] = useState(false);
@@ -278,6 +279,7 @@ export default function Home() {
     if (!c || !q) { setErrorMessage("Заповніть місто та нішу"); return; }
     setErrorMessage(""); setLeads([]); setExpandedIdx(null);
     setPhase("searching"); setProgress(0);
+    setGeoLocations([]);
 
     if (searchCity) setCity(searchCity);
     if (searchQuery) setQuery(searchQuery);
@@ -302,6 +304,15 @@ export default function Home() {
         }, `Помилка пошуку у ${currentCity}`);
 
         const businesses = searchData.businesses || [];
+
+        // Save geocoded location for display
+        if (searchData.geoLocation) {
+          setGeoLocations((prev) => [
+            ...prev,
+            { city: currentCity, displayName: searchData.geoLocation.displayName, lat: searchData.geoLocation.lat, lng: searchData.geoLocation.lng },
+          ]);
+        }
+
         for (const b of businesses) {
           const key = b.name.toLowerCase().trim();
           if (!seenNames.has(key)) {
@@ -532,7 +543,7 @@ export default function Home() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">🏙️ Місто (можна декілька)</label>
-                <Input placeholder="Kyiv, Lviv, London..." value={city} onChange={(e) => setCity(e.target.value)}
+                <Input placeholder="Дніпро, Kyiv, Львів, London..." value={city} onChange={(e) => setCity(e.target.value)}
                   disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
               <div className="space-y-1">
@@ -621,6 +632,32 @@ export default function Home() {
               </div>
             )}
           </Card>
+        )}
+
+        {/* Geo Locations Found */}
+        {geoLocations.length > 0 && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <MapPin className="w-3.5 h-3.5" />
+              <span className="font-medium">Знайдені локації:</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {geoLocations.map((geo, i) => (
+                <a
+                  key={`${geo.city}-${i}`}
+                  href={`https://www.openstreetmap.org/?mlat=${geo.lat}&mlon=${geo.lng}#map=13/${geo.lat}/${geo.lng}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+                >
+                  <MapPin className="w-3 h-3" />
+                  {geo.displayName}
+                  <span className="text-[10px] text-muted-foreground">({geo.lat.toFixed(2)}, {geo.lng.toFixed(2)})</span>
+                  <ExternalLink className="w-2.5 h-2.5 opacity-50" />
+                </a>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* Progress */}
