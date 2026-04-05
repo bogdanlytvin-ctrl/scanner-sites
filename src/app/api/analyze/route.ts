@@ -38,6 +38,8 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Analyze API error:", error);
-    return NextResponse.json({ error: "Analysis failed" }, { status: 500 });
+    const message =
+      error instanceof Error ? error.message : "Помилка аналізу вебсайту";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -586,7 +586,7 @@ export default function Home() {
         {/* Search History */}
         {searchHistory.length > 0 && (
           <Card className="shadow-sm border-0">
-            <button onClick={() => setHistoryOpen(!historyOpen)} className="w-full text-left p-3 flex items-center justify-between">
+            <div onClick={() => setHistoryOpen(!historyOpen)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setHistoryOpen(!historyOpen)} className="w-full text-left p-3 flex items-center justify-between cursor-pointer select-none">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <History className="w-4 h-4 text-muted-foreground" />
                 Історія пошуків ({searchHistory.length})
@@ -597,7 +597,7 @@ export default function Home() {
                 </Button>
                 {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
               </div>
-            </button>
+            </div>
             {historyOpen && (
               <div className="border-t max-h-60 overflow-y-auto">
                 {searchHistory.map((entry) => (
@@ -714,7 +714,7 @@ export default function Home() {
             return (
               <Card key={`${lead.name}-${realIdx}`} className={`border-l-4 shadow-sm overflow-hidden transition-all ${sc.border} hover:shadow-md`}>
                 {/* Header row */}
-                <button onClick={() => setExpandedIdx(isExpanded ? null : idx)} className="w-full text-left p-3 sm:p-4 flex items-start gap-3">
+                <div onClick={() => setExpandedIdx(isExpanded ? null : idx)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setExpandedIdx(isExpanded ? null : idx)} className="w-full text-left p-3 sm:p-4 flex items-start gap-3 cursor-pointer select-none">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-semibold text-sm sm:text-base truncate max-w-[200px] sm:max-w-[260px]">{lead.name}</span>
@@ -753,7 +753,7 @@ export default function Home() {
                     )}
                     {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
                   </div>
-                </button>
+                </div>
 
                 {/* Expanded Content */}
                 {isExpanded && (

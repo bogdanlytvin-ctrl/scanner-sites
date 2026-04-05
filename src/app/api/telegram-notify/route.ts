@@ -24,19 +24,57 @@ export async function POST(req: NextRequest) {
       }),
     });
 
-    const data = await resp.json();
+    if (!resp.ok) {
+      // Try to extract error details from response body
+      let errorDetail = `HTTP ${resp.status}`;
+      try {
+        const contentType = resp.headers.get("content-type") || "";
+        if (contentType.includes("json")) {
+          const data = await resp.json();
+          errorDetail = data.description || errorDetail;
+        } else {
+          const text = await resp.text();
+          errorDetail = text.slice(0, 200) || errorDetail;
+        }
+      } catch {
+        // Could not read response body
+      }
+      return NextResponse.json(
+        { error: `Помилка Telegram API: ${errorDetail}` },
+        { status: resp.status }
+      );
+    }
 
-    if (!resp.ok || !data.ok) {
+    // Validate content-type before parsing JSON
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      return NextResponse.json(
+        { error: `Telegram API повернув неочікуваний формат відповіді (content-type: ${contentType})` },
+        { status: 502 }
+      );
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      return NextResponse.json(
+        { error: `Помилка парсингу відповіді Telegram: ${parseErr instanceof Error ? parseErr.message : "невідомо"}` },
+        { status: 502 }
+      );
+    }
+
+    if (!data.ok) {
       return NextResponse.json(
         { error: data.description || "Помилка відправки повідомлення в Telegram" },
-        { status: resp.status }
+        { status: 400 }
       );
     }
 
     return NextResponse.json({ success: true, messageId: data.result?.message_id });
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Помилка сервера" },
+      { error: err instanceof Error ? err.message : "Помилка сервера при відправці в Telegram" },
       { status: 500 }
     );
   }

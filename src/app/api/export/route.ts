@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
 
     if (!leads || !Array.isArray(leads) || leads.length === 0) {
       return NextResponse.json(
-        { error: "No leads data provided" },
+        { error: "Не надано дані лідів для експорту" },
         { status: 400 }
       );
     }
@@ -26,8 +26,10 @@ export async function POST(request: NextRequest) {
     return generateExcel(leads);
   } catch (error) {
     console.error("Export API error:", error);
+    const message =
+      error instanceof Error ? error.message : "Помилка експорту файлу";
     return NextResponse.json(
-      { error: "Export failed" },
+      { error: message },
       { status: 500 }
     );
   }

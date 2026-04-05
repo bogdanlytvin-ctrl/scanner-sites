@@ -209,7 +209,8 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
 
 async function geocodePhoton(city: string): Promise<GeoCoords | null> {
   try {
-    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=1`;
+    // Request multiple results so we can filter for city/settlement types
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=5`;
     const resp = await fetch(url, {
       headers: { "User-Agent": "LeadFinder/1.0" },
     });
@@ -234,7 +235,25 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
     const features = data?.features;
     if (!features || features.length === 0) return null;
 
-    const f = features[0];
+    // OSM types that represent cities/towns/settlements (osm_value field)
+    const settlementTypes = new Set([
+      "city", "town", "village", "hamlet", "suburb", "neighbourhood",
+      "borough", "quarter", "municipality", "district",
+    ]);
+
+    // Prefer settlement-type results (city/town/village) over POIs/streets
+    const settlementFeature = features.find((f: any) => {
+      const props = f.properties || {};
+      // Photon uses osm_type/osm_value fields; N is node, W is way, R is relation
+      // City boundaries are often relations (R) with place=city/town/village
+      if (settlementTypes.has(props.osm_value)) return true;
+      // Also match by type field if available
+      if (props.type && settlementTypes.has(props.type)) return true;
+      return false;
+    });
+
+    // Use settlement match if found, otherwise fall back to first result
+    const f = settlementFeature || features[0];
     const props = f.properties || {};
     const coords = f.geometry?.coordinates;
 
@@ -252,7 +271,8 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
 
 async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=1&accept-language=en`;
+    // Request 5 results so we can prefer city/town/settlement results
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=5&accept-language=en`;
     const resp = await fetch(url, {
       headers: {
         "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
@@ -279,10 +299,24 @@ async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
 
     if (!data || data.length === 0) return null;
 
+    // Prefer city/town/village results over POIs or streets
+    const settlementTypes = new Set(["city", "town", "village", "hamlet", "municipality", "borough"]);
+    const settlement = data.find((r: any) => {
+      const type = (r.type || "").toLowerCase();
+      const cls = String(r.class || "");
+      if (settlementTypes.has(type)) return true;
+      if (cls === "place" && settlementTypes.has(type)) return true;
+      // Also check for administrative boundary of a city
+      if (r.type === "administrative" && (r.importance > 0.5)) return true;
+      return false;
+    });
+
+    const result = settlement || data[0];
+
     return {
-      lat: parseFloat(data[0].lat),
-      lng: parseFloat(data[0].lon),
-      displayName: data[0].display_name || city,
+      lat: parseFloat(result.lat),
+      lng: parseFloat(result.lon),
+      displayName: result.display_name || city,
     };
   } catch {
     return null;

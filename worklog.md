@@ -102,3 +102,52 @@ Fix bugs and add major new features: JSON parse bug fix, search history & favori
   - `/` (static)
   - `/api/telegram-notify` (dynamic, new)
   - All existing API routes unchanged
+
+---
+## Task ID: 2
+### Agent: API audit agent
+### Task: Audit and fix JSON parsing bugs + verify geo data accuracy
+
+### Work Log:
+
+#### 1. Fixed critical JSON parse bug in `/src/app/api/telegram-notify/route.ts`
+- **Bug**: `await resp.json()` was called on line 27 **before** `resp.ok` was checked on line 29. If Telegram API returned an HTML error page (502, 504, rate limit), the `.json()` call would throw `Unexpected token '<'` — an uncaught error that bypassed the `!resp.ok` error handling entirely.
+- **Fix**: Restructured to check `resp.ok` first, then validate `content-type` includes `json` before calling `.json()`. Added try/catch around `.json()` parse. Error response body is now safely extracted with appropriate fallback for non-JSON responses.
+
+#### 2. Ukrainian error messages in `/src/app/api/analyze/route.ts`
+- Changed generic English `"Analysis failed"` to Ukrainian `"Помилка аналізу вебсайту"` with Error message passthrough.
+
+#### 3. Ukrainian error messages in `/src/app/api/export/route.ts`
+- Changed `"No leads data provided"` → `"Не надано дані лідів для експорту"`
+- Changed generic `"Export failed"` → `"Помилка експорту файлу"` with Error message passthrough.
+
+#### 4. Improved geo data accuracy in `/src/lib/osm-search.ts`
+- **Photon geocoder** (`geocodePhoton`): Changed from `limit=1` to `limit=5`. Added settlement-type filtering — now scans results for `osm_value` matching city/town/village/hamlet/suburb etc. before falling back to the first result. This prevents a POI or street named like a city (e.g., searching "Bar" would return the city in Montenegro, not a bar).
+- **Nominatim geocoder** (`geocodeNominatim`): Changed from `limit=1` to `limit=5`. Added settlement-type filtering by `type` and `class` fields, also checking `importance > 0.5` for administrative boundaries. Falls back to first result if no settlement found.
+
+#### 5. Verification of existing code
+- `osm-search.ts`: Overpass API `executeQuery()` already has proper content-type validation and error handling (fixed in Task 1). ✅
+- `website-analyzer.ts`: Uses `resp.text()` for HTML content (correct — no JSON parsing needed). ✅
+- `scoring.ts`, `storage.ts`, `outreach-templates.ts`, `telegram-bot.ts`: No external fetch calls. ✅
+- `search/route.ts`: Already has proper Ukrainian error handling. ✅
+
+### Build Verification
+- `npx next build` — compiles successfully, all 8 routes pass (1 static, 7 dynamic).
+
+---
+## Task ID: 3
+### Agent: Main agent
+### Task: Fix nested button hydration error in page.tsx
+
+### Work Log:
+- Fixed hydration error: `<button>` cannot be a descendant of `<button>`
+- Changed outer `<button>` at line 717 (lead card header expand toggle) to `<div role="button">` with tabIndex, onKeyDown, and cursor-pointer
+- Changed outer `<button>` at line 589 (search history toggle) to `<div role="button">` with same accessibility attributes
+- Fixed orphaned `</button>` closing tag at line 600 to `</div>`
+- The inner buttons (favorite star, clear history, delete history item) remain as proper `<button>` elements
+- Build verification: `npx next build` passes successfully
+
+### Stage Summary:
+- Hydration error fixed by replacing outer `<button>` wrappers with accessible `<div>` elements
+- All 3 button nesting issues resolved
+- No other nested button issues found in the expanded content or dialogs
