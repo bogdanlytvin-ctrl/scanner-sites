@@ -315,7 +315,7 @@ function extractCopyrightYear(
     const years = explicit
       .map((m) => { const match = m.match(/(\d{4})/g); return match ? match.map(Number) : []; })
       .flat();
-    if (years.length) return Math.min(...years);
+    if (years.length) return Math.max(...years);
   }
 
   // 3. "copyright" near year

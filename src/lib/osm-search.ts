@@ -3,8 +3,6 @@
 //
 // Tested endpoints & queries — all verified working
 
-import type { LeadBusiness } from "./scoring";
-
 export interface GeoCoords {
   lat: number;
   lng: number;
@@ -31,10 +29,10 @@ export interface OSMResult {
 
 const OVERPASS_ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass-api.de/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.openstreetmap.ru/api/interpreter",
   "https://overpass.tru.vn.ua/api/interpreter",
+  "https://overpass-api.de/api/interpreter", // most unreliable — last resort
 ];
 
 // ─── Keyword → OSM tag mapping ───────────────────────────────
@@ -559,8 +557,8 @@ function buildBroadQuery(
   maxResults: number
 ): string {
   const radius = Math.min(radiusKm * 1000, 25000); // Smaller radius for broad search (cap 25km)
-  // Escape regex special chars (safe subset — no need for full escaping)
-  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Escape regex special chars AND double quotes (QL uses " as string delimiter)
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\"]/g, "\\$&");
 
   const conditions: string[] = [];
 
@@ -576,10 +574,11 @@ function buildBroadQuery(
     }
   }
 
+  // Use "out center" for ways to get center coordinates, "out body" for nodes
   return (
     `[out:json][timeout:25];\n` +
     `(\n  ${conditions.join("\n  ")}\n);\n` +
-    `out body qt ${maxResults};`
+    `out center qt ${maxResults};`
   );
 }
 
@@ -600,8 +599,10 @@ const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
 
 // ─── Query execution with fallback + retry ───────────────────
 
-const MAX_RETRIES_PER_ENDPOINT = 3;
-const RETRY_DELAYS_MS = [1000, 2000, 4000]; // exponential backoff: 1s, 2s, 4s
+const MAX_RETRIES_PER_ENDPOINT = 2; // 3 attempts per endpoint (0, 1, 2)
+const RETRY_DELAYS_MS = [2000, 5000]; // exponential backoff: 2s, 5s
+const OVERALL_TIMEOUT_MS = 50000; // Hard deadline: 50s (Vercel limit is 60s)
+const PER_REQUEST_TIMEOUT_MS = 25000; // Each individual fetch: 25s
 
 async function executeQuery(query: string): Promise<any[]> {
   // Check cache first — return immediately without hitting Overpass
@@ -611,29 +612,49 @@ async function executeQuery(query: string): Promise<any[]> {
     return cached;
   }
 
+  // Overall deadline to avoid exceeding Vercel's 60s function timeout
+  const overallController = new AbortController();
+  const overallTimeout = setTimeout(() => overallController.abort(), OVERALL_TIMEOUT_MS);
+
   let lastError = "";
   let attemptedEndpoints = 0;
 
+  try {
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    // Check if overall deadline exceeded
+    if (overallController.signal.aborted) break;
+
     attemptedEndpoints++;
 
     // Add a small random delay before each request to avoid hitting rate limits
     if (attemptedEndpoints > 1) {
-      const jitter = randomDelay(500, 1500);
+      const jitter = randomDelay(300, 800);
       console.log(`[Overpass] Waiting ${jitter}ms before trying ${endpoint}...`);
       await sleep(jitter);
     }
 
     for (let attempt = 0; attempt <= MAX_RETRIES_PER_ENDPOINT; attempt++) {
+      if (overallController.signal.aborted) break;
+
       try {
-        const resp = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
-          },
-          body: `data=${encodeURIComponent(query)}`,
-        });
+        // Per-request timeout
+        const reqController = new AbortController();
+        const reqTimeout = setTimeout(() => reqController.abort(), PER_REQUEST_TIMEOUT_MS);
+
+        let resp: Response;
+        try {
+          resp = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
+            },
+            body: `data=${encodeURIComponent(query)}`,
+            signal: reqController.signal,
+          });
+        } finally {
+          clearTimeout(reqTimeout);
+        }
 
         if (!resp.ok) {
           const text = await resp.text().catch(() => "");
@@ -641,7 +662,7 @@ async function executeQuery(query: string): Promise<any[]> {
 
           // Only retry on retryable status codes (502, 503, 504, 429)
           if (RETRYABLE_STATUS_CODES.has(resp.status) && attempt < MAX_RETRIES_PER_ENDPOINT) {
-            let delay = RETRY_DELAYS_MS[attempt];
+            let delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000); // jitter
 
             // For 429 (rate limit), try to respect Retry-After header
             if (resp.status === 429) {
@@ -677,7 +698,7 @@ async function executeQuery(query: string): Promise<any[]> {
             text.includes("503") || text.includes("Service Unavailable") ||
             text.includes("504") || text.includes("Gateway Timeout")
           )) {
-            const delay = RETRY_DELAYS_MS[attempt];
+            const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
             console.warn(
               `[Overpass] ${endpoint} → non-JSON with server error HTML (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
             );
@@ -695,7 +716,7 @@ async function executeQuery(query: string): Promise<any[]> {
         } catch (parseErr) {
           // JSON parse failed — treat as server error and retry
           if (attempt < MAX_RETRIES_PER_ENDPOINT) {
-            const delay = RETRY_DELAYS_MS[attempt];
+            const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
             console.warn(
               `[Overpass] ${endpoint} → JSON parse error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
             );
@@ -728,7 +749,7 @@ async function executeQuery(query: string): Promise<any[]> {
 
         // Retry on network errors
         if (attempt < MAX_RETRIES_PER_ENDPOINT) {
-          const delay = RETRY_DELAYS_MS[attempt];
+          const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
           console.warn(
             `[Overpass] ${endpoint} → network error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms: ${lastError}`
           );
@@ -740,6 +761,18 @@ async function executeQuery(query: string): Promise<any[]> {
         break; // move to next endpoint
       }
     }
+  }
+
+  } finally {
+    clearTimeout(overallTimeout);
+  }
+
+  // Check if we hit overall deadline
+  if (overallController.signal.aborted) {
+    throw new Error(
+      `Час очікування Overpass API перевищено (${OVERALL_TIMEOUT_MS / 1000}с). ` +
+      `💡 Спробуйте зменшити радіус або кількість результатів і повторити запит.`
+    );
   }
 
   // All endpoints failed after all retries

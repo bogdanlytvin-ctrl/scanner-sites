@@ -137,6 +137,23 @@ export interface Translations {
   results: string;
   formBadge: string;
   none: string;
+  // PageSpeed
+  pageSpeed: string;
+  checkPageSpeed: string;
+  bulkPageSpeed: string;
+  bulkPageSpeedDesc: string;
+  pageSpeedChecking: string;
+  pageSpeedScore: string;
+  pageSpeedFcp: string;
+  pageSpeedLcp: string;
+  pageSpeedTbt: string;
+  pageSpeedCls: string;
+  pageSpeedSi: string;
+  pageSpeedDiagnostics: string;
+  pageSpeedError: string;
+  pageSpeedNoResults: string;
+  pageSpeedProgress: string;
+  pageSpeedDone: string;
 }
 
 // ─── Ukrainian translations (default) ────────────────────────
@@ -262,6 +279,22 @@ const ua: Translations = {
   results: "рез.",
   formBadge: "Форма",
   none: "—",
+  pageSpeed: "PageSpeed",
+  checkPageSpeed: "Перевірити PageSpeed",
+  bulkPageSpeed: "PageSpeed всіх",
+  bulkPageSpeedDesc: "Перевірка PageSpeed для всіх лідів з сайтами",
+  pageSpeedChecking: "Перевірка PageSpeed...",
+  pageSpeedScore: "Оцінка продуктивності",
+  pageSpeedFcp: "FCP",
+  pageSpeedLcp: "LCP",
+  pageSpeedTbt: "TBT",
+  pageSpeedCls: "CLS",
+  pageSpeedSi: "SI",
+  pageSpeedDiagnostics: "Рекомендації",
+  pageSpeedError: "Помилка перевірки",
+  pageSpeedNoResults: "Результати PageSpeed відсутні",
+  pageSpeedProgress: "Перевірка PageSpeed",
+  pageSpeedDone: "PageSpeed перевірено",
 };
 
 // ─── English translations ────────────────────────────────────
@@ -387,6 +420,22 @@ const en: Translations = {
   results: "res.",
   formBadge: "Form",
   none: "—",
+  pageSpeed: "PageSpeed",
+  checkPageSpeed: "Check PageSpeed",
+  bulkPageSpeed: "Bulk PageSpeed",
+  bulkPageSpeedDesc: "Check PageSpeed for all leads with websites",
+  pageSpeedChecking: "Checking PageSpeed...",
+  pageSpeedScore: "Performance score",
+  pageSpeedFcp: "FCP",
+  pageSpeedLcp: "LCP",
+  pageSpeedTbt: "TBT",
+  pageSpeedCls: "CLS",
+  pageSpeedSi: "SI",
+  pageSpeedDiagnostics: "Recommendations",
+  pageSpeedError: "Check error",
+  pageSpeedNoResults: "No PageSpeed results",
+  pageSpeedProgress: "Checking PageSpeed",
+  pageSpeedDone: "PageSpeed check complete",
 };
 
 // ─── Russian translations (based on Ukrainian) ───────────────
@@ -512,6 +561,22 @@ const ru: Translations = {
   results: "рез.",
   formBadge: "Форма",
   none: "—",
+  pageSpeed: "PageSpeed",
+  checkPageSpeed: "Проверить PageSpeed",
+  bulkPageSpeed: "PageSpeed всех",
+  bulkPageSpeedDesc: "Проверка PageSpeed для всех лидов с сайтами",
+  pageSpeedChecking: "Проверка PageSpeed...",
+  pageSpeedScore: "Оценка производительности",
+  pageSpeedFcp: "FCP",
+  pageSpeedLcp: "LCP",
+  pageSpeedTbt: "TBT",
+  pageSpeedCls: "CLS",
+  pageSpeedSi: "SI",
+  pageSpeedDiagnostics: "Рекомендации",
+  pageSpeedError: "Ошибка проверки",
+  pageSpeedNoResults: "Результаты PageSpeed отсутствуют",
+  pageSpeedProgress: "Проверка PageSpeed",
+  pageSpeedDone: "PageSpeed проверено",
 };
 
 // ─── Translation maps ────────────────────────────────────────

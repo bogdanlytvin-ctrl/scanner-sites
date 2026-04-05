@@ -27,7 +27,7 @@ const KNOWN_CITIES = new Set([
   "дніпро", "dnipro", "dnepropetrovsk",
   "одеса", "odesa", "odessa",
   "харків", "kharkiv", "kharkov",
-  "запоріжжя", "zaporizhzhia", "zaporizhzhzhia", "zaporozhye",
+  "запоріжжя", "zaporizhzhia", "zaporozhye",
   "вінниця", "vinnitsa",
   "полтава", "poltava",
   "чернігів", "chernihiv",

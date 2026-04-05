@@ -8,7 +8,7 @@ import {
   ShieldOff, Monitor, MonitorX, Layout, Eye, DollarSign,
   Filter, StickyNote,
   AlertTriangle, Flame, ShieldCheck, PhoneCall, Send,
-  Star, StarOff, Settings, X, History, Trash2, ThumbsUp, ThumbsDown, Bot, Zap, RotateCcw,
+  Star, StarOff, Settings, X, History, Trash2, ThumbsUp, ThumbsDown, Bot, Zap, RotateCcw, Gauge,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,18 @@ import {
 } from "@/lib/scoring";
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
+
+// ─── PageSpeed types ─────────────────────────────────────
+interface PageSpeedResult {
+  performanceScore: number | null;
+  firstContentfulPaint: number | null;  // ms
+  largestContentfulPaint: number | null; // ms
+  totalBlockingTime: number | null; // ms
+  cumulativeLayoutShift: number | null; // decimal
+  speedIndex: number | null; // ms
+  diagnostics: string[];
+  error?: string;
+}
 
 // ─── Safe fetch helper ──────────────────────────────────────
 async function safeJsonFetch(url: string, options: RequestInit & { timeoutMs?: number }, errorMsg: string): Promise<any> {
@@ -156,6 +168,13 @@ export default function Home() {
 
   // Pagination
   const [visibleCount, setVisibleCount] = useState(20);
+
+  // PageSpeed
+  const [pageSpeedResults, setPageSpeedResults] = useState<Record<number, PageSpeedResult>>({});
+  const [psBulkChecking, setPsBulkChecking] = useState(false);
+  const [psBulkProgress, setPsBulkProgress] = useState(0);
+  const [psBulkTotal, setPsBulkTotal] = useState(0);
+  const [psSingleChecking, setPsSingleChecking] = useState<number | null>(null);
 
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -545,6 +564,117 @@ export default function Home() {
     }
   }, [handleSearch]);
 
+  // ─── Single PageSpeed check ──────────────────────────────
+  const checkSinglePageSpeed = useCallback(async (lead: LeadBusiness, idx: number) => {
+    if (!lead.website || lead.website === "N/A") return;
+    const urlToCheck = lead.finalUrl || lead.website;
+    setPsSingleChecking(idx);
+    try {
+      const result = await safeJsonFetch("/api/pagespeed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: urlToCheck, strategy: "mobile" }),
+        timeoutMs: 45000,
+      }, `PageSpeed error for ${lead.name}`);
+      setPageSpeedResults((prev) => ({
+        ...prev,
+        [idx]: {
+          performanceScore: result.performanceScore ?? null,
+          firstContentfulPaint: result.firstContentfulPaint ?? null,
+          largestContentfulPaint: result.largestContentfulPaint ?? null,
+          totalBlockingTime: result.totalBlockingTime ?? null,
+          cumulativeLayoutShift: result.cumulativeLayoutShift ?? null,
+          speedIndex: result.speedIndex ?? null,
+          diagnostics: result.diagnostics || [],
+          error: result.error,
+        },
+      }));
+    } catch (err) {
+      setPageSpeedResults((prev) => ({
+        ...prev,
+        [idx]: {
+          performanceScore: null,
+          firstContentfulPaint: null,
+          largestContentfulPaint: null,
+          totalBlockingTime: null,
+          cumulativeLayoutShift: null,
+          speedIndex: null,
+          diagnostics: [],
+          error: err instanceof Error ? err.message : t.pageSpeedError,
+        },
+      }));
+    } finally {
+      setPsSingleChecking(null);
+    }
+  }, [t.pageSpeedError]);
+
+  // ─── Bulk PageSpeed check ────────────────────────────────
+  const handleBulkPageSpeed = useCallback(async () => {
+    const leadsWithWebsites = leads
+      .map((l, i) => ({ lead: l, idx: i }))
+      .filter(({ lead }) => lead.website && lead.website !== "N/A");
+
+    if (leadsWithWebsites.length === 0) {
+      showToast(t.pageSpeedNoResults);
+      return;
+    }
+
+    setPsBulkChecking(true);
+    setPsBulkProgress(0);
+    setPsBulkTotal(leadsWithWebsites.length);
+
+    for (let i = 0; i < leadsWithWebsites.length; i++) {
+      const { lead, idx } = leadsWithWebsites[i];
+      setPsBulkProgress(i + 1);
+
+      const urlToCheck = lead.finalUrl || lead.website;
+      try {
+        const result = await safeJsonFetch("/api/pagespeed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: urlToCheck, strategy: "mobile" }),
+          timeoutMs: 45000,
+        }, `PageSpeed error for ${lead.name}`);
+
+        setPageSpeedResults((prev) => ({
+          ...prev,
+          [idx]: {
+            performanceScore: result.performanceScore ?? null,
+            firstContentfulPaint: result.firstContentfulPaint ?? null,
+            largestContentfulPaint: result.largestContentfulPaint ?? null,
+            totalBlockingTime: result.totalBlockingTime ?? null,
+            cumulativeLayoutShift: result.cumulativeLayoutShift ?? null,
+            speedIndex: result.speedIndex ?? null,
+            diagnostics: result.diagnostics || [],
+            error: result.error,
+          },
+        }));
+      } catch (err) {
+        setPageSpeedResults((prev) => ({
+          ...prev,
+          [idx]: {
+            performanceScore: null,
+            firstContentfulPaint: null,
+            largestContentfulPaint: null,
+            totalBlockingTime: null,
+            cumulativeLayoutShift: null,
+            speedIndex: null,
+            diagnostics: [],
+            error: err instanceof Error ? err.message : t.pageSpeedError,
+          },
+        }));
+      }
+
+      // 3-second delay between checks to avoid rate limits
+      if (i < leadsWithWebsites.length - 1) {
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+
+    setPsBulkChecking(false);
+    showToast(`${t.pageSpeedDone} (${leadsWithWebsites.length})`);
+  }, [leads, showToast, t.pageSpeedError, t.pageSpeedNoResults, t.pageSpeedDone]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       {/* Toast */}
@@ -598,6 +728,17 @@ export default function Home() {
                     <Flame className="w-4 h-4" /><span className="hidden sm:inline ml-1">HOT ({hotCount})</span>
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleBulkPageSpeed}
+                  disabled={psBulkChecking}
+                  title={t.bulkPageSpeedDesc}
+                  className="border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                >
+                  {psBulkChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
+                  <span className="hidden sm:inline ml-1">{t.pageSpeed}</span>
+                </Button>
               </>
             )}
           </div>
@@ -788,6 +929,20 @@ export default function Home() {
           </CardContent></Card>
         )}
 
+        {/* PageSpeed Bulk Progress */}
+        {psBulkChecking && (
+          <Card className="shadow-md border-0 border-l-4 border-l-blue-500"><CardContent className="py-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-medium flex items-center gap-1.5">
+                <Gauge className="w-4 h-4 text-blue-600" />
+                {t.pageSpeedProgress}: {psBulkProgress}/{psBulkTotal}
+              </span>
+              <span className="text-sm text-muted-foreground">{psBulkTotal > 0 ? Math.round((psBulkProgress / psBulkTotal) * 100) : 0}%</span>
+            </div>
+            <Progress value={psBulkTotal > 0 ? (psBulkProgress / psBulkTotal) * 100 : 0} className="h-2" />
+          </CardContent></Card>
+        )}
+
         {/* Summary Dashboard */}
         {leads.length > 0 && phase === "done" && (
           <div className="space-y-3">
@@ -963,6 +1118,21 @@ export default function Home() {
                             {t.noSiteBestProspect}
                           </div>
                         )}
+
+                        {/* PageSpeed Check Button */}
+                        {lead.website !== "N/A" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => { e.stopPropagation(); checkSinglePageSpeed(lead, realIdx); }}
+                            disabled={psSingleChecking === realIdx || psBulkChecking}
+                            className="w-full text-xs border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                          >
+                            {psSingleChecking === realIdx
+                              ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />{t.pageSpeedChecking}</>
+                              : <><Gauge className="w-3.5 h-3.5 mr-1.5" />{t.checkPageSpeed}</>}
+                          </Button>
+                        )}
                       </div>
 
                       {/* RIGHT: Details */}
@@ -1041,6 +1211,91 @@ export default function Home() {
                           </div>
                         )}
 
+                        {/* PageSpeed Results */}
+                        {pageSpeedResults[realIdx] && (() => {
+                          const ps = pageSpeedResults[realIdx];
+                          const scoreColor = ps.performanceScore !== null
+                            ? ps.performanceScore >= 90 ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800"
+                              : ps.performanceScore >= 50 ? "text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800"
+                              : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800"
+                            : "";
+
+                          const formatMs = (val: number | null) => {
+                            if (val === null) return "—";
+                            if (val >= 1000) return `${(val / 1000).toFixed(1)}s`;
+                            return `${Math.round(val)}ms`;
+                          };
+
+                          return (
+                            <div className={`rounded-lg p-3 border ${scoreColor || "bg-muted/50"}`}>
+                              <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+                                <Gauge className="w-3.5 h-3.5" /> {t.pageSpeedScore}
+                              </h4>
+                              {ps.error ? (
+                                <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                  <span>{ps.error}</span>
+                                </div>
+                              ) : (
+                                <>
+                                  {/* Score Badge */}
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full font-bold text-lg border-2 ${
+                                      ps.performanceScore !== null
+                                        ? ps.performanceScore >= 90 ? "border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/50"
+                                          : ps.performanceScore >= 50 ? "border-orange-500 text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/50"
+                                          : "border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/50"
+                                        : "border-muted text-muted-foreground bg-muted/50"
+                                    }`}>
+                                      {ps.performanceScore !== null ? ps.performanceScore : "—"}
+                                    </div>
+                                    {ps.performanceScore !== null && (
+                                      <span className="text-[10px] text-muted-foreground">/ 100</span>
+                                    )}
+                                  </div>
+
+                                  {/* Core Web Vitals Grid */}
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
+                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedFcp}</div>
+                                      <div className="text-xs font-semibold">{formatMs(ps.firstContentfulPaint)}</div>
+                                    </div>
+                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
+                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedLcp}</div>
+                                      <div className="text-xs font-semibold">{formatMs(ps.largestContentfulPaint)}</div>
+                                    </div>
+                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
+                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedTbt}</div>
+                                      <div className="text-xs font-semibold">{formatMs(ps.totalBlockingTime)}</div>
+                                    </div>
+                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
+                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedCls}</div>
+                                      <div className="text-xs font-semibold">{ps.cumulativeLayoutShift !== null ? ps.cumulativeLayoutShift.toFixed(2) : "—"}</div>
+                                    </div>
+                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5 col-span-2">
+                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedSi}</div>
+                                      <div className="text-xs font-semibold">{formatMs(ps.speedIndex)}</div>
+                                    </div>
+                                  </div>
+
+                                  {/* Diagnostics */}
+                                  {ps.diagnostics.length > 0 && (
+                                    <div className="mt-2 space-y-1">
+                                      <div className="text-[10px] font-medium text-muted-foreground">{t.pageSpeedDiagnostics}:</div>
+                                      {ps.diagnostics.map((d, di) => (
+                                        <div key={di} className="flex items-start gap-1 text-[10px] text-muted-foreground">
+                                          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0 text-amber-500" />
+                                          <span>{d}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {/* Price estimation */}
                         <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-900/50">
                           <h4 className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
@@ -1090,9 +1345,9 @@ export default function Home() {
                             <PhoneCall className="w-3.5 h-3.5" /> {t.contacts}
                           </h4>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <ContactField icon={<Phone className="w-3.5 h-3.5" />} label={t.phone} value={lead.phone} copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} />
-                            <ContactField icon={<Mail className="w-3.5 h-3.5" />} label={t.email} value={lead.email} copyable={!!lead.email} CopyBtn={CopyBtn} />
-                            <ContactField icon={<MapPin className="w-3.5 h-3.5" />} label={t.address} value={lead.address} copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} />
+                            <ContactField icon={<Phone className="w-3.5 h-3.5" />} label={t.phone} value={lead.phone} copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
+                            <ContactField icon={<Mail className="w-3.5 h-3.5" />} label={t.email} value={lead.email} copyable={!!lead.email} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
+                            <ContactField icon={<MapPin className="w-3.5 h-3.5" />} label={t.address} value={lead.address} copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
                             <div className="flex items-start gap-2">
                               <Globe className="w-3.5 h-3.5 mt-0.5 text-muted-foreground" />
                               <div className="min-w-0 flex-1">
@@ -1393,9 +1648,10 @@ function MiniStat({ label, value, color }: { label: string; value: number | stri
   );
 }
 
-function ContactField({ icon, label, value, copyable, CopyBtn }: {
+function ContactField({ icon, label, value, copyable, CopyBtn, notAvailableText }: {
   icon: React.ReactNode; label: string; value: string;
   copyable: boolean; CopyBtn: (props: { text: string; label: string }) => React.ReactNode | null;
+  notAvailableText?: string;
 }) {
   return (
     <div className="flex items-start gap-2">
@@ -1404,7 +1660,7 @@ function ContactField({ icon, label, value, copyable, CopyBtn }: {
         <div className="text-[10px] text-muted-foreground">{label}</div>
         {value && value !== "N/A" ? (
           <span className="text-xs break-all">{value} {copyable && <CopyBtn text={value} label={label} />}</span>
-        ) : <span className="text-xs text-muted-foreground italic">{t.notAvailable}</span>}
+        ) : <span className="text-xs text-muted-foreground italic">{notAvailableText || "—"}</span>}
       </div>
     </div>
   );

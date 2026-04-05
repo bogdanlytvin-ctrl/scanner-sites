@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { LeadBusiness } from "@/lib/scoring";
+import type { LeadBusiness } from "@/lib/scoring";
 import { getIssuesText, estimatePrice } from "@/lib/outreach-templates";
 
 export const maxDuration = 30; // Excel generation can be slow
