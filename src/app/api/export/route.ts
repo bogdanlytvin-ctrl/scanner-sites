@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LeadBusiness } from "@/lib/scoring";
+import { getIssuesText, estimatePrice } from "@/lib/outreach-templates";
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,7 +32,6 @@ export async function POST(request: NextRequest) {
 }
 
 async function generateExcel(leads: LeadBusiness[]) {
-  // Dynamic import for exceljs (only on server)
   const ExcelJS = await import("exceljs");
 
   const workbook = new ExcelJS.Workbook();
@@ -50,10 +50,18 @@ async function generateExcel(leads: LeadBusiness[]) {
     "Opening Hours",
     "Site Year",
     "Mobile Friendly",
+    "SSL",
     "Score",
+    "Design Score",
+    "Technologies",
+    "Issues",
+    "Status",
+    "Notes",
+    "Estimated Price",
+    "Price Note",
+    "Contact Date",
   ];
 
-  // Header row
   const headerRow = worksheet.addRow(headers);
   headerRow.font = { bold: true, color: { argb: "FFFFFF" }, size: 11 };
   headerRow.fill = {
@@ -71,7 +79,6 @@ async function generateExcel(leads: LeadBusiness[]) {
     };
   });
 
-  // Data rows
   leads.forEach((lead, idx) => {
     const score = lead.score;
     let fill: ExcelJS.FillPattern;
@@ -96,6 +103,9 @@ async function generateExcel(leads: LeadBusiness[]) {
       };
     }
 
+    const issuesText = getIssuesText(lead);
+    const price = estimatePrice(lead);
+
     const row = worksheet.addRow([
       idx + 1,
       lead.name,
@@ -109,7 +119,16 @@ async function generateExcel(leads: LeadBusiness[]) {
       lead.openingHours || "",
       lead.copyrightYear ?? "N/A",
       lead.isMobileFriendly ? "Yes" : "No",
+      lead.hasSsl ? "Yes" : "No",
       lead.score,
+      lead.designScore,
+      lead.technologies.join("; "),
+      issuesText.replace(/\n/g, " | "),
+      lead.status || "new",
+      lead.notes || "",
+      `$${price.min}-$${price.max}`,
+      price.note,
+      lead.contactDate || "",
     ]);
 
     const fontColor =
@@ -129,7 +148,6 @@ async function generateExcel(leads: LeadBusiness[]) {
     });
   });
 
-  // Column widths
   worksheet.columns = [
     { width: 5 },
     { width: 28 },
@@ -144,9 +162,17 @@ async function generateExcel(leads: LeadBusiness[]) {
     { width: 10 },
     { width: 14 },
     { width: 8 },
+    { width: 8 },
+    { width: 14 },
+    { width: 20 },
+    { width: 40 },
+    { width: 14 },
+    { width: 30 },
+    { width: 16 },
+    { width: 30 },
+    { width: 14 },
   ];
 
-  // Generate buffer
   const buffer = await workbook.xlsx.writeBuffer();
 
   return new NextResponse(Buffer.from(buffer), {
@@ -161,15 +187,31 @@ async function generateExcel(leads: LeadBusiness[]) {
 async function generateCSV(leads: LeadBusiness[]) {
   const headers = [
     "Name", "Phone", "Email", "Website", "Facebook", "Instagram", "Telegram",
-    "Address", "Opening Hours", "Site Year", "Mobile Friendly", "Score",
+    "Address", "Opening Hours", "Site Year", "Mobile Friendly", "SSL",
+    "Score", "Design Score", "Technologies", "Issues",
+    "Status", "Notes", "Estimated Price", "Price Note", "Contact Date",
   ];
 
-  const rows = leads.map((lead) => [
-    lead.name, lead.phone, lead.email || "", lead.website,
-    lead.facebook || "", lead.instagram || "", lead.telegram || "",
-    lead.address, lead.openingHours || "",
-    lead.copyrightYear ?? "", lead.isMobileFriendly ? "Yes" : "No", lead.score,
-  ]);
+  const rows = leads.map((lead) => {
+    const issuesText = getIssuesText(lead);
+    const price = estimatePrice(lead);
+    return [
+      lead.name, lead.phone, lead.email || "", lead.website,
+      lead.facebook || "", lead.instagram || "", lead.telegram || "",
+      lead.address, lead.openingHours || "",
+      lead.copyrightYear ?? "",
+      lead.isMobileFriendly ? "Yes" : "No",
+      lead.hasSsl ? "Yes" : "No",
+      lead.score, lead.designScore,
+      lead.technologies.join("; "),
+      issuesText.replace(/\n/g, " | "),
+      lead.status || "new",
+      lead.notes || "",
+      `$${price.min}-$${price.max}`,
+      price.note,
+      lead.contactDate || "",
+    ];
+  });
 
   const csvContent = [
     headers.join(","),

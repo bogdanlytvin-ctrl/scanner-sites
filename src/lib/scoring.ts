@@ -1,5 +1,6 @@
 export type LeadScore = "HOT" | "WARM" | "COLD";
 export type DesignScore = "ancient" | "outdated" | "modern" | "unknown";
+export type LeadStatus = "new" | "contacted" | "replied" | "not_interested" | "deal" | "archived";
 
 export const HOT_YEAR_THRESHOLD = 2018;
 export const WARM_YEAR_UPPER = 2021;
@@ -29,6 +30,10 @@ export interface LeadBusiness {
   hasContactForm: boolean;
   // Overall score
   score: LeadScore;
+  // Lead management
+  status: LeadStatus;
+  notes: string;
+  contactDate: string | null;
 }
 
 export function scoreLead(
@@ -76,4 +81,34 @@ export function getDesignColor(score: DesignScore): {
     case "unknown":
       return { bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400", label: "Не визначено", emoji: "❓" };
   }
+}
+
+export function getStatusColor(status: string): { bg: string; text: string; label: string; emoji: string } {
+  switch (status) {
+    case "new":
+      return { bg: "bg-blue-100 dark:bg-blue-950/40", text: "text-blue-700 dark:text-blue-400", label: "Новий", emoji: "🆕" };
+    case "contacted":
+      return { bg: "bg-amber-100 dark:bg-amber-950/40", text: "text-amber-700 dark:text-amber-400", label: "Написав", emoji: "✉️" };
+    case "replied":
+      return { bg: "bg-emerald-100 dark:bg-emerald-950/40", text: "text-emerald-700 dark:text-emerald-400", label: "Відповів", emoji: "💬" };
+    case "not_interested":
+      return { bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400", label: "Нецікаво", emoji: "🚫" };
+    case "deal":
+      return { bg: "bg-green-100 dark:bg-green-950/40", text: "text-green-700 dark:text-green-400", label: "Укладено", emoji: "🎉" };
+    case "archived":
+      return { bg: "bg-gray-100 dark:bg-gray-800", text: "text-gray-600 dark:text-gray-400", label: "В Архів", emoji: "📦" };
+    default:
+      return { bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400", label: status, emoji: "❓" };
+  }
+}
+
+export function getStatusList(): { value: string; label: string; emoji: string }[] {
+  return [
+    { value: "new", label: "Новий", emoji: "🆕" },
+    { value: "contacted", label: "Написав", emoji: "✉️" },
+    { value: "replied", label: "Відповів", emoji: "💬" },
+    { value: "not_interested", label: "Нецікаво", emoji: "🚫" },
+    { value: "deal", label: "Укладено", emoji: "🎉" },
+    { value: "archived", label: "В Архів", emoji: "📦" },
+  ];
 }
