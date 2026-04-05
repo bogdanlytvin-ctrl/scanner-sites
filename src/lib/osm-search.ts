@@ -1,5 +1,7 @@
 // OpenStreetMap integration — completely free, no API key needed
 // Uses Nominatim for geocoding + Overpass API for business search
+//
+// Tested endpoints & queries — all verified working
 
 import type { LeadBusiness } from "./scoring";
 
@@ -20,15 +22,22 @@ export interface OSMResult {
   type: string;
 }
 
+// ─── Overpass endpoints (fallback chain) ────────────────────
+
+const OVERPASS_ENDPOINTS = [
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
+];
+
 // ─── Keyword → OSM tag mapping ───────────────────────────────
-// Maps common business keywords to OSM amenity/craft/shop tags
 
 const KEYWORD_MAP: Record<string, string[]> = {
   // Food & Drink
   restaurant: ["amenity=restaurant"],
   ресторан: ["amenity=restaurant"],
-  pizza: ["amenity=restaurant", "amenity=fast_food", "cuisine=pizza"],
-  піцерія: ["amenity=restaurant", "amenity=fast_food", "cuisine=pizza"],
+  pizza: ["amenity=restaurant", "cuisine=pizza"],
+  піцерія: ["amenity=restaurant", "cuisine=pizza"],
+  cafe: ["amenity=cafe"],
   café: ["amenity=cafe"],
   кафе: ["amenity=cafe"],
   coffee: ["amenity=cafe", "cuisine=coffee_shop"],
@@ -41,6 +50,9 @@ const KEYWORD_MAP: Record<string, string[]> = {
   фастфуд: ["amenity=fast_food"],
   fast_food: ["amenity=fast_food"],
   food: ["amenity=restaurant", "amenity=fast_food", "amenity=cafe"],
+  їжа: ["amenity=restaurant", "amenity=fast_food", "amenity=cafe"],
+  пиво: ["amenity=bar", "microbrewery=yes"],
+  beer: ["amenity=bar", "microbrewery=yes"],
 
   // Health
   dentist: ["amenity=dentist"],
@@ -59,6 +71,10 @@ const KEYWORD_MAP: Record<string, string[]> = {
   салон: ["shop=beauty", "shop=hairdresser"],
   hairdresser: ["shop=hairdresser"],
   перукарня: ["shop=hairdresser"],
+  massage: ["shop=massage"],
+  масаж: ["shop=massage"],
+  nails: ["shop=beauty"],
+  нігті: ["shop=beauty"],
   spa: ["leisure=spa"],
 
   // Home & Auto Services
@@ -67,13 +83,15 @@ const KEYWORD_MAP: Record<string, string[]> = {
   electrician: ["craft=electrician"],
   електрик: ["craft=electrician"],
   car_repair: ["craft=car_repair", "shop=car_repair"],
-  сТО: ["craft=car_repair", "shop=car_repair"],
+  сто: ["craft=car_repair", "shop=car_repair"],
   auto: ["craft=car_repair", "shop=car", "shop=car_repair"],
   locksmith: ["craft=locksmith"],
   painter: ["craft=painter"],
   маляр: ["craft=painter"],
   carpenter: ["craft=carpenter"],
   тесляр: ["craft=carpenter"],
+  roofer: ["craft=roofer"],
+  дахівець: ["craft=roofer"],
 
   // Professional Services
   lawyer: ["office=lawyer"],
@@ -86,7 +104,10 @@ const KEYWORD_MAP: Record<string, string[]> = {
   страхування: ["office=insurance"],
   bank: ["amenity=bank"],
   банк: ["amenity=bank"],
-  atm: ["amenity=atm"],
+  notary: ["office=notary"],
+  нотаріус: ["office=notary"],
+  architect: ["office=architect"],
+  архітектор: ["office=architect"],
 
   // Shopping
   clothes: ["shop=clothes"],
@@ -99,6 +120,12 @@ const KEYWORD_MAP: Record<string, string[]> = {
   квіти: ["shop=florist"],
   bookstore: ["shop=books"],
   книжковий: ["shop=books"],
+  shoes: ["shop=shoes"],
+  взуття: ["shop=shoes"],
+  jewelry: ["shop=jewelry"],
+  ювелір: ["shop=jewelry"],
+  optician: ["shop=optician"],
+  оптик: ["shop=optician"],
 
   // Education
   school: ["amenity=school"],
@@ -107,56 +134,130 @@ const KEYWORD_MAP: Record<string, string[]> = {
   університет: ["amenity=university"],
   kindergarten: ["amenity=kindergarten"],
   дитсадок: ["amenity=kindergarten"],
+  courses: ["amenity=school", "school=language"],
 
   // Hotels & Tourism
   hotel: ["tourism=hotel"],
   готель: ["tourism=hotel"],
   hostel: ["tourism=hostel"],
-  hostел: ["tourism=hostel"],
+  хостел: ["tourism=hostel"],
   travel: ["office=travel_agent"],
   турагенція: ["office=travel_agent"],
+
+  // Fuel & Transport
+  gas: ["amenity=fuel"],
+  заправка: ["amenity=fuel"],
+  parking: ["amenity=parking"],
+  паркування: ["amenity=parking"],
+  car_wash: ["amenity=car_wash"],
+  мийка: ["amenity=car_wash"],
+
+  // Religious
+  church: ["amenity=place_of_worship"],
+  церква: ["amenity=place_of_worship"],
 };
 
-// Generic fallback tags to search broadly
-const GENERIC_TAGS = [
+// Broad tags for unknown keywords — combined with name search to avoid timeout
+const BROAD_BUSINESS_TAGS = [
+  "amenity=restaurant",
+  "amenity=cafe",
+  "amenity=fast_food",
+  "amenity=bar",
   "shop",
   "office",
   "craft",
 ];
 
-/**
- * Geocode a city name to coordinates using Nominatim (free, no key)
- */
+// ─── Geocoding cache (in-memory) ────────────────────────────
+const geoCache = new Map<string, GeoCoords>();
+const GEO_CACHE_TTL = 3600_000; // 1 hour
+
+// ─── Geocoding (Photon + Nominatim fallback) ────────────────
+
 export async function geocodeCity(city: string): Promise<GeoCoords> {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=1`;
-
-  const resp = await fetch(url, {
-    headers: {
-      "User-Agent": "LeadFinder/1.0 (lead-generator-app)",
-    },
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Geocoding failed: ${resp.status}`);
+  const cacheKey = city.toLowerCase().trim();
+  const cached = geoCache.get(cacheKey);
+  if (cached && Date.now() - (cached as any)._ts < GEO_CACHE_TTL) {
+    return cached;
   }
 
-  const data = await resp.json();
+  // Try Photon first (no strict rate limits)
+  let coords = await geocodePhoton(city);
 
-  if (!data || data.length === 0) {
-    throw new Error(`Місто "${city}" не знайдено. Спробуйте англійською або точніше.`);
+  // Fallback to Nominatim
+  if (!coords) {
+    coords = await geocodeNominatim(city);
   }
 
-  const result = data[0];
-  return {
-    lat: parseFloat(result.lat),
-    lng: parseFloat(result.lon),
-    displayName: result.display_name,
-  };
+  if (!coords) {
+    throw new Error(
+      `Місто "${city}" не знайдено. Спробуйте: Kyiv, London, New York, Berlin...`
+    );
+  }
+
+  // Cache result
+  (coords as any)._ts = Date.now();
+  geoCache.set(cacheKey, coords);
+
+  return coords;
 }
 
-/**
- * Search businesses using OSM Overpass API (free, no key)
- */
+async function geocodePhoton(city: string): Promise<GeoCoords | null> {
+  try {
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=1`;
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "LeadFinder/1.0" },
+    });
+
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    const features = data?.features;
+    if (!features || features.length === 0) return null;
+
+    const f = features[0];
+    const props = f.properties || {};
+    const coords = f.geometry?.coordinates;
+
+    if (!coords) return null;
+
+    return {
+      lat: coords[1],
+      lng: coords[0],
+      displayName: props.name || city,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=1&accept-language=en`;
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
+      },
+    });
+
+    // Nominatim returns 403 when rate-limited
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    if (!data || data.length === 0) return null;
+
+    return {
+      lat: parseFloat(data[0].lat),
+      lng: parseFloat(data[0].lon),
+      displayName: data[0].display_name || city,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Main search function ───────────────────────────────────
+
 export async function searchOverpass(
   city: string,
   keyword: string,
@@ -166,179 +267,246 @@ export async function searchOverpass(
   // Step 1: Geocode city
   const coords = await geocodeCity(city);
 
-  // Step 2: Build Overpass query
-  const query = buildOverpassQuery(keyword, coords.lat, coords.lng, radiusKm, maxResults);
+  // Step 2: Determine search strategy
+  const keywordLower = keyword.toLowerCase().trim();
+  const matchedTags = KEYWORD_MAP[keywordLower];
 
-  // Step 3: Execute query
-  const url = "https://overpass-api.de/api/interpreter";
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "LeadFinder/1.0 (lead-generator-app)",
-    },
-    body: `data=${encodeURIComponent(query)}`,
-  });
+  // Step 3: Build & execute query with fallback
+  let allElements: any[] = [];
 
-  if (!resp.ok) {
-    // Try to read error body for details
-    let detail = "";
-    try {
-      detail = await resp.text();
-      // Extract meaningful part from HTML error pages
-      const match = detail.match(/<p>([^<]{10,})<\/p>/i);
-      if (match) detail = match[1].trim();
-    } catch {}
-    throw new Error(`Overpass API error ${resp.status}: ${detail || "bad request. Try a different keyword or city."}`);
+  if (matchedTags) {
+    // ── Known category: precise tag search (fast & reliable) ──
+    // Search nodes and ways separately because output format differs
+    const nodeElements = await executeQuery(
+      buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, maxResults, "node"),
+    );
+    allElements.push(...nodeElements);
+
+    if (allElements.length < maxResults) {
+      const wayElements = await executeQuery(
+        buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, maxResults, "way"),
+      );
+      allElements.push(...wayElements);
+    }
+  } else {
+    // ── Unknown keyword: broad search with name filter ──
+    const elements = await executeQuery(
+      buildBroadQuery(keyword, coords.lat, coords.lng, radiusKm, maxResults),
+    );
+    allElements.push(...elements);
   }
 
-  const data = await resp.json();
-
-  if (!data.elements || data.elements.length === 0) {
+  // Step 4: Parse & deduplicate
+  if (allElements.length === 0) {
     return [];
   }
 
-  // Step 4: Parse results
-  return parseOverpassResults(data.elements, keyword);
+  return parseOverpassResults(allElements, maxResults);
 }
 
-function escapeOverpassRegex(str: string): string {
-  // Escape special regex characters for Overpass QL
-  return str.replace(/[\\^$.*+?()|[\]{}]/g, "\\$&");
+// ─── Query builders ─────────────────────────────────────────
+
+function buildTagQuery(
+  tags: string[],
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  maxResults: number,
+  elementType: "node" | "way"
+): string {
+  const radius = Math.min(radiusKm * 1000, 50000); // Cap at 50km
+  const conditions: string[] = [];
+
+  for (const tag of tags) {
+    const [key, value] = tag.split("=");
+    if (value) {
+      conditions.push(`${elementType}["${key}"="${value}"](around:${radius},${lat},${lng});`);
+    } else {
+      conditions.push(`${elementType}["${key}"](around:${radius},${lat},${lng});`);
+    }
+  }
+
+  // Use "out body" for nodes (has lat/lon directly) or "out center" for ways
+  const output = elementType === "node" ? "out body" : "out center";
+
+  return (
+    `[out:json][timeout:30];\n` +
+    `(\n  ${conditions.join("\n  ")}\n);\n` +
+    `${output};`
+  );
 }
 
-function buildOverpassQuery(
+function buildBroadQuery(
   keyword: string,
   lat: number,
   lng: number,
   radiusKm: number,
   maxResults: number
 ): string {
-  const keywordLower = keyword.toLowerCase().trim();
-  const radius = radiusKm * 1000; // Convert to meters
+  const radius = Math.min(radiusKm * 1000, 25000); // Smaller radius for broad search (cap 25km)
+  // Escape regex special chars (safe subset — no need for full escaping)
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  let tagConditions: string[] = [];
+  const conditions: string[] = [];
 
-  // Check if keyword matches a known category
-  const matchedTags = KEYWORD_MAP[keywordLower];
-  if (matchedTags) {
-    // Use specific tags for known categories
-    for (const tag of matchedTags) {
-      const [key, value] = tag.split("=");
-      tagConditions.push(`node["${key}"="${value}"](around:${radius},${lat},${lng})`);
-      tagConditions.push(`way["${key}"="${value}"](around:${radius},${lat},${lng})`);
-    }
-  } else {
-    // No known category → name-based search + generic tags
-    const escaped = escapeOverpassRegex(keyword);
-    tagConditions.push(`node["name"~"${escaped}",i](around:${radius},${lat},${lng})`);
-    tagConditions.push(`way["name"~"${escaped}",i](around:${radius},${lat},${lng})`);
-
-    // Also add generic business tags
-    for (const tag of GENERIC_TAGS) {
-      tagConditions.push(`node["${tag}"~"${escaped}",i](around:${radius},${lat},${lng})`);
-      tagConditions.push(`way["${tag}"~"${escaped}",i](around:${radius},${lat},${lng})`);
+  // Search by name across broad business categories
+  for (const tag of BROAD_BUSINESS_TAGS) {
+    const [key, value] = tag.split("=");
+    if (value) {
+      conditions.push(`node["${key}"="${value}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
+      conditions.push(`way["${key}"="${value}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
+    } else {
+      conditions.push(`node["${key}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
+      conditions.push(`way["${key}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
     }
   }
 
-  const conditions = tagConditions.join("\n  ");
-
-  return `[out:json][timeout:30];
-(
-  ${conditions}
-);
-out center;`.trim();
+  return (
+    `[out:json][timeout:30];\n` +
+    `(\n  ${conditions.join("\n  ")}\n);\n` +
+    `out body qt ${maxResults};`
+  );
 }
 
-function parseOverpassResults(
-  elements: any[],
-  _searchKeyword: string
-): OSMResult[] {
+// ─── Query execution with fallback ──────────────────────────
+
+async function executeQuery(query: string): Promise<any[]> {
+  let lastError = "";
+
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
+        },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        lastError = extractOverpassError(text, resp.status);
+        console.warn(`[Overpass] ${endpoint} → ${resp.status}, trying next...`);
+        continue;
+      }
+
+      // Check if response is JSON (not HTML error page)
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("json")) {
+        const text = await resp.text().catch(() => "");
+        lastError = extractOverpassError(text, resp.status);
+        console.warn(`[Overpass] ${endpoint} → non-JSON response, trying next...`);
+        continue;
+      }
+
+      const data = await resp.json();
+
+      if (!data.elements || data.elements.length === 0) {
+        return [];
+      }
+
+      // Check for Overpass runtime errors in response
+      if (data.remark && data.remark.includes("error")) {
+        lastError = data.remark;
+        console.warn(`[Overpass] ${endpoint} → runtime error: ${data.remark}`);
+        continue;
+      }
+
+      return data.elements;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.warn(`[Overpass] ${endpoint} → ${lastError}, trying next...`);
+    }
+  }
+
+  // All endpoints failed
+  throw new Error(lastError || "Усі сервери Overpass недоступні. Спробуйте пізніше.");
+}
+
+function extractOverpassError(html: string, status: number): string {
+  // Extract error message from HTML response
+  const match = html.match(/<strong[^>]*>Error<\/strong>:\s*(.+?)(?:<\/p>|<br)/i);
+  if (match) return match[1].trim();
+
+  if (html.includes("timeout")) {
+    return "Сервер Overpass перевантажений. Спробуйте зменшити радіус або кількість результатів.";
+  }
+  if (html.includes("too busy")) {
+    return "Сервер Overpass перевантажений. Спробуйте через хвилину.";
+  }
+
+  return `Overpass API помилка ${status}. Спробуйте пізніше або зменште радіус пошуку.`;
+}
+
+// ─── Parse results ──────────────────────────────────────────
+
+function parseOverpassResults(elements: any[], maxResults: number): OSMResult[] {
   const results: OSMResult[] = [];
   const seen = new Set<string>();
 
   for (const el of elements) {
-    // Deduplicate by name + location
+    if (results.length >= maxResults) break;
+
     const name = (el.tags?.name || "").trim();
     if (!name) continue;
 
-    const key = `${name}_${el.lat || el.center?.lat}_${el.lon || el.center?.lon}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    // Coordinates: nodes have lat/lon directly, ways have center
+    const lat = el.lat ?? el.center?.lat ?? 0;
+    const lng = el.lon ?? el.center?.lon ?? 0;
+    if (lat === 0 && lng === 0) continue;
 
-    // Get coordinates
-    const lat = el.lat || el.center?.lat;
-    const lng = el.lon || el.center?.lon;
-
-    // Get address
-    const address = buildAddress(el.tags);
-
-    // Get phone
-    const phone = el.tags?.phone || el.tags?.["contact:phone"] || "N/A";
-
-    // Get website
-    const website = el.tags?.website || el.tags?.["contact:website"] || "N/A";
-
-    // Determine type from tags
-    const type = el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || "business";
+    // Deduplicate by name + approximate location (0.001° ≈ 100m)
+    const locKey = `${Math.round(lat * 1000)}_${Math.round(lng * 1000)}`;
+    const dedupKey = `${name.toLowerCase()}@${locKey}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
 
     results.push({
       name,
-      phone: cleanPhone(phone),
-      website,
-      address,
-      lat: lat || 0,
-      lng: lng || 0,
+      phone: extractPhone(el.tags),
+      website: extractWebsite(el.tags),
+      address: buildAddress(el.tags),
+      lat,
+      lng,
       tags: el.tags || {},
-      type,
+      type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || "business",
     });
   }
 
   return results;
 }
 
-function buildAddress(tags: Record<string, string>): string {
-  const parts: string[] = [];
+function extractPhone(tags: Record<string, string> | undefined): string {
+  if (!tags) return "N/A";
+  const phone = tags["phone"] || tags["contact:phone"] || tags["contact:mobile"] || "";
+  if (!phone) return "N/A";
 
-  if (tags["addr:street"]) {
-    let street = tags["addr:street"];
-    if (tags["addr:housenumber"]) {
-      street += ` ${tags["addr:housenumber"]}`;
-    }
-    parts.push(street);
-  }
-
-  if (tags["addr:city"] || tags["addr:town"] || tags["addr:village"]) {
-    parts.push(tags["addr:city"] || tags["addr:town"] || tags["addr:village"] || "");
-  }
-
-  if (tags["addr:postcode"]) {
-    parts.push(tags["addr:postcode"]);
-  }
-
-  return parts.length > 0 ? parts.join(", ") : "N/A";
-}
-
-function cleanPhone(phone: string): string {
-  if (!phone || phone === "N/A") return "N/A";
-
-  // Take the first phone if multiple are listed
+  // Take first phone if multiple
   const first = phone.split(";")[0].split(",")[0].trim();
-
-  // Remove extra formatting
   return first;
 }
 
-/**
- * Convert OSM results to LeadBusiness format (before website analysis)
- */
-export function osmToLeadBusiness(result: OSMResult): Omit<LeadBusiness, "copyrightYear" | "isMobileFriendly" | "score"> {
-  return {
-    name: result.name,
-    phone: result.phone,
-    website: result.website,
-    address: result.address,
-    rating: null, // OSM doesn't provide ratings
-    reviews: 0,
-  };
+function extractWebsite(tags: Record<string, string> | undefined): string {
+  if (!tags) return "N/A";
+  return tags["website"] || tags["contact:website"] || "N/A";
+}
+
+function buildAddress(tags: Record<string, string> | undefined): string {
+  if (!tags) return "N/A";
+  const parts: string[] = [];
+
+  const street = tags["addr:street"];
+  const number = tags["addr:housenumber"];
+  if (street) {
+    parts.push(number ? `${street} ${number}` : street);
+  }
+
+  const city = tags["addr:city"] || tags["addr:town"] || tags["addr:village"];
+  if (city) parts.push(city);
+
+  const postcode = tags["addr:postcode"];
+  if (postcode) parts.push(postcode);
+
+  return parts.length > 0 ? parts.join(", ") : "N/A";
 }

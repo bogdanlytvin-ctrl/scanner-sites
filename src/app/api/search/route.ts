@@ -4,20 +4,29 @@ import { searchOverpass } from "@/lib/osm-search";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { city, query, maxResults = 20 } = body;
+    const { city, query, maxResults = 20, radius = 15 } = body;
 
     if (!city || !query) {
       return NextResponse.json(
-        { error: "City and query are required" },
+        { error: "Вкажіть місто та ключове слово" },
         { status: 400 }
       );
     }
 
-    // Search using OpenStreetMap (completely free, no API key)
-    const results = await searchOverpass(city, query, maxResults);
+    // Normalize inputs
+    const trimmedCity = String(city).trim();
+    const trimmedQuery = String(query).trim();
+    const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
+    const parsedRadius = Math.min(Math.max(parseInt(radius) || 15, 1), 100);
 
-    // Convert to standard format
-    const businesses = results.slice(0, maxResults).map((r) => ({
+    const results = await searchOverpass(
+      trimmedCity,
+      trimmedQuery,
+      parsedMax,
+      parsedRadius
+    );
+
+    const businesses = results.slice(0, parsedMax).map((r) => ({
       name: r.name,
       phone: r.phone,
       website: r.website,
@@ -32,15 +41,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       businesses,
       total: businesses.length,
-      query: `${query} in ${city}`,
-      source: "OpenStreetMap",
+      query: `${trimmedQuery} in ${trimmedCity}`,
+      source: "OpenStreetMap (Overpass)",
     });
   } catch (error) {
-    console.error("Search API error:", error);
-    const message = error instanceof Error ? error.message : "Internal server error";
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
+    console.error("[Search API]", error);
+    const message =
+      error instanceof Error ? error.message : "Невідома помилка";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
