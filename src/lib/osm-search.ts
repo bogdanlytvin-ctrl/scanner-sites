@@ -32,6 +32,9 @@ export interface OSMResult {
 const OVERPASS_ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.openstreetmap.ru/api/interpreter",
+  "https://overpass.tru.vn.ua/api/interpreter",
 ];
 
 // ─── Keyword → OSM tag mapping ───────────────────────────────
@@ -176,6 +179,39 @@ const BROAD_BUSINESS_TAGS = [
 // ─── Geocoding cache (in-memory) ────────────────────────────
 const geoCache = new Map<string, GeoCoords>();
 const GEO_CACHE_TTL = 3600_000; // 1 hour
+
+// ─── Overpass query result cache (in-memory, LRU-like) ──────
+interface OverpassCacheEntry {
+  elements: any[];
+  timestamp: number;
+}
+const overpassCache = new Map<string, OverpassCacheEntry>();
+const OVERPASS_CACHE_TTL = 600_000; // 10 minutes
+const OVERPASS_CACHE_MAX = 100; // max entries
+
+function getCachedOverpass(query: string): any[] | null {
+  const entry = overpassCache.get(query);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > OVERPASS_CACHE_TTL) {
+    overpassCache.delete(query); // expired
+    return null;
+  }
+  // LRU: move to end by delete + re-insert
+  overpassCache.delete(query);
+  overpassCache.set(query, entry);
+  return entry.elements;
+}
+
+function setCachedOverpass(query: string, elements: any[]): void {
+  // LRU eviction: remove oldest entry (first key in insertion order)
+  if (overpassCache.size >= OVERPASS_CACHE_MAX) {
+    const oldestKey = overpassCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      overpassCache.delete(oldestKey);
+    }
+  }
+  overpassCache.set(query, { elements, timestamp: Date.now() });
+}
 
 // ─── Geocoding (Photon + Nominatim fallback) ────────────────
 
@@ -550,6 +586,13 @@ function buildBroadQuery(
 // ─── Query execution with fallback ──────────────────────────
 
 async function executeQuery(query: string): Promise<any[]> {
+  // Check cache first
+  const cached = getCachedOverpass(query);
+  if (cached !== null) {
+    console.log(`[Overpass] Cache hit for query (length: ${query.length})`);
+    return cached;
+  }
+
   let lastError = "";
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
@@ -582,6 +625,8 @@ async function executeQuery(query: string): Promise<any[]> {
       const data = await resp.json();
 
       if (!data.elements || data.elements.length === 0) {
+        // Cache empty results too to avoid repeat lookups
+        setCachedOverpass(query, []);
         return [];
       }
 
@@ -592,6 +637,8 @@ async function executeQuery(query: string): Promise<any[]> {
         continue;
       }
 
+      // Cache successful results
+      setCachedOverpass(query, data.elements);
       return data.elements;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);

@@ -20,10 +20,6 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
-  scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
-  type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus,
-} from "@/lib/scoring";
-import {
   getTemplates, fillTemplate, getIssuesText, estimatePrice, getProblemsForLead,
 } from "@/lib/outreach-templates";
 import {
@@ -34,6 +30,13 @@ import {
 } from "@/lib/storage";
 import { isWorthContacting } from "@/lib/website-analyzer";
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
+import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
+import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
+import {
+  scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
+  calculateLeadScoreDetailed, getDetailedScoreColor,
+  type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus, type ScoreBreakdown,
+} from "@/lib/scoring";
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
 
@@ -137,6 +140,23 @@ export default function Home() {
   const [tgSettings, setTgSettings] = useState<TelegramSettings>({ botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false });
   const [tgTesting, setTgTesting] = useState(false);
 
+  // i18n
+  const [locale, setLocale] = useState<Locale>(() => {
+    if (typeof window === 'undefined') return 'ua';
+    const saved = localStorage.getItem('leadfinder_locale');
+    return (saved as Locale) || 'ua';
+  });
+
+  // Smart Query Parser
+  const [smartQuery, setSmartQuery] = useState("");
+  const [parsedQuery, setParsedQuery] = useState<ParsedQuery | null>(null);
+
+  // Websites Only filter
+  const [onlyWithWebsite, setOnlyWithWebsite] = useState(false);
+
+  // Pagination
+  const [visibleCount, setVisibleCount] = useState(20);
+
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load history and favorites on mount
@@ -146,6 +166,19 @@ export default function Home() {
     setFavoritesSet(new Set(favNames));
     setTgSettings(getTelegramSettings());
   }, []);
+
+  // Persist locale
+  useEffect(() => {
+    localStorage.setItem('leadfinder_locale', locale);
+  }, [locale]);
+
+  // Translations
+  const t = getTranslations(locale);
+
+  // Reset visibleCount on filter changes
+  useEffect(() => {
+    setVisibleCount(20);
+  }, [filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, leads]);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -166,7 +199,7 @@ export default function Home() {
     const isCopied = copiedField === `${label}-${text}`;
     return (
       <button onClick={(e) => { e.stopPropagation(); copyToClipboard(text, `${label}-${text}`); }}
-        className="inline-flex items-center text-muted-foreground hover:text-foreground transition-colors ml-1" title="Копіювати">
+        className="inline-flex items-center text-muted-foreground hover:text-foreground transition-colors ml-1" title={t.copied}>
         {isCopied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
       </button>
     );
@@ -392,6 +425,7 @@ export default function Home() {
     .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
     .filter((l) => !onlyWithIssues || hasIssues(l))
     .filter((l) => !onlyFavorites || favoritesSet.has(l.name))
+    .filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))
     .sort((a, b) => {
       const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
       return order[a.score] - order[b.score];
@@ -487,8 +521,29 @@ export default function Home() {
   const handleClearHistory = useCallback(() => {
     clearSearchHistory();
     setSearchHistory([]);
-    showToast("Історію очищено");
-  }, [showToast]);
+    showToast(t.historyCleared);
+  }, [showToast, t.historyCleared]);
+
+  // ─── Smart Query Handler ───────────────────────────────
+  const handleSmartQuery = useCallback((input: string) => {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setParsedQuery(null);
+      return;
+    }
+    const parsed = parseQuery(trimmed);
+    setParsedQuery(parsed);
+    if (parsed.city) setCity(parsed.city);
+    if (parsed.query) setQuery(parsed.query);
+    // Auto-switch locale based on detected language
+    if (parsed.language === "en") setLocale("en");
+    else if (parsed.language === "ru") setLocale("ru");
+    else if (parsed.language === "ua") setLocale("ua");
+    // If both city and query are present, trigger search
+    if (parsed.city && parsed.query) {
+      handleSearch(parsed.city, parsed.query);
+    }
+  }, [handleSearch]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
@@ -509,21 +564,34 @@ export default function Home() {
               <Target className="w-4.5 h-4.5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight">Lead Finder</h1>
-              <p className="text-[10px] text-muted-foreground">Платформа лідогенерації • Глобальний пошук • Скріншоти • Розсилка</p>
+              <h1 className="text-lg font-bold tracking-tight">{t.appTitle}</h1>
+              <p className="text-[10px] text-muted-foreground">{t.appSubtitle}</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} title="Налаштування">
+            {/* Language Switcher */}
+            <div className="flex items-center gap-0.5 mr-1">
+              {AVAILABLE_LOCALES.map((loc) => (
+                <button
+                  key={loc.value}
+                  onClick={() => setLocale(loc.value)}
+                  className={`text-sm px-1 py-0.5 rounded transition-colors ${locale === loc.value ? 'bg-muted ring-1 ring-border' : 'hover:bg-muted/50 opacity-60 hover:opacity-100'}`}
+                  title={loc.label}
+                >
+                  {loc.flag}
+                </button>
+              ))}
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} title={t.settings}>
               <Settings className="w-4 h-4" />
             </Button>
             {leads.length > 0 && (
               <>
                 <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
-                  <FileText className="w-4 h-4" /><span className="hidden sm:inline ml-1">CSV</span>
+                  <FileText className="w-4 h-4" /><span className="hidden sm:inline ml-1">{t.exportCsv}</span>
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
-                  <FileSpreadsheet className="w-4 h-4" /><span className="hidden sm:inline ml-1">Excel</span>
+                  <FileSpreadsheet className="w-4 h-4" /><span className="hidden sm:inline ml-1">{t.exportExcel}</span>
                 </Button>
                 {hotCount > 0 && (
                   <Button size="sm" onClick={() => handleExport("excel", true)} className="bg-red-600 hover:bg-red-700 text-white" title="Тільки HOT">
@@ -540,19 +608,68 @@ export default function Home() {
         {/* Search Card */}
         <Card className="shadow-lg border-0">
           <CardContent className="pt-5">
+            {/* Smart Query Input */}
+            <div className="space-y-1 mb-3">
+              <label className="text-xs font-medium text-muted-foreground">🔍 {t.nicheLabel}</label>
+              <div className="relative">
+                <Input
+                  placeholder={t.nichePlaceholder}
+                  value={smartQuery}
+                  onChange={(e) => setSmartQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleSmartQuery(smartQuery);
+                    }
+                  }}
+                  disabled={phase === "searching" || phase === "analyzing"}
+                  className="pr-20"
+                />
+                {smartQuery && (
+                  <button
+                    onClick={() => { setSmartQuery(""); setParsedQuery(null); }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {parsedQuery && smartQuery && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {parsedQuery.city && (
+                    <Badge variant="outline" className="text-[10px]">
+                      <MapPin className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.city}
+                    </Badge>
+                  )}
+                  {parsedQuery.query && (
+                    <Badge variant="outline" className="text-[10px]">
+                      <Target className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.query}
+                    </Badge>
+                  )}
+                  <Badge variant="secondary" className="text-[10px]">
+                    {parsedQuery.language === 'ua' ? '🇺🇦' : parsedQuery.language === 'en' ? '🇬🇧' : parsedQuery.language === 'ru' ? '🇷🇺' : '🌐'}
+                  </Badge>
+                </div>
+              )}
+            </div>
+            <div className="relative flex items-center my-2">
+              <div className="flex-grow border-t"></div>
+              <span className="flex-shrink mx-2 text-[10px] text-muted-foreground">— {t.advanced || 'Advanced'} —</span>
+              <div className="flex-grow border-t"></div>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">🏙️ Місто (можна декілька)</label>
-                <Input placeholder="Дніпро, Kyiv, Львів, London..." value={city} onChange={(e) => setCity(e.target.value)}
+                <label className="text-xs font-medium text-muted-foreground">{t.cityLabel}</label>
+                <Input placeholder={t.cityPlaceholder} value={city} onChange={(e) => setCity(e.target.value)}
                   disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">🎯 Ніша</label>
-                <Input placeholder="юрист, dentist..." value={query} onChange={(e) => setQuery(e.target.value)}
+                <label className="text-xs font-medium text-muted-foreground">{t.nicheLabel}</label>
+                <Input placeholder={t.nichePlaceholder} value={query} onChange={(e) => setQuery(e.target.value)}
                   disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">📊 Кількість</label>
+                <label className="text-xs font-medium text-muted-foreground">{t.countLabel}</label>
                 <Select value={maxResults} onValueChange={setMaxResults} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
                   <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -562,18 +679,18 @@ export default function Home() {
                 </Select>
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">📍 Радіус</label>
+                <label className="text-xs font-medium text-muted-foreground">{t.radiusLabel}</label>
                 <Select value={radius} onValueChange={setRadius} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
                   <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="5">5 км</SelectItem><SelectItem value="15">15 км</SelectItem>
-                    <SelectItem value="25">25 км</SelectItem><SelectItem value="50">50 км</SelectItem>
+                    <SelectItem value="5">5 {t.km}</SelectItem><SelectItem value="15">15 {t.km}</SelectItem>
+                    <SelectItem value="25">25 {t.km}</SelectItem><SelectItem value="50">50 {t.km}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-              <span className="text-[10px] text-muted-foreground">Швидко:</span>
+              <span className="text-[10px] text-muted-foreground">{t.quickKeywords}</span>
               {QUICK_KEYWORDS.map((kw) => (
                 <button key={kw} onClick={() => setQuery(kw)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
                   className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">{kw}</button>
@@ -588,7 +705,7 @@ export default function Home() {
               <Button onClick={() => handleSearch()} disabled={(phase === "searching" || phase === "analyzing") || !city || !query}
                 className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg">
                 {phase === "searching" || phase === "analyzing" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
-                {phase === "searching" ? "Пошук..." : phase === "analyzing" ? "Аналіз сайтів..." : "Знайти ліди"}
+                {phase === "searching" ? t.searching : phase === "analyzing" ? t.analyzing : t.searchButton}
               </Button>
             </div>
           </CardContent>
@@ -600,11 +717,11 @@ export default function Home() {
             <div onClick={() => setHistoryOpen(!historyOpen)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setHistoryOpen(!historyOpen)} className="w-full text-left p-3 flex items-center justify-between cursor-pointer select-none">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <History className="w-4 h-4 text-muted-foreground" />
-                Історія пошуків ({searchHistory.length})
+                {t.searchHistory} ({searchHistory.length})
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleClearHistory(); }} className="text-xs text-red-500 hover:text-red-600 h-6 px-2">
-                  <Trash2 className="w-3 h-3 mr-1" />Очистити все
+                  <Trash2 className="w-3 h-3 mr-1" />{t.clearAll}
                 </Button>
                 {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
               </div>
@@ -620,11 +737,11 @@ export default function Home() {
                       </div>
                       <div className="text-[10px] text-muted-foreground">
                         {new Date(entry.timestamp).toLocaleString("uk-UA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                        <span className="ml-2">{entry.maxResults} рез. • {entry.radius} км</span>
+                        <span className="ml-2">{entry.maxResults} {t.results} • {entry.radius} {t.km}</span>
                       </div>
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); handleRemoveHistoryItem(entry.id); }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-red-500 transition-all" title="Видалити">
+                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-red-500 transition-all" title={t.delete}>
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -639,7 +756,7 @@ export default function Home() {
           <div className="space-y-1">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <MapPin className="w-3.5 h-3.5" />
-              <span className="font-medium">Знайдені локації:</span>
+              <span className="font-medium">{t.foundLocations || 'Found locations'}:</span>
             </div>
             <div className="flex flex-wrap gap-2">
               {geoLocations.map((geo, i) => (
@@ -675,18 +792,18 @@ export default function Home() {
         {leads.length > 0 && phase === "done" && (
           <div className="space-y-3">
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-              <MiniStat label="Всього лідів" value={leads.length} />
-              <MiniStat label="🔥 HOT" value={hotCount} color="text-red-600" />
-              <MiniStat label="🏚️ Дуже старі сайти" value={ancientCount} color="text-orange-600" />
-              <MiniStat label="📱 Не мобільні" value={noMobileCount} color="text-amber-600" />
-              <MiniStat label="🔒 Без SSL" value={noSslCount} color="text-red-600" />
-              <MiniStat label="🚫 Немає сайту" value={noWebsiteCount} color="text-purple-600" />
-              <MiniStat label="💰 Сер. оцінка" value={`${avgPrice.min}-${avgPrice.max}$`} color="text-emerald-600" />
+              <MiniStat label={t.totalLeads} value={leads.length} />
+              <MiniStat label={`🔥 ${t.hot}`} value={hotCount} color="text-red-600" />
+              <MiniStat label={t.veryOldSites} value={ancientCount} color="text-orange-600" />
+              <MiniStat label={t.notMobile} value={noMobileCount} color="text-amber-600" />
+              <MiniStat label={t.noSsl} value={noSslCount} color="text-red-600" />
+              <MiniStat label={t.noWebsite} value={noWebsiteCount} color="text-purple-600" />
+              <MiniStat label={t.avgEstimate} value={`${avgPrice.min}-${avgPrice.max}$`} color="text-emerald-600" />
             </div>
             <div className="text-center text-xs text-muted-foreground bg-muted/50 rounded-lg py-2 px-4">
-              🎯 <span className="font-semibold text-foreground">{filteredLeads.length}</span> лідів відфільтровано •
-              {onlyFavorites && <span className="ml-1">⭐ Лише обране •</span>}
-              Готові до контакту
+              🎯 <span className="font-semibold text-foreground">{filteredLeads.length}</span> {t.filteredLeads} •
+              {onlyFavorites && <span className="ml-1">{t.onlyFavorites} •</span>}
+              {t.readyToContact}
             </div>
           </div>
         )}
@@ -700,16 +817,16 @@ export default function Home() {
                 <Button key={s} variant={filterScore === s ? "default" : "outline"} size="sm" onClick={() => setFilterScore(s)}
                   className={filterScore === s && s !== "ALL"
                     ? s === "HOT" ? "bg-red-600 hover:bg-red-700 text-white" : s === "WARM" ? "bg-yellow-500 hover:bg-yellow-600 text-black" : "bg-green-600 hover:bg-green-700 text-white" : ""}>
-                  {s === "ALL" ? `Всі (${leads.length})` : s === "HOT" ? `🔥 HOT (${hotCount})` : s === "WARM" ? `⚡ WARM (${warmCount})` : `❄️ COLD (${coldCount})`}
+                  {s === "ALL" ? `${t.allFilter} (${leads.length})` : s === "HOT" ? `🔥 ${t.hot} (${hotCount})` : s === "WARM" ? `⚡ ${t.warm} (${warmCount})` : `❄️ ${t.cold} (${coldCount})`}
                 </Button>
               ))}
               <div className="h-4 w-px bg-border mx-1" />
               <Select value={filterStatus} onValueChange={(v) => setFilterStatus(v as LeadStatus | "ALL")}>
                 <SelectTrigger className="h-8 w-auto text-xs min-w-[120px]">
-                  <SelectValue placeholder="Статус" />
+                  <SelectValue placeholder={t.status} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ALL">Усі статуси</SelectItem>
+                  <SelectItem value="ALL">{t.allStatuses}</SelectItem>
                   {statusList.map((s) => (
                     <SelectItem key={s.value} value={s.value}>{s.emoji} {s.label}</SelectItem>
                   ))}
@@ -717,21 +834,25 @@ export default function Home() {
               </Select>
               <div className="flex items-center gap-3 ml-auto">
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-muted-foreground">⭐ Обране</label>
+                  <label className="text-xs text-muted-foreground">{t.onlyFavorites}</label>
                   <Switch checked={onlyFavorites} onCheckedChange={setOnlyFavorites} />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-muted-foreground">З проблемами</label>
+                  <label className="text-xs text-muted-foreground">{t.onlyWithIssues}</label>
                   <Switch checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
                 </div>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs text-muted-foreground">{t.websitesOnly}</label>
+                  <Switch checked={onlyWithWebsite} onCheckedChange={setOnlyWithWebsite} />
               </div>
             </div>
           </div>
+        </div>
         )}
 
         {/* Lead Cards */}
         <div className="space-y-3">
-          {filteredLeads.map((lead, idx) => {
+          {filteredLeads.slice(0, visibleCount).map((lead, idx) => {
             const realIdx = leads.indexOf(lead);
             const sc = getScoreColor(lead.score);
             const dc = getDesignColor(lead.designScore);
@@ -780,7 +901,7 @@ export default function Home() {
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 mt-1">
                     {/* Favorite star */}
-                    <button onClick={(e) => handleToggleFavorite(lead, e)} className="p-1 rounded-md hover:bg-muted transition-colors" title={isFav ? "Видалити з обраного" : "Додати в обране"}>
+                    <button onClick={(e) => handleToggleFavorite(lead, e)} className="p-1 rounded-md hover:bg-muted transition-colors" title={isFav ? t.removeFromFavorites : t.addToFavorites}>
                       {isFav ? <Star className="w-4 h-4 text-amber-500 fill-amber-500" /> : <Star className="w-4 h-4 text-muted-foreground/40" />}
                     </button>
                     {screenshotUrl && (
@@ -800,7 +921,7 @@ export default function Home() {
                       <div className="space-y-3">
                         {screenshotUrl && (
                           <div>
-                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" />Десктоп</p>
+                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" />{t.desktop}</p>
                             <div className="rounded-xl overflow-hidden border shadow-inner bg-white relative group">
                               <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
                                 <img src={screenshotUrl} alt={`Скріншот ${lead.name}`} className="w-full h-auto block" loading="lazy" />
@@ -808,7 +929,7 @@ export default function Home() {
                               <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
                                   className="inline-flex items-center gap-1 bg-black/70 text-white text-xs px-2 py-1 rounded-lg hover:bg-black/90 backdrop-blur-sm">
-                                  <ExternalLink className="w-3 h-3" /> Відкрити сайт
+                                  <ExternalLink className="w-3 h-3" /> {t.openSite}
                                 </a>
                               </div>
                               {lead.pageTitle && (
@@ -822,7 +943,7 @@ export default function Home() {
 
                         {mobileScreenshotUrl && (
                           <div>
-                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Smartphone className="w-3 h-3" />Мобільний</p>
+                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Smartphone className="w-3 h-3" />{t.mobile}</p>
                             <div className="rounded-xl overflow-hidden border shadow-inner bg-white relative group max-w-[200px] mx-auto">
                               <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
                                 <img src={mobileScreenshotUrl} alt={`Мобільний скріншот ${lead.name}`} className="w-full h-auto block" loading="lazy" />
@@ -839,7 +960,7 @@ export default function Home() {
 
                         {!screenshotUrl && !mobileScreenshotUrl && (
                           <div className="text-center py-8 text-sm text-muted-foreground">
-                            🚫 Немає сайту — найкращий prospect!
+                            {t.noSiteBestProspect}
                           </div>
                         )}
                       </div>
@@ -850,7 +971,7 @@ export default function Home() {
                         <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-900/50">
                           <h4 className="text-xs font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5" />
-                            Проблеми ({(() => {
+                            {t.problems} ({(() => {
                               const lines = issues.split("\n").filter((l) => l && !l.startsWith("✅"));
                               return lines.length;
                             })()})
@@ -869,7 +990,7 @@ export default function Home() {
                           <div className="bg-amber-50 dark:bg-amber-950/20 rounded-lg p-3 border border-amber-200 dark:border-amber-900/50">
                             <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-2 flex items-center gap-1.5">
                               <Zap className="w-3.5 h-3.5" />
-                              Детальний аналіз проблем
+                              {t.detailedAnalysis}
                             </h4>
                             <div className="space-y-2 max-h-48 overflow-y-auto">
                               {problems.map((prob) => (
@@ -897,7 +1018,7 @@ export default function Home() {
                         {lead.website !== "N/A" && (
                           <div>
                             <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                              <Layout className="w-3.5 h-3.5" /> Технології та badges
+                              <Layout className="w-3.5 h-3.5" /> {t.technologies}
                             </h4>
                             <div className="flex flex-wrap gap-1.5">
                               {lead.technologies.length > 0 && lead.technologies.map((t) => (
@@ -914,7 +1035,7 @@ export default function Home() {
                                 <Badge variant="outline" className="text-[10px] text-red-600 border-red-300 dark:border-red-700"><MonitorX className="w-3 h-3 mr-1" />No Mobile</Badge>
                               )}
                               {lead.hasContactForm && (
-                                <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-300 dark:border-blue-700"><Mail className="w-3 h-3 mr-1" />Форма</Badge>
+                                <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-300 dark:border-blue-700"><Mail className="w-3 h-3 mr-1" />{t.formBadge}</Badge>
                               )}
                             </div>
                           </div>
@@ -923,31 +1044,65 @@ export default function Home() {
                         {/* Price estimation */}
                         <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-900/50">
                           <h4 className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
-                            <DollarSign className="w-3.5 h-3.5" /> Оцінка вартості
+                            <DollarSign className="w-3.5 h-3.5" /> {t.priceEstimate}
                           </h4>
                           <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400">${price.min} — ${price.max}</div>
                           <div className="text-[10px] text-muted-foreground">{price.note}</div>
                         </div>
 
+                        {/* Scoring Breakdown — Why HOT? */}
+                        {(() => {
+                          const breakdown = calculateLeadScoreDetailed(lead);
+                          const dsc = getDetailedScoreColor(breakdown.rating);
+                          const severityColors: Record<string, string> = { critical: "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30", warning: "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30", info: "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30" };
+                          return (
+                            <div className={`rounded-lg p-3 border ${dsc.bg} ${dsc.text}`}>
+                              <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+                                <Flame className="w-3.5 h-3.5" /> {t.whyHot} — {t.scoringBreakdown}
+                              </h4>
+                              <div className="flex items-center gap-2 mb-2">
+                                <div className="flex-1">
+                                  <div className="h-2 rounded-full bg-muted overflow-hidden">
+                                    <div className={`h-full rounded-full transition-all ${breakdown.rating === "HOT" ? "bg-red-500" : breakdown.rating === "WARM" ? "bg-yellow-500" : breakdown.rating === "COLD" ? "bg-green-500" : "bg-emerald-500"}`} style={{ width: `${breakdown.score}%` }} />
+                                  </div>
+                                </div>
+                                <Badge className={`${dsc.bg} ${dsc.text} text-[10px] font-bold`}>{dsc.emoji} {dsc.label} ({breakdown.score}/100)</Badge>
+                              </div>
+                              <div className="space-y-1">
+                                {breakdown.factors.map((f, fi) => (
+                                  <div key={fi} className={`flex items-center gap-1.5 text-[10px] px-1.5 py-0.5 rounded ${severityColors[f.severity] || ""}`}>
+                                    <span>{f.icon}</span>
+                                    <span className="font-medium">{f.name}</span>
+                                    <span className="ml-auto">+{f.points}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              {breakdown.opportunityText && (
+                                <p className="text-[10px] mt-2 leading-relaxed opacity-80">{breakdown.opportunityText}</p>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {/* Contacts */}
                         <div className="space-y-2">
                           <h4 className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                            <PhoneCall className="w-3.5 h-3.5" /> Контакти
+                            <PhoneCall className="w-3.5 h-3.5" /> {t.contacts}
                           </h4>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <ContactField icon={<Phone className="w-3.5 h-3.5" />} label="Телефон" value={lead.phone} copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} />
-                            <ContactField icon={<Mail className="w-3.5 h-3.5" />} label="Email" value={lead.email} copyable={!!lead.email} CopyBtn={CopyBtn} />
-                            <ContactField icon={<MapPin className="w-3.5 h-3.5" />} label="Адреса" value={lead.address} copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} />
+                            <ContactField icon={<Phone className="w-3.5 h-3.5" />} label={t.phone} value={lead.phone} copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} />
+                            <ContactField icon={<Mail className="w-3.5 h-3.5" />} label={t.email} value={lead.email} copyable={!!lead.email} CopyBtn={CopyBtn} />
+                            <ContactField icon={<MapPin className="w-3.5 h-3.5" />} label={t.address} value={lead.address} copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} />
                             <div className="flex items-start gap-2">
                               <Globe className="w-3.5 h-3.5 mt-0.5 text-muted-foreground" />
                               <div className="min-w-0 flex-1">
-                                <div className="text-[10px] text-muted-foreground">Сайт</div>
+                                <div className="text-[10px] text-muted-foreground">{t.website}</div>
                                 {lead.website !== "N/A" ? (
                                   <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
                                     className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 flex items-center gap-1 break-all">
                                     {websiteUrl.replace(/^https?:\/\//, "")} <ExternalLink className="w-3 h-3 shrink-0" />
                                   </a>
-                                ) : <span className="text-xs text-red-500 font-medium">⚠️ Немає сайту — топ prospect!</span>}
+                                ) : <span className="text-xs text-red-500 font-medium">{t.noSiteTopProspect}</span>}
                               </div>
                             </div>
                           </div>
@@ -986,15 +1141,15 @@ export default function Home() {
                     {/* Outreach Section */}
                     <div className="border-t px-3 sm:px-4 py-3 bg-blue-50/50 dark:bg-blue-950/10">
                       <h4 className="text-xs font-semibold text-blue-700 dark:text-blue-400 mb-2 flex items-center gap-1.5">
-                        <Send className="w-3.5 h-3.5" /> Написати власнику
+                        <Send className="w-3.5 h-3.5" /> {t.writeToOwner}
                       </h4>
                       <div className="flex flex-wrap gap-2 mb-2">
                         <Button size="sm" variant="outline" onClick={() => handleCopyEmail(lead)} className="text-xs">
-                          <Copy className="w-3 h-3 mr-1" /> Скопіювати Email
+                          <Copy className="w-3 h-3 mr-1" /> {t.copyEmail}
                         </Button>
                         {lead.telegram && (
                           <Button size="sm" variant="outline" onClick={() => handleTelegram(lead)} className="text-xs">
-                            <MessageCircle className="w-3 h-3 mr-1" /> Відкрити Telegram
+                            <MessageCircle className="w-3 h-3 mr-1" /> {t.openTelegram}
                           </Button>
                         )}
                         {lead.email && (
@@ -1004,18 +1159,18 @@ export default function Home() {
                         )}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <label className="text-[10px] text-muted-foreground">Шаблон:</label>
+                        <label className="text-[10px] text-muted-foreground">{t.template}</label>
                         <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
                           <SelectTrigger className="h-7 w-auto text-[11px] min-w-[180px]">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {templates.map((t) => (
-                              <SelectItem key={t.id} value={t.id}>
+                            {templates.map((tmpl) => (
+                              <SelectItem key={tmpl.id} value={tmpl.id}>
                                 <span className="flex items-center gap-1.5">
-                                  {t.channel === "email" ? "📧" : t.channel === "telegram" ? "💬" : "✉️"}
-                                  {t.name}
-                                  <span className="text-muted-foreground">({t.tone === "formal" ? "форм." : t.tone === "friendly" ? "дружн." : "прям."})</span>
+                                  {tmpl.channel === "email" ? "📧" : tmpl.channel === "telegram" ? "💬" : "✉️"}
+                                  {tmpl.name}
+                                  <span className="text-muted-foreground">({tmpl.tone === "formal" ? t.formal : tmpl.tone === "friendly" ? t.friendly : t.direct})</span>
                                 </span>
                               </SelectItem>
                             ))}
@@ -1023,14 +1178,14 @@ export default function Home() {
                         </Select>
                         <Button variant="ghost" size="sm" onClick={() => togglePreview(idx)} className="text-[11px] h-7 px-2">
                           {isPreviewOpen ? <ChevronUp className="w-3 h-3 mr-0.5" /> : <ChevronDown className="w-3 h-3 mr-0.5" />}
-                          {isPreviewOpen ? "Сховати" : "Перегляд"}
+                          {isPreviewOpen ? t.hide : t.preview}
                         </Button>
                       </div>
                       {isPreviewOpen && selectedTmpl && (
                         <div className="mt-2 bg-white dark:bg-slate-900 rounded-lg border p-3 text-xs space-y-2 max-h-60 overflow-y-auto">
                           {selectedTmpl.subject && (
                             <div>
-                              <span className="font-semibold text-muted-foreground">Тема: </span>
+                              <span className="font-semibold text-muted-foreground">{t.theme} </span>
                               <span>{selectedTmpl.subject.replace(/{BIZ_NAME}/g, lead.name).replace(/{CITY}/g, city.split(",")[0].trim())}</span>
                             </div>
                           )}
@@ -1047,11 +1202,11 @@ export default function Home() {
                     {/* Lead Management Section */}
                     <div className="border-t px-3 sm:px-4 py-3 bg-amber-50/50 dark:bg-amber-950/10">
                       <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-2 flex items-center gap-1.5">
-                        <StickyNote className="w-3.5 h-3.5" /> Управління лідом
+                        <StickyNote className="w-3.5 h-3.5" /> {t.leadManagement}
                       </h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[10px] text-muted-foreground">Статус</label>
+                          <label className="text-[10px] text-muted-foreground">{t.status}</label>
                           <Select value={lead.status} onValueChange={(v) => handleStatusChange(realIdx, v)}>
                             <SelectTrigger className="h-8 text-xs">
                               <SelectValue />
@@ -1064,7 +1219,7 @@ export default function Home() {
                           </Select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[10px] text-muted-foreground">Дата контакту</label>
+                          <label className="text-[10px] text-muted-foreground">{t.contactDate}</label>
                           <div className="text-xs py-1.5 px-2 rounded-md border bg-muted/50">
                             {lead.contactDate
                               ? new Date(lead.contactDate).toLocaleDateString("uk-UA", { day: "numeric", month: "short", year: "numeric" })
@@ -1073,9 +1228,9 @@ export default function Home() {
                         </div>
                       </div>
                       <div className="mt-2 space-y-1">
-                        <label className="text-[10px] text-muted-foreground">Замітки</label>
+                        <label className="text-[10px] text-muted-foreground">{t.notes}</label>
                         <Textarea
-                          placeholder="Додайте замітку про цей лід..."
+                          placeholder={t.notesPlaceholder}
                           value={lead.notes}
                           onChange={(e) => updateLead(realIdx, { notes: e.target.value })}
                           className="text-xs min-h-[60px] resize-y"
@@ -1089,35 +1244,43 @@ export default function Home() {
           })}
         </div>
 
+            {visibleCount < filteredLeads.length && (
+          <div className="text-center py-4">
+            <Button variant="outline" onClick={() => setVisibleCount((prev) => prev + 20)} className="gap-2">
+              <ChevronDown className="w-4 h-4" />
+              {t.loadMore} ({filteredLeads.length - visibleCount})
+            </Button>
+          </div>
+        )}
+
         {/* Empty state */}
         {phase === "idle" && (
           <div className="text-center py-16 space-y-3">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center">
               <Eye className="w-7 h-7 text-emerald-500" />
             </div>
-            <h2 className="text-lg font-bold">Знайдіть та перегляньте сайти конкурентів</h2>
+            <h2 className="text-lg font-bold">{t.emptyTitle}</h2>
             <p className="text-muted-foreground max-w-md mx-auto text-xs">
-              Скріншоти сайтів, аналіз дизайну, контакти, соцмережі.
-              Все що потрібно для пошуку клієнтів. Підтримка пошуку в декількох містах.
+              {t.emptyDescription}
             </p>
           </div>
         )}
 
         {phase === "done" && leads.length === 0 && (
-          <div className="text-center py-12 text-sm text-muted-foreground">Нічого не знайдено.</div>
+          <div className="text-center py-12 text-sm text-muted-foreground">{t.noResults}</div>
         )}
 
         {phase === "done" && filteredLeads.length === 0 && leads.length > 0 && (
           <div className="text-center py-12 text-sm text-muted-foreground">
             <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            Немає лідів за обраними фільтрами
+            {t.noFiltersResults}
           </div>
         )}
       </main>
 
       <footer className="border-t mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 text-center text-[10px] text-muted-foreground">
-          Lead Finder • Безкоштовна лідогенерація • OpenStreetMap + thum.io
+          {t.footer}
         </div>
       </footer>
 
@@ -1127,10 +1290,10 @@ export default function Home() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bot className="w-5 h-5" />
-              Налаштування Telegram Bot
+              {t.telegramSettings}
             </DialogTitle>
             <DialogDescription>
-              Отримуйте сповіщення про нові ліди безпосередньо в Telegram
+              {t.telegramSettingsDesc}
             </DialogDescription>
           </DialogHeader>
 
@@ -1155,8 +1318,8 @@ export default function Home() {
 
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-xs font-medium">Сповіщення про нові ліди</div>
-                <div className="text-[10px] text-muted-foreground">Надсилати повідомлення при пошуку</div>
+                <div className="text-xs font-medium">{t.notifyNewLeads}</div>
+                <div className="text-[10px] text-muted-foreground">{t.notifyNewLeadsDesc}</div>
               </div>
               <Switch
                 checked={tgSettings.notifyNewLeads}
@@ -1166,8 +1329,8 @@ export default function Home() {
 
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-xs font-medium">Тільки HOT ліди</div>
-                <div className="text-[10px] text-muted-foreground">Сповіщати лише про найкращі ліди</div>
+                <div className="text-xs font-medium">{t.hotLeadsOnly}</div>
+                <div className="text-[10px] text-muted-foreground">{t.hotLeadsOnlyDesc}</div>
               </div>
               <Switch
                 checked={tgSettings.hotLeadsOnly}
@@ -1184,18 +1347,18 @@ export default function Home() {
                 className="flex-1"
               >
                 {tgTesting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Bot className="w-4 h-4 mr-2" />}
-                Тест
+                {t.test}
               </Button>
               <Button
                 onClick={() => {
                   saveTelegramSettings(tgSettings);
-                  showToast("Налаштування збережено");
+                  showToast(t.settingsSaved);
                   setTgSettingsOpen(false);
                 }}
                 className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
               >
                 <Check className="w-4 h-4 mr-2" />
-                Зберегти
+                {t.save}
               </Button>
             </div>
 
@@ -1203,15 +1366,15 @@ export default function Home() {
             <details className="mt-2">
               <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
                 <RotateCcw className="w-3 h-3" />
-                Як налаштувати Telegram Bot?
+                {t.howToSetupBot}
               </summary>
               <div className="mt-2 text-[11px] text-muted-foreground space-y-1 pl-4 border-l-2 border-muted">
-                <p>1. Відкрийте Telegram та знайдіть <b>@BotFather</b></p>
-                <p>2. Надішліть <code className="bg-muted px-1 rounded">/newbot</code> та слідуйте інструкціям</p>
-                <p>3. Скопіюйте отриманий Bot Token</p>
-                <p>4. Для Chat ID: надішліть повідомлення боту, потім відкрийте:</p>
+                <p>1. {t.botSetupStep1}</p>
+                <p>2. {t.botSetupStep2}</p>
+                <p>3. {t.botSetupStep3}</p>
+                <p>4. {t.botSetupStep4}</p>
                 <p className="break-all"><code className="bg-muted px-1 rounded text-[10px]">https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></p>
-                <p>5. Знайдіть <code className="bg-muted px-1 rounded">{"{'chat':{'id': ...} "}</code> у відповіді</p>
+                <p>5. {t.botSetupStep5}</p>
               </div>
             </details>
           </div>
@@ -1241,7 +1404,7 @@ function ContactField({ icon, label, value, copyable, CopyBtn }: {
         <div className="text-[10px] text-muted-foreground">{label}</div>
         {value && value !== "N/A" ? (
           <span className="text-xs break-all">{value} {copyable && <CopyBtn text={value} label={label} />}</span>
-        ) : <span className="text-xs text-muted-foreground italic">Немає</span>}
+        ) : <span className="text-xs text-muted-foreground italic">{t.notAvailable}</span>}
       </div>
     </div>
   );

@@ -201,3 +201,243 @@ Fix bugs and add major new features: JSON parse bug fix, search history & favori
 - "Днепр" (Russian) → Photon returns Belarus, but Nominatim cross-validation overrides with Dnipro, UA ✅
 - "Днепр, місто" fallback → also works via Nominatim ✅
 - Build passes: `npx next build` compiles successfully
+
+---
+## Task ID: 5-a
+### Agent: Backend agent
+### Task: Fix Overpass 502, smart query parser, caching
+
+### Work Log:
+
+#### 1. Added more Overpass API fallback endpoints (`/src/lib/osm-search.ts`)
+- Expanded `OVERPASS_ENDPOINTS` from 2 to 5 endpoints:
+  - `https://overpass.kumi.systems/api/interpreter` (existing)
+  - `https://overpass-api.de/api/interpreter` (existing)
+  - `https://maps.mail.ru/osm/tools/overpass/api/interpreter` (NEW — Mail.ru mirror)
+  - `https://overpass.openstreetmap.ru/api/interpreter` (NEW — Russian mirror)
+  - `https://overpass.tru.vn.ua/api/interpreter` (NEW — Ukrainian mirror)
+- The existing fallback chain, content-type validation, and retry logic now tries all 5 endpoints before giving up, dramatically reducing 502 Bad Gateway failures.
+
+#### 2. Created Smart Query Parser (`/src/lib/query-parser.ts`)
+- New file with exported `parseQuery(input: string)` → `{ city, query, language }` function and `ParsedQuery` type
+- Handles all required input formats:
+  - "dentists in Berlin" → city:"Berlin", query:"dentists", lang:"en"
+  - "стоматології Київ" → city:"Київ", query:"стоматології", lang:"ua"
+  - "Kyiv restaurants" → city:"Kyiv", query:"restaurants", lang:"en"
+  - "ресторани у Львові" → city:"Львів", query:"ресторани", lang:"ua"
+  - "юрист Дніпро" → city:"Дніпро", query:"юрист", lang:"ua"
+  - "cafe London" → city:"London", query:"cafe", lang:"en"
+  - "Dnipro, Ukraine lawyer" → city:"Dnipro, Ukraine", query:"lawyer", lang:"en"
+  - "Berlin" → city:"Berlin", query:"", lang:"en" (city-only)
+  - "юрист" → city:"", query:"юрист", lang:"ua" (niche-only)
+- Parsing strategies applied in order:
+  1. Split by Ukrainian prepositions (у, в, біля, поблизу)
+  2. Split by English prepositions (in, within, near, at)
+  3. Split by comma
+  4. Split by spaces with known-city lookup (built-in list of ~40 major cities)
+  5. Capitalization heuristic (lowercase first word = niche, capitalized = city)
+  6. Single-word: known city → city-only, otherwise → niche-only
+- Language detection: counts Cyrillic vs Latin characters; Cyrillic with і/ї/є/ґ or Ukrainian words → "ua", otherwise "ru"; Latin → "en"
+
+#### 3. Added in-memory result caching (`/src/lib/osm-search.ts`)
+- Added `OverpassCacheEntry` interface with `elements[]` and `timestamp`
+- Cache parameters: TTL = 10 minutes (600,000ms), max 100 entries
+- LRU-like eviction: on access, entries are moved to the end of the Map; when full, the oldest entry (first key) is evicted
+- `getCachedOverpass(query)` checks TTL, returns elements or null
+- `setCachedOverpass(query, elements)` enforces max size, stores with timestamp
+- Integrated into `executeQuery()`: cache checked first (logs hit), empty results also cached, successful results cached before returning
+
+### Build Verification:
+- `npx next build` — compiles successfully, all routes pass (1 static, 7 dynamic).
+
+### Stage Summary:
+- Overpass fallback expanded from 2 → 5 endpoints, reducing 502 failures
+- Smart query parser created with multi-language support (EN/UA/RU) and 6 parsing strategies
+- In-memory LRU cache added for Overpass results (10min TTL, 100 max entries)
+- All changes compile cleanly with no build errors
+
+---
+## Task ID: 5-b
+### Agent: Scoring & i18n agent
+### Task: Smarter scoring, opportunity calculation, i18n system
+
+### Work Log:
+
+#### 1. Enhanced Scoring System (`/src/lib/scoring.ts`)
+
+Added new types and function for transparent multi-factor lead scoring:
+
+**New interfaces:**
+- `ScoreFactor` — individual scoring factor with name, icon, points, and severity (critical/warning/info)
+- `ScoreBreakdown` — complete scoring result with score (0-100), rating (HOT/WARM/COLD/NEW), factors array, estimated value range, and Ukrainian opportunity text
+
+**New function `calculateLeadScoreDetailed(lead)`:**
+Multi-factor scoring formula (higher = worse site = better prospect):
+- No website at all: +60 pts (critical)
+- Copyright year ≤ 2016: +25 pts (critical)
+- Copyright year 2017-2019: +15 pts (warning)
+- No mobile viewport: +20 pts (critical)
+- No SSL certificate: +15 pts (critical)
+- Old technology (Joomla/Drupal/uCoz/Bitrix/MODX/WordPress): +20 pts (critical)
+- No contact form: +10 pts (warning)
+- Table-based layout: +10 pts (warning)
+- No SEO meta tags: +5 pts (info)
+- No social links: +5 pts (info)
+- Many inline styles: +5 pts (info)
+
+Rating thresholds: 60+ = HOT 🔥, 30-59 = WARM ⚡, 10-29 = COLD ❄️, 0-9 = NEW ✅
+
+**Value estimation tiers:**
+- Score ≥ 80: $800-$2000 (full redesign)
+- Score ≥ 60: $500-$1500
+- Score ≥ 45: $300-$800
+- Score ≥ 30: $200-$500
+- Score ≥ 15: $100-$300
+- Score ≥ 10: $50-$200
+- Score < 10: $0-$100
+
+**Ukrainian opportunity text generation:**
+- Generates contextual text per rating tier explaining the opportunity, estimated price, and contact priority
+
+**New helper `getDetailedScoreColor(rating)`:**
+- Returns Tailwind color classes for the extended 4-tier rating (HOT/WARM/COLD/NEW)
+
+**All existing functions preserved:** `scoreLead()`, `getScoreColor()`, `getDesignColor()`, `getStatusColor()`, `getStatusList()` — fully backward compatible.
+
+#### 2. i18n System (`/src/lib/i18n.ts`)
+
+Created comprehensive translation system with 90+ translation keys covering all UI text from page.tsx:
+
+**Type `Locale`:** `"ua" | "en" | "ru"`
+
+**Interface `Translations`:** Complete type-safe translations covering:
+- Header (appTitle, appSubtitle)
+- Search form (city/niche/count/radius labels & placeholders, search button states)
+- Filters (all, favorites, issues, statuses)
+- Score labels (hot, warm, cold, new)
+- Dashboard stats (total leads, old sites, not mobile, no SSL, no website, avg estimate)
+- Lead details (desktop, mobile, open site, problems, analysis, technologies, price, contacts)
+- Outreach section (write to owner, copy email, open Telegram, template, preview, hide)
+- Lead management (status, contact date, notes)
+- Statuses (new, contacted, interested, not interested, deal, lost)
+- Design scores (ancient, outdated, modern, unknown)
+- Telegram settings dialog (all labels and setup instructions)
+- Toast messages, footer, empty states, misc UI text
+
+**Full translations provided:**
+- 🇺🇦 Ukrainian (default) — 90+ keys
+- 🇬🇧 English — 90+ keys
+- 🇷🇺 Russian — 90+ keys
+
+**Exported functions:**
+- `getTranslations(locale)` — returns Translations object, defaults to "ua"
+- `detectLocale(text)` — heuristic locale detection (Cyrillic chars → UA/RU, Latin → EN)
+- `AVAILABLE_LOCALES` — array of { value, label, flag } for locale selector UI
+
+### Build Verification:
+- `npx next build` — compiles successfully, all routes pass (1 static, 7 dynamic)
+- Zero TypeScript errors in new files (scoring.ts, i18n.ts)
+
+### Stage Summary:
+- Multi-factor scoring system with transparent breakdown (11 factors, 4 severity levels)
+- Ukrainian opportunity text auto-generation per score tier
+- Value estimation with 7 price tiers mapped to score ranges
+- Complete i18n system with 90+ keys in 3 languages (UA/EN/RU)
+- Full backward compatibility — all existing scoring functions unchanged
+
+---
+## Task ID: 5-c
+### Agent: UI agent
+### Task: UI overhaul — integrate all new features into page.tsx
+
+### Work Log:
+
+#### 1. Added new imports to `/src/app/page.tsx`
+- `getTranslations, AVAILABLE_LOCALES, type Locale` from `@/lib/i18n`
+- `parseQuery, type ParsedQuery` from `@/lib/query-parser`
+- `calculateLeadScoreDetailed, getDetailedScoreColor, type ScoreBreakdown` from `@/lib/scoring`
+- Removed duplicate scoring import, consolidated into single import block
+
+#### 2. Fixed i18n translations in `/src/lib/i18n.ts`
+- Added `websitesOnly` translation for all 3 languages (UA: "🌐 З сайтом", EN: "🌐 With website", RU: "🌐 С сайтом")
+
+#### 3. New state variables added to page.tsx
+- `locale` — persisted to localStorage via `leadfinder_locale` key, defaults to "ua" (SSR-safe with typeof window check)
+- `smartQuery` / `parsedQuery` — for natural language query input
+- `onlyWithWebsite` — new filter toggle
+- `visibleCount` — pagination state, defaults to 20
+
+#### 4. Locale persistence + translation object
+- `useEffect` saves locale to localStorage on change
+- `const t = getTranslations(locale)` provides translations for all 3 languages
+- `useEffect` resets `visibleCount` to 20 when filters or leads change
+
+#### 5. Language Switcher (Feature 1 — i18n)
+- Added flag buttons (🇺🇦/🇬🇧/🇷🇺) in the header, next to Settings button
+- Active locale highlighted with ring/border styling
+- Clicking a flag switches language immediately
+
+#### 6. Smart Query Input (Feature 2 — Query Parser + Feature 6)
+- Added natural language input field ABOVE the advanced search grid
+- Uses `t.nichePlaceholder` for the input placeholder
+- On Enter: calls `handleSmartQuery()` which:
+  - Parses input with `parseQuery()`
+  - Auto-fills city and niche fields from parsed result
+  - Shows detected components as badges (city, niche, language flag)
+  - Auto-switches UI locale based on detected language
+  - If both city and query are present, triggers search automatically
+- Clear button (X) to reset the smart query
+
+#### 7. "Websites Only" Filter Toggle (Feature 3)
+- Added `onlyWithWebsite` state and Switch in the filter bar
+- Added `.filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))` to filteredLeads
+
+#### 8. Full i18n text replacement (Feature 1 continuation)
+- Replaced 70+ hardcoded Ukrainian strings in JSX with `t.xxx` translation keys
+- Header: appTitle, appSubtitle, settings tooltip, CSV/Excel labels
+- Search form: cityLabel, cityPlaceholder, nicheLabel, nichePlaceholder, countLabel, radiusLabel, quickKeywords, searchButton/searching/analyzing states
+- Search history: title, clearAll, delete, results/km units
+- Summary dashboard: totalLeads, hot, veryOldSites, notMobile, noSsl, noWebsite, avgEstimate, filteredLeads, readyToContact
+- Filters: allFilter, hot/warm/cold labels, allStatuses, onlyFavorites, onlyWithIssues, websitesOnly
+- Lead cards: removeFromFavorites, addToFavorites, desktop, mobile, openSite, noSiteBestProspect, problems, detailedAnalysis, technologies, formBadge, priceEstimate, contacts, phone, email, address, website, noSiteTopProspect
+- Outreach: writeToOwner, copyEmail, openTelegram, template, preview/hide, theme
+- Lead management: leadManagement, status, contactDate, notes, notesPlaceholder
+- Empty states: emptyTitle, emptyDescription, noResults, noFiltersResults
+- Footer: footer
+- Telegram dialog: telegramSettings, telegramSettingsDesc, notifyNewLeads, notifyNewLeadsDesc, hotLeadsOnly, hotLeadsOnlyDesc, test, save, settingsSaved, howToSetupBot, botSetupStep1-5, notAvailable
+- Fixed `t` variable collision: renamed `templates.map((t) =>` to `templates.map((tmpl) =>)` to avoid shadowing the translations `t`
+- Updated template tone display to use `t.formal/t.friendly/t.direct` instead of Ukrainian abbreviations
+
+#### 9. Scoring Breakdown "Why HOT" (Feature 4)
+- Added inline IIFE in each expanded lead card after price estimation
+- Uses `calculateLeadScoreDetailed(lead)` to get full breakdown
+- Shows:
+  - Section header with `t.whyHot` — `t.scoringBreakdown`
+  - Colored progress bar (0-100) with rating-specific color (red/yellow/green/emerald)
+  - Rating badge with emoji and score
+  - Each ScoreFactor listed with icon, name, points, and severity color:
+    - critical → red background
+    - warning → amber background
+    - info → blue background
+  - Opportunity text at the bottom
+
+#### 10. "Load More" Pagination (Feature 5)
+- Changed `filteredLeads.map(...)` to `filteredLeads.slice(0, visibleCount).map(...)`
+- Added conditional "Load More" button after lead cards grid when `visibleCount < filteredLeads.length`
+- Button shows count of remaining leads: `t.loadMore (N)`
+- Clicking adds 20 more leads to visibleCount
+- visibleCount resets to 20 when any filter or leads change (via useEffect)
+
+#### 11. Build Verification
+- `npx next build` — compiles successfully
+- All 8 routes pass (1 static, 7 dynamic)
+- File grew from ~1250 lines to ~1411 lines
+- All existing features preserved: history, favorites, Telegram, export, templates, settings
+
+### Stage Summary:
+- Full i18n integration with 3 languages (UA/EN/RU) and language switcher
+- Smart query input with natural language parsing and auto-fill
+- "Websites Only" filter toggle
+- Detailed scoring breakdown ("Why HOT") in expanded lead cards
+- "Load More" pagination (20 per page)
+- 70+ hardcoded Ukrainian strings replaced with translation keys
