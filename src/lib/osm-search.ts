@@ -16,9 +16,14 @@ export interface OSMResult {
   phone: string;
   website: string;
   address: string;
+  email: string;
+  facebook: string;
+  instagram: string;
+  telegram: string;
+  openingHours: string;
+  description: string;
   lat: number;
   lng: number;
-  tags: Record<string, string>;
   type: string;
 }
 
@@ -467,14 +472,24 @@ function parseOverpassResults(elements: any[], maxResults: number): OSMResult[] 
       phone: extractPhone(el.tags),
       website: extractWebsite(el.tags),
       address: buildAddress(el.tags),
+      email: extractEmail(el.tags),
+      facebook: el.tags?.["contact:facebook"] || "",
+      instagram: el.tags?.["contact:instagram"] || "",
+      telegram: el.tags?.["contact:telegram"] || "",
+      openingHours: el.tags?.["opening_hours"] || "",
+      description: el.tags?.["description"] || "",
       lat,
       lng,
-      tags: el.tags || {},
       type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || "business",
     });
   }
 
   return results;
+}
+
+function extractEmail(tags: Record<string, string> | undefined): string {
+  if (!tags) return "";
+  return tags["email"] || tags["contact:email"] || "";
 }
 
 function extractPhone(tags: Record<string, string> | undefined): string {

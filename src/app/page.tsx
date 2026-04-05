@@ -9,7 +9,6 @@ import {
   Globe,
   Phone,
   MapPin,
-  Star,
   Smartphone,
   Loader2,
   Zap,
@@ -20,36 +19,22 @@ import {
   Target,
   AlertCircle,
   MapPinned,
-  Wifi,
   WifiOff,
   ExternalLink,
+  Mail,
+  Clock,
+  ChevronRight,
+  Copy,
+  Check,
+  MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  scoreLead,
-  getScoreColor,
-  LeadScore,
-  LeadBusiness,
-} from "@/lib/scoring";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { scoreLead, getScoreColor, type LeadScore, type LeadBusiness } from "@/lib/scoring";
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
 
@@ -64,77 +49,80 @@ export default function Home() {
   const [progressLabel, setProgressLabel] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [searchSource, setSearchSource] = useState("OpenStreetMap");
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const [leads, setLeads] = useState<LeadBusiness[]>([]);
   const [filterScore, setFilterScore] = useState<LeadScore | "ALL">("ALL");
   const [sortField, setSortField] = useState<string>("score");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const handleExport = useCallback(
-    async (format: "excel" | "csv") => {
-      const resp = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leads, format }),
-      });
+  const copyToClipboard = useCallback((text: string, field: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 1500);
+    });
+  }, []);
 
-      if (!resp.ok) {
-        alert("Export failed");
-        return;
-      }
+  const CopyBtn = ({ text, label }: { text: string; label: string }) => {
+    if (!text) return null;
+    const isCopied = copiedField === `${label}-${text}`;
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); copyToClipboard(text, `${label}-${text}`); }}
+        className="inline-flex items-center gap-0.5 text-muted-foreground hover:text-foreground transition-colors ml-1"
+        title="Копіювати"
+      >
+        {isCopied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+      </button>
+    );
+  };
 
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download =
-        format === "excel" ? "leads_output.xlsx" : "leads_output.csv";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    },
-    [leads]
-  );
+  const handleExport = useCallback(async (format: "excel" | "csv") => {
+    const resp = await fetch("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leads, format }),
+    });
+    if (!resp.ok) { alert("Export failed"); return; }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = format === "excel" ? "leads_output.xlsx" : "leads_output.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [leads]);
 
   const handleSearch = useCallback(async () => {
-    if (!city || !query) {
-      setErrorMessage("Заповніть місто та нішу");
-      return;
-    }
+    if (!city || !query) { setErrorMessage("Заповніть місто та нішу"); return; }
 
     setErrorMessage("");
     setLeads([]);
+    setExpandedIdx(null);
     setPhase("searching");
     setProgress(0);
-    setProgressLabel("Пошук бізнесів у OpenStreetMap...");
+    setProgressLabel("Пошук бізнесів...");
 
     try {
-      // Phase 1: Search
       const searchResp = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          city,
-          query,
+          city, query,
           maxResults: parseInt(maxResults) || 20,
           radius: parseInt(radius) || 15,
         }),
       });
-
       const searchData = await searchResp.json();
-
-      if (!searchResp.ok) {
-        throw new Error(searchData.error || "Помилка пошуку");
-      }
+      if (!searchResp.ok) throw new Error(searchData.error || "Помилка пошуку");
 
       const businesses: Array<{
-        name: string;
-        phone: string;
-        website: string;
-        address: string;
-        rating: number | null;
-        reviews: number;
+        name: string; phone: string; website: string; address: string;
+        email: string; facebook: string; instagram: string; telegram: string;
+        openingHours: string; description: string; rating: number | null; reviews: number;
       }> = searchData.businesses || [];
 
       setSearchSource(searchData.source || "OpenStreetMap");
@@ -146,15 +134,11 @@ export default function Home() {
       }
 
       setPhase("analyzing");
-
-      // Phase 2: Analyze each website
       const analyzedLeads: LeadBusiness[] = [];
 
       for (let i = 0; i < businesses.length; i++) {
         const biz = businesses[i];
-        setProgressLabel(
-          `Аналіз: ${biz.name} (${i + 1}/${businesses.length})`
-        );
+        setProgressLabel(`Аналіз: ${biz.name} (${i + 1}/${businesses.length})`);
         setProgress(Math.round(((i + 1) / businesses.length) * 100));
 
         let copyrightYear: number | null = null;
@@ -167,31 +151,22 @@ export default function Home() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ url: biz.website }),
             });
-
             if (analyzeResp.ok) {
-              const analysisData = await analyzeResp.json();
-              copyrightYear = analysisData.copyrightYear;
-              isMobileFriendly = analysisData.isMobileFriendly;
+              const ad = await analyzeResp.json();
+              copyrightYear = ad.copyrightYear;
+              isMobileFriendly = ad.isMobileFriendly;
             }
-          } catch {
-            // skip
-          }
+          } catch { /* skip */ }
         }
 
-        const score = scoreLead(biz.website, copyrightYear, isMobileFriendly);
-
         analyzedLeads.push({
-          name: biz.name,
-          phone: biz.phone,
-          website: biz.website,
-          address: biz.address,
-          rating: biz.rating,
-          reviews: biz.reviews,
-          copyrightYear,
-          isMobileFriendly,
-          score,
+          name: biz.name, phone: biz.phone, website: biz.website, address: biz.address,
+          email: biz.email, facebook: biz.facebook, instagram: biz.instagram,
+          telegram: biz.telegram, openingHours: biz.openingHours, description: biz.description,
+          rating: biz.rating, reviews: biz.reviews,
+          copyrightYear, isMobileFriendly,
+          score: scoreLead(biz.website, copyrightYear, isMobileFriendly),
         });
-
         await new Promise((r) => setTimeout(r, 200));
         setLeads([...analyzedLeads]);
       }
@@ -205,58 +180,34 @@ export default function Home() {
     }
   }, [city, query, maxResults, radius]);
 
-  // Filtering & sorting
   const filteredLeads = leads
     .filter((l) => filterScore === "ALL" || l.score === filterScore)
     .sort((a, b) => {
       const order = sortDir === "asc" ? 1 : -1;
-      const scoreOrder: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
-      if (sortField === "score") return (scoreOrder[a.score] - scoreOrder[b.score]) * order;
+      const so: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
+      if (sortField === "score") return (so[a.score] - so[b.score]) * order;
       if (sortField === "name") return a.name.localeCompare(b.name) * order;
-      if (sortField === "rating") return ((a.rating || 0) - (b.rating || 0)) * order;
-      if (sortField === "reviews") return (a.reviews - b.reviews) * order;
       return 0;
     });
 
-  // Summary stats
   const hotCount = leads.filter((l) => l.score === "HOT").length;
   const warmCount = leads.filter((l) => l.score === "WARM").length;
   const coldCount = leads.filter((l) => l.score === "COLD").length;
-  const noWebsiteCount = leads.filter((l) => l.website === "N/A").length;
-  const mobileFriendlyCount = leads.filter((l) => l.isMobileFriendly).length;
-
-  const handleSort = (field: string) => {
-    if (sortField === field) {
-      setSortDir(sortDir === "asc" ? "desc" : "asc");
-    } else {
-      setSortField(field);
-      setSortDir("desc");
-    }
-  };
-
-  const SortIcon = ({ field }: { field: string }) => {
-    if (sortField !== field) return null;
-    return sortDir === "asc" ? (
-      <ChevronUp className="inline w-3 h-3 ml-1" />
-    ) : (
-      <ChevronDown className="inline w-3 h-3 ml-1" />
-    );
-  };
+  const noWebsite = leads.filter((l) => l.website === "N/A").length;
+  const hasContacts = leads.filter((l) => l.phone !== "N/A" || l.email || l.website !== "N/A").length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       {/* Header */}
       <header className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg">
               <Target className="w-5 h-5 text-white" />
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight">Lead Finder</h1>
-              <p className="text-xs text-muted-foreground">
-                Безкоштовний пошук лідів • Без API ключів
-              </p>
+              <p className="text-xs text-muted-foreground">Безкоштовно • Без API ключів</p>
             </div>
           </div>
           {leads.length > 0 && (
@@ -274,81 +225,41 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
         {/* Search Form */}
         <Card className="shadow-lg border-0">
-          <CardHeader className="pb-4">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <MapPinned className="w-5 h-5" />
-              Пошук лідів
-              <Badge variant="secondary" className="ml-2 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
-                <Wifi className="w-3 h-3 mr-1" />
-                Без API ключа
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  🏙️ Місто
-                </label>
-                <Input
-                  placeholder="Київ, New York, London..."
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">🏙️ Місто</label>
+                <Input placeholder="Kyiv, London, Berlin..." value={city} onChange={(e) => setCity(e.target.value)}
                   disabled={phase === "searching" || phase === "analyzing"}
-                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                />
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  🎯 Ніша / Ключове слово
-                </label>
-                <Input
-                  placeholder="ресторан, dentist, plumber..."
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">🎯 Ніша</label>
+                <Input placeholder="юрист, dentist, restaurant..." value={query} onChange={(e) => setQuery(e.target.value)}
                   disabled={phase === "searching" || phase === "analyzing"}
-                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                />
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  📊 Макс. результатів
-                </label>
-                <Select
-                  value={maxResults}
-                  onValueChange={setMaxResults}
-                  disabled={phase === "searching" || phase === "analyzing"}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">📊 Кількість</label>
+                <Select value={maxResults} onValueChange={setMaxResults} disabled={phase === "searching" || phase === "analyzing"}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="10">10</SelectItem>
                     <SelectItem value="20">20</SelectItem>
-                    <SelectItem value="30">30</SelectItem>
                     <SelectItem value="50">50</SelectItem>
                     <SelectItem value="100">100</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">
-                  📍 Радіус (км)
-                </label>
-                <Select
-                  value={radius}
-                  onValueChange={setRadius}
-                  disabled={phase === "searching" || phase === "analyzing"}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">📍 Радіус</label>
+                <Select value={radius} onValueChange={setRadius} disabled={phase === "searching" || phase === "analyzing"}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="5">5 км</SelectItem>
-                    <SelectItem value="10">10 км</SelectItem>
                     <SelectItem value="15">15 км</SelectItem>
                     <SelectItem value="25">25 км</SelectItem>
                     <SelectItem value="50">50 км</SelectItem>
@@ -357,59 +268,30 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Quick keyword hints */}
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="text-xs text-muted-foreground">Швидкий вибір:</span>
-              {[
-                "ресторан", "dentist", "plumber", "юрист", "кафе",
-                "пекарня", "салон", "auto", "electronician",
-              ].map((kw) => (
-                <button
-                  key={kw}
-                  onClick={() => setQuery(kw)}
-                  disabled={phase === "searching" || phase === "analyzing"}
-                  className="text-xs px-2 py-0.5 rounded-full border border-border hover:bg-accent disabled:opacity-50 transition-colors"
-                >
+            {/* Quick picks */}
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <span className="text-xs text-muted-foreground leading-6">Швидко:</span>
+              {["юрист", "ресторан", "dentist", "plumber", "кафе", "beauty", "готель", "gym", "аптека", "супермаркет"].map((kw) => (
+                <button key={kw} onClick={() => setQuery(kw)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
+                  className="text-xs px-2 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">
                   {kw}
                 </button>
               ))}
             </div>
 
             {errorMessage && (
-              <div className="mt-4 flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 rounded-lg p-3">
+              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 rounded-lg p-3">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 {errorMessage}
               </div>
             )}
 
-            <div className="mt-5 flex items-center gap-3">
-              <Button
-                onClick={handleSearch}
-                disabled={
-                  phase === "searching" ||
-                  phase === "analyzing" ||
-                  !city ||
-                  !query
-                }
-                className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg"
-                size="lg"
-              >
-                {phase === "searching" || phase === "analyzing" ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Search className="w-4 h-4 mr-2" />
-                )}
-                {phase === "searching"
-                  ? "Пошук..."
-                  : phase === "analyzing"
-                    ? "Аналіз сайтів..."
-                    : "Знайти ліди"}
+            <div className="mt-4">
+              <Button onClick={handleSearch} disabled={(phase === "searching" || phase === "analyzing") || !city || !query}
+                className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg w-full sm:w-auto">
+                {phase === "searching" || phase === "analyzing" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
+                {phase === "searching" ? "Пошук..." : phase === "analyzing" ? "Аналіз сайтів..." : "Знайти ліди"}
               </Button>
-              {(phase === "searching" || phase === "analyzing") && (
-                <span className="text-sm text-muted-foreground animate-pulse">
-                  {progressLabel}
-                </span>
-              )}
             </div>
           </CardContent>
         </Card>
@@ -417,368 +299,238 @@ export default function Home() {
         {/* Progress */}
         {(phase === "searching" || phase === "analyzing") && (
           <Card className="shadow-md border-0">
-            <CardContent className="py-4">
-              <div className="flex items-center justify-between mb-2">
+            <CardContent className="py-3">
+              <div className="flex items-center justify-between mb-1.5">
                 <span className="text-sm font-medium">{progressLabel}</span>
                 <span className="text-sm text-muted-foreground">{progress}%</span>
               </div>
-              <Progress value={progress} className="h-2.5" />
+              <Progress value={progress} className="h-2" />
             </CardContent>
           </Card>
         )}
 
-        {/* Summary Stats */}
+        {/* Stats */}
         {leads.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <StatCard
-              label="Всього"
-              value={leads.length}
-              className="bg-slate-100 dark:bg-slate-800"
-            />
-            <StatCard
-              label="HOT"
-              value={hotCount}
-              className="bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400"
-              icon={<Flame className="w-4 h-4" />}
-            />
-            <StatCard
-              label="WARM"
-              value={warmCount}
-              className="bg-yellow-100 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-400"
-              icon={<Zap className="w-4 h-4" />}
-            />
-            <StatCard
-              label="COLD"
-              value={coldCount}
-              className="bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-400"
-              icon={<Snowflake className="w-4 h-4" />}
-            />
-            <StatCard
-              label="Без сайту"
-              value={noWebsiteCount}
-              className="bg-slate-100 dark:bg-slate-800"
-              icon={<WifiOff className="w-4 h-4" />}
-            />
-            <StatCard
-              label="Mobile OK"
-              value={mobileFriendlyCount}
-              className="bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400"
-              icon={<Smartphone className="w-4 h-4" />}
-            />
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+            <MiniStat label="Всього" value={leads.length} />
+            <MiniStat label="🔥 HOT" value={hotCount} color="text-red-600" />
+            <MiniStat label="⚡ WARM" value={warmCount} color="text-yellow-600" />
+            <MiniStat label="❄️ COLD" value={coldCount} color="text-green-600" />
+            <MiniStat label="📞 Контакти" value={hasContacts} color="text-blue-600" />
           </div>
         )}
 
-        {/* Filter + Sort Bar */}
+        {/* Filter */}
         {leads.length > 0 && (phase === "done" || phase === "analyzing") && (
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm text-muted-foreground font-medium">
-              Фільтр:
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
             {(["ALL", "HOT", "WARM", "COLD"] as const).map((s) => (
-              <Button
-                key={s}
-                variant={filterScore === s ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilterScore(s)}
-                className={
-                  filterScore === s && s !== "ALL"
-                    ? s === "HOT"
-                      ? "bg-red-600 hover:bg-red-700 text-white"
-                      : s === "WARM"
-                        ? "bg-yellow-500 hover:bg-yellow-600 text-black"
-                        : "bg-green-600 hover:bg-green-700 text-white"
-                    : ""
-                }
-              >
-                {s === "ALL"
-                  ? "Всі"
-                  : s === "HOT"
-                    ? "🔥 HOT"
-                    : s === "WARM"
-                      ? "⚡ WARM"
-                      : "❄️ COLD"}
+              <Button key={s} variant={filterScore === s ? "default" : "outline"} size="sm" onClick={() => setFilterScore(s)}
+                className={filterScore === s && s !== "ALL"
+                  ? s === "HOT" ? "bg-red-600 hover:bg-red-700 text-white"
+                    : s === "WARM" ? "bg-yellow-500 hover:bg-yellow-600 text-black"
+                      : "bg-green-600 hover:bg-green-700 text-white" : ""}>
+                {s === "ALL" ? `Всі (${leads.length})` : s === "HOT" ? `🔥 HOT (${hotCount})` : s === "WARM" ? `⚡ WARM (${warmCount})` : `❄️ COLD (${coldCount})`}
               </Button>
             ))}
-            <div className="flex items-center gap-1 ml-auto">
-              <Badge variant="outline" className="text-xs">
-                <MapPinned className="w-3 h-3 mr-1" />
-                {searchSource}
-              </Badge>
-              <span className="text-sm text-muted-foreground ml-2">
-                {filteredLeads.length}/{leads.length}
-              </span>
-            </div>
+            <span className="text-xs text-muted-foreground ml-auto">{filteredLeads.length} з {leads.length}</span>
           </div>
         )}
 
-        {/* Results Table */}
-        {leads.length > 0 && (
-          <Card className="shadow-lg border-0 overflow-hidden">
-            <CardContent className="p-0">
-              <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-                <Table>
-                  <TableHeader className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
-                    <TableRow>
-                      <TableHead className="w-8">#</TableHead>
-                      <TableHead
-                        className="cursor-pointer select-none"
-                        onClick={() => handleSort("name")}
-                      >
-                        Назва <SortIcon field="name" />
-                      </TableHead>
-                      <TableHead className="hidden md:table-cell">
-                        Телефон
-                      </TableHead>
-                      <TableHead className="hidden lg:table-cell">
-                        Сайт
-                      </TableHead>
-                      <TableHead className="hidden xl:table-cell">
-                        Адреса
-                      </TableHead>
-                      <TableHead
-                        className="cursor-pointer select-none"
-                        onClick={() => handleSort("rating")}
-                      >
-                        Рейтинг <SortIcon field="rating" />
-                      </TableHead>
-                      <TableHead
-                        className="cursor-pointer select-none"
-                        onClick={() => handleSort("reviews")}
-                      >
-                        Відгуки <SortIcon field="reviews" />
-                      </TableHead>
-                      <TableHead className="hidden sm:table-cell">Рік</TableHead>
-                      <TableHead className="hidden sm:table-cell">
-                        Mobile
-                      </TableHead>
-                      <TableHead
-                        className="cursor-pointer select-none"
-                        onClick={() => handleSort("score")}
-                      >
-                        Score <SortIcon field="score" />
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredLeads.map((lead, idx) => {
-                      const scoreInfo = getScoreColor(lead.score);
-                      return (
-                        <TableRow
-                          key={`${lead.name}-${idx}`}
-                          className={`${scoreInfo.bg} hover:opacity-90 transition-opacity`}
-                        >
-                          <TableCell className="font-medium text-muted-foreground">
-                            {idx + 1}
-                          </TableCell>
-                          <TableCell>
-                            <div className="font-medium max-w-[200px] truncate">
-                              {lead.name}
-                            </div>
-                          </TableCell>
-                          <TableCell className="hidden md:table-cell">
-                            <div className="flex items-center gap-1.5 text-sm">
-                              <Phone className="w-3 h-3 text-muted-foreground shrink-0" />
-                              <span className="truncate max-w-[140px]">
-                                {lead.phone}
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="hidden lg:table-cell">
-                            {lead.website !== "N/A" ? (
-                              <a
-                                href={
-                                  lead.website.startsWith("http")
-                                    ? lead.website
-                                    : `https://${lead.website}`
-                                }
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 truncate max-w-[200px]"
-                              >
-                                <Globe className="w-3 h-3 shrink-0" />
-                                {lead.website
-                                  .replace(/^https?:\/\//, "")
-                                  .replace(/\/$/, "")}
-                                <ExternalLink className="w-3 h-3 shrink-0 opacity-50" />
-                              </a>
-                            ) : (
-                              <span className="text-sm text-muted-foreground italic">
-                                Немає
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell className="hidden xl:table-cell">
-                            <div className="flex items-center gap-1.5 text-sm text-muted-foreground max-w-[250px] truncate">
-                              <MapPin className="w-3 h-3 shrink-0" />
-                              {lead.address}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {lead.rating ? (
-                              <div className="flex items-center gap-1">
-                                <Star className="w-3.5 h-3.5 fill-yellow-400 text-yellow-400" />
-                                <span className="text-sm font-medium">
-                                  {lead.rating}
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-sm text-muted-foreground">
-                                —
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-sm">{lead.reviews}</span>
-                          </TableCell>
-                          <TableCell className="hidden sm:table-cell">
-                            <span className="text-sm">
-                              {lead.copyrightYear || "—"}
-                            </span>
-                          </TableCell>
-                          <TableCell className="hidden sm:table-cell">
-                            {lead.isMobileFriendly ? (
-                              <Badge
-                                variant="secondary"
-                                className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-                              >
-                                <Smartphone className="w-3 h-3 mr-1" />
-                                Yes
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="outline"
-                                className="text-muted-foreground"
-                              >
-                                No
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              className={`${scoreInfo.bg} ${scoreInfo.text} ${scoreInfo.border} font-bold`}
-                            >
-                              {scoreInfo.emoji} {scoreInfo.label}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Lead Cards */}
+        {filteredLeads.map((lead, idx) => {
+          const sc = getScoreColor(lead.score);
+          const isExpanded = expandedIdx === idx;
+          const hasAnyContact = lead.phone !== "N/A" || lead.email || lead.website !== "N/A" || lead.facebook || lead.instagram || lead.telegram;
 
-        {/* Empty State */}
+          return (
+            <Card key={`${lead.name}-${idx}`} className={`border-l-4 shadow-sm overflow-hidden transition-all ${sc.border} hover:shadow-md`}>
+              {/* Summary row */}
+              <button
+                onClick={() => setExpandedIdx(isExpanded ? null : idx)}
+                className="w-full text-left p-4 flex items-start gap-3"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-base truncate max-w-[250px]">{lead.name}</span>
+                    <Badge className={`${sc.bg} ${sc.text} ${sc.border} font-bold text-xs`}>
+                      {sc.emoji} {sc.label}
+                    </Badge>
+                  </div>
+                  {/* Preview: phone + address */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-sm text-muted-foreground">
+                    {lead.phone !== "N/A" && (
+                      <span className="flex items-center gap-1"><Phone className="w-3.5 h-3.5" />{lead.phone}</span>
+                    )}
+                    {lead.address !== "N/A" && (
+                      <span className="flex items-center gap-1 truncate max-w-[250px]"><MapPin className="w-3.5 h-3.5 shrink-0" />{lead.address}</span>
+                    )}
+                    {lead.website !== "N/A" && (
+                      <span className="flex items-center gap-1 truncate max-w-[180px]"><Globe className="w-3.5 h-3.5 shrink-0" />{lead.website.replace(/^https?:\/\//, "")}</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right side: score icon + expand */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Contact dots */}
+                  <div className="hidden sm:flex items-center gap-1">
+                    {lead.phone !== "N/A" && <div className="w-2 h-2 rounded-full bg-green-400" title="Є телефон" />}
+                    {lead.email && <div className="w-2 h-2 rounded-full bg-blue-400" title="Є email" />}
+                    {lead.website !== "N/A" && <div className="w-2 h-2 rounded-full bg-purple-400" title="Є сайт" />}
+                    {(lead.facebook || lead.instagram || lead.telegram) && (
+                      <div className="w-2 h-2 rounded-full bg-pink-400" title="Є соцмережі" />
+                    )}
+                    {!hasAnyContact && (
+                      <WifiOff className="w-3.5 h-3.5 text-red-400" title="Немає контактів" />
+                    )}
+                  </div>
+                  {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                </div>
+              </button>
+
+              {/* Expanded detail */}
+              {isExpanded && (
+                <div className="border-t bg-muted/30 px-4 py-4 space-y-3">
+                  {/* Contact grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Phone */}
+                    <ContactField icon={<Phone className="w-4 h-4" />} label="Телефон" value={lead.phone}
+                      copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} />
+                    {/* Email */}
+                    <ContactField icon={<Mail className="w-4 h-4" />} label="Email" value={lead.email}
+                      copyable={!!lead.email} CopyBtn={CopyBtn} />
+                    {/* Website */}
+                    <div className="flex items-start gap-2">
+                      <Globe className="w-4 h-4 mt-0.5 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs text-muted-foreground">Сайт</div>
+                        {lead.website !== "N/A" ? (
+                          <a href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
+                            target="_blank" rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 flex items-center gap-1 break-all">
+                            {lead.website.replace(/^https?:\/\//, "")}
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                          </a>
+                        ) : (
+                          <span className="text-sm text-muted-foreground italic">Немає</span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Address */}
+                    <ContactField icon={<MapPin className="w-4 h-4" />} label="Адреса" value={lead.address}
+                      copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} />
+                  </div>
+
+                  {/* Social media */}
+                  {(lead.facebook || lead.instagram || lead.telegram) && (
+                    <div className="flex flex-wrap gap-2">
+                      {lead.facebook && (
+                        <a href={lead.facebook.startsWith("http") ? lead.facebook : `https://${lead.facebook}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300 dark:hover:bg-blue-900/60 transition-colors">
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                          Facebook <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      {lead.instagram && (
+                        <a href={lead.instagram.startsWith("http") ? lead.instagram : `https://${lead.instagram}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/40 dark:text-pink-300 dark:hover:bg-pink-900/60 transition-colors">
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>
+                          Instagram <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      {lead.telegram && (
+                        <a href={lead.telegram.startsWith("http") ? lead.telegram : `https://${lead.telegram}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:hover:bg-sky-900/60 transition-colors">
+                          <MessageCircle className="w-4 h-4" />
+                          Telegram <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Meta info row */}
+                  <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                    {lead.openingHours && (
+                      <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{lead.openingHours}</span>
+                    )}
+                    {lead.copyrightYear && (
+                      <span>© {lead.copyrightYear}</span>
+                    )}
+                    <span>Mobile: {lead.isMobileFriendly ? "✅ Так" : "❌ Ні"}</span>
+                    {lead.website !== "N/A" && !lead.copyrightYear && (
+                      <span className="italic">Сайт є, але рік не визначено → {lead.score === "HOT" ? "не визначено" : ""}</span>
+                    )}
+                    {lead.website === "N/A" && (
+                      <span className="text-red-500 font-medium">⚠️ Немає сайту — гарний prospect!</span>
+                    )}
+                  </div>
+
+                  {lead.description && (
+                    <p className="text-sm text-muted-foreground bg-muted/50 rounded-lg p-2">{lead.description}</p>
+                  )}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+
+        {/* Empty state */}
         {phase === "idle" && (
-          <div className="text-center py-20 space-y-6">
-            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center">
-              <Target className="w-10 h-10 text-emerald-500" />
+          <div className="text-center py-20 space-y-4">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center">
+              <Target className="w-8 h-8 text-emerald-500" />
             </div>
-            <div className="space-y-2">
-              <h2 className="text-2xl font-bold">
-                Знайдіть ідеальних клієнтів
-              </h2>
-              <p className="text-muted-foreground max-w-lg mx-auto">
-                Повністю <strong>безкоштовно</strong>, без Google API ключів.
-                Використовує OpenStreetMap для пошуку бізнесів у будь-якому
-                місті світу, аналізує сайти та оцінює кожен лід.
-              </p>
-            </div>
-            <div className="flex flex-col sm:flex-row justify-center gap-6 pt-2">
-              <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-card border">
-                <div className="w-12 h-12 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center">
-                  <MapPinned className="w-6 h-6 text-emerald-600" />
-                </div>
-                <span className="text-sm font-medium">OpenStreetMap</span>
-                <span className="text-xs text-muted-foreground">
-                  Безкоштовна база даних
-                </span>
-              </div>
-              <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-card border">
-                <div className="w-12 h-12 rounded-lg bg-orange-100 dark:bg-orange-900/40 flex items-center justify-center">
-                  <Globe className="w-6 h-6 text-orange-600" />
-                </div>
-                <span className="text-sm font-medium">Аналіз сайтів</span>
-                <span className="text-xs text-muted-foreground">
-                  Вік + мобільність
-                </span>
-              </div>
-              <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-card border">
-                <div className="w-12 h-12 rounded-lg bg-red-100 dark:bg-red-900/40 flex items-center justify-center">
-                  <Flame className="w-6 h-6 text-red-600" />
-                </div>
-                <span className="text-sm font-medium">Скоринг лідів</span>
-                <span className="text-xs text-muted-foreground">
-                  HOT / WARM / COLD
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-wrap justify-center gap-4 pt-2">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="w-3 h-3 rounded-full bg-red-500" />
-                <span className="text-muted-foreground">
-                  HOT — найкращі prospects
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <span className="w-3 h-3 rounded-full bg-yellow-500" />
-                <span className="text-muted-foreground">
-                  WARM — потенційні клієнти
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <span className="w-3 h-3 rounded-full bg-green-500" />
-                <span className="text-muted-foreground">
-                  COLD — сучасний сайт
-                </span>
-              </div>
-            </div>
+            <h2 className="text-xl font-bold">Знайдіть ідеальних клієнтів</h2>
+            <p className="text-muted-foreground max-w-md mx-auto text-sm">
+              Повністю безкоштовно. Введіть місто та нішу — отримайте контакти,
+              сайти, соцмережі та оцінку кожного ліда.
+            </p>
           </div>
         )}
 
         {phase === "done" && leads.length === 0 && (
-          <div className="text-center py-20">
-            <p className="text-muted-foreground">
-              Нічого не знайдено. Спробуйте інше місто, ключове слово або
-              збільшити радіус.
-            </p>
-          </div>
+          <div className="text-center py-16 text-muted-foreground">Нічого не знайдено. Спробуйте інші параметри.</div>
         )}
       </main>
 
-      {/* Footer */}
       <footer className="border-t mt-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 text-center text-sm text-muted-foreground">
-          Lead Finder — Безкоштовний генератор лідів з OpenStreetMap • Deploy on
-          Vercel
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 text-center text-xs text-muted-foreground">
+          Lead Finder — Безкоштовний генератор лідів • OpenStreetMap
         </div>
       </footer>
     </div>
   );
 }
 
-function StatCard({
-  label,
-  value,
-  className = "",
-  icon,
-}: {
-  label: string;
-  value: number;
-  className?: string;
-  icon?: React.ReactNode;
+// ─── Small components ───────────────────────────────────────
+
+function MiniStat({ label, value, color }: { label: string; value: number; color?: string }) {
+  return (
+    <div className="rounded-lg p-2.5 bg-card border text-center">
+      <div className={`text-lg font-bold ${color || ""}`}>{value}</div>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function ContactField({ icon, label, value, copyable, CopyBtn }: {
+  icon: React.ReactNode; label: string; value: string;
+  copyable: boolean; CopyBtn: (props: { text: string; label: string }) => React.ReactNode | null;
 }) {
   return (
-    <div
-      className={`rounded-xl p-4 flex flex-col items-center justify-center gap-1 ${className}`}
-    >
-      <div className="flex items-center gap-1.5">
-        {icon}
-        <span className="text-xs font-medium opacity-70">{label}</span>
+    <div className="flex items-start gap-2">
+      <div className="mt-0.5 text-muted-foreground">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-muted-foreground">{label}</div>
+        {value && value !== "N/A" ? (
+          <span className="text-sm break-all">{value} {copyable && <CopyBtn text={value} label={label} />}</span>
+        ) : (
+          <span className="text-sm text-muted-foreground italic">Немає</span>
+        )}
       </div>
-      <span className="text-2xl font-bold">{value}</span>
     </div>
   );
 }

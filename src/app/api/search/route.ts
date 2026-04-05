@@ -13,7 +13,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Normalize inputs
     const trimmedCity = String(city).trim();
     const trimmedQuery = String(query).trim();
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
@@ -31,11 +30,15 @@ export async function POST(request: NextRequest) {
       phone: r.phone,
       website: r.website,
       address: r.address,
+      email: r.email,
+      facebook: r.facebook,
+      instagram: r.instagram,
+      telegram: r.telegram,
+      openingHours: r.openingHours,
+      description: r.description,
       rating: null,
       reviews: 0,
       type: r.type,
-      lat: r.lat,
-      lng: r.lng,
     }));
 
     return NextResponse.json({

@@ -13,6 +13,12 @@ export interface LeadBusiness {
   phone: string;
   website: string;
   address: string;
+  email: string;
+  facebook: string;
+  instagram: string;
+  telegram: string;
+  openingHours: string;
+  description: string;
   rating: number | null;
   reviews: number;
   copyrightYear: number | null;
