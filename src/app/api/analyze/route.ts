@@ -10,6 +10,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         copyrightYear: null,
         isMobileFriendly: false,
+        hasSsl: false,
+        finalUrl: "",
+        technologies: [],
+        designScore: "unknown",
+        designNotes: [],
+        pageTitle: "",
+        hasContactForm: false,
         skipped: true,
       });
     }
@@ -19,12 +26,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       copyrightYear: result.copyrightYear,
       isMobileFriendly: result.isMobileFriendly,
+      hasSsl: result.hasSsl,
+      finalUrl: result.finalUrl,
+      technologies: result.technologies,
+      designScore: result.designScore,
+      designNotes: result.designNotes,
+      pageTitle: result.pageTitle,
+      hasContactForm: result.hasContactForm,
     });
   } catch (error) {
     console.error("Analyze API error:", error);
-    return NextResponse.json(
-      { error: "Analysis failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Analysis failed" }, { status: 500 });
   }
 }
