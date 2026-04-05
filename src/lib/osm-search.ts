@@ -181,7 +181,15 @@ export async function searchOverpass(
   });
 
   if (!resp.ok) {
-    throw new Error(`Overpass API error: ${resp.status}`);
+    // Try to read error body for details
+    let detail = "";
+    try {
+      detail = await resp.text();
+      // Extract meaningful part from HTML error pages
+      const match = detail.match(/<p>([^<]{10,})<\/p>/i);
+      if (match) detail = match[1].trim();
+    } catch {}
+    throw new Error(`Overpass API error ${resp.status}: ${detail || "bad request. Try a different keyword or city."}`);
   }
 
   const data = await resp.json();
@@ -192,6 +200,11 @@ export async function searchOverpass(
 
   // Step 4: Parse results
   return parseOverpassResults(data.elements, keyword);
+}
+
+function escapeOverpassRegex(str: string): string {
+  // Escape special regex characters for Overpass QL
+  return str.replace(/[\\^$.*+?()|[\]{}]/g, "\\$&");
 }
 
 function buildOverpassQuery(
@@ -215,30 +228,26 @@ function buildOverpassQuery(
       tagConditions.push(`node["${key}"="${value}"](around:${radius},${lat},${lng})`);
       tagConditions.push(`way["${key}"="${value}"](around:${radius},${lat},${lng})`);
     }
-  }
+  } else {
+    // No known category → name-based search + generic tags
+    const escaped = escapeOverpassRegex(keyword);
+    tagConditions.push(`node["name"~"${escaped}",i](around:${radius},${lat},${lng})`);
+    tagConditions.push(`way["name"~"${escaped}",i](around:${radius},${lat},${lng})`);
 
-  // Always add name-based search as supplement
-  const escapedKeyword = keyword.replace(/([\\])/g, "\\$1");
-  tagConditions.push(`node["name"~"${escapedKeyword}",i](around:${radius},${lat},${lng})`);
-  tagConditions.push(`way["name"~"${escapedKeyword}",i](around:${radius},${lat},${lng})`);
-
-  // If no specific tags matched, add generic business tags
-  if (!matchedTags) {
+    // Also add generic business tags
     for (const tag of GENERIC_TAGS) {
-      tagConditions.push(`node["${tag}"](around:${radius},${lat},${lng})`);
-      tagConditions.push(`way["${tag}"](around:${radius},${lat},${lng})`);
+      tagConditions.push(`node["${tag}"~"${escaped}",i](around:${radius},${lat},${lng})`);
+      tagConditions.push(`way["${tag}"~"${escaped}",i](around:${radius},${lat},${lng})`);
     }
   }
 
-  const conditions = tagConditions.join("\n    ");
+  const conditions = tagConditions.join("\n  ");
 
-  return `
-[out:json][timeout:30];
+  return `[out:json][timeout:30];
 (
-    ${conditions}
+  ${conditions}
 );
-out center body ${maxResults > 0 ? `qt ${maxResults}` : ""};
-`.trim();
+out center;`.trim();
 }
 
 function parseOverpassResults(
