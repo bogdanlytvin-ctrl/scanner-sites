@@ -441,3 +441,213 @@ Created comprehensive translation system with 90+ translation keys covering all 
 - Detailed scoring breakdown ("Why HOT") in expanded lead cards
 - "Load More" pagination (20 per page)
 - 70+ hardcoded Ukrainian strings replaced with translation keys
+
+---
+## Task ID: 2
+### Agent: Main agent
+### Task: Fix 502 Bad Gateway error in Overpass API + add retry with exponential backoff
+
+### Work Log:
+
+#### 1. Added retry with exponential backoff to `executeQuery()` in `/src/lib/osm-search.ts`
+- **Problem**: The old `executeQuery()` tried 5 Overpass endpoints but failed fast on each one without retrying. When an endpoint returned 502/503/504, it immediately moved to the next endpoint — wasting the opportunity that a simple retry (the error is often transient) would succeed.
+- **Solution**: Wrapped each endpoint attempt in an inner retry loop (`for` loop with `MAX_RETRIES_PER_ENDPOINT = 3`):
+  - **Retryable status codes**: 429 (rate limit), 502 (Bad Gateway), 503 (Service Unavailable), 504 (Gateway Timeout)
+  - **Exponential backoff delays**: 1s, 2s, 4s (`RETRY_DELAYS_MS = [1000, 2000, 4000]`)
+  - **Retry-After header support**: For 429 responses, reads `Retry-After` header and uses it (capped at 10s) instead of the default delay
+  - **Non-JSON server error retry**: When response content-type is not JSON and the HTML body contains "502", "Bad Gateway", "503", "Service Unavailable", "504", or "Gateway Timeout", retries with backoff
+  - **JSON parse error retry**: When `.json()` throws (e.g., truncated response), retries with backoff
+  - **Network error retry**: When `fetch()` itself throws (DNS failure, connection reset), retries with backoff
+  - **Non-retryable errors** (400, 403, 404, etc.): Immediately break to next endpoint (same as before)
+  - **Total attempts per endpoint**: 4 (1 initial + 3 retries)
+  - **Total attempts across all 5 endpoints**: Up to 20
+
+#### 2. Added random delay between endpoint attempts
+- Added `randomDelay(500, 1500)` (0.5-1.5s) before each request after the first endpoint to avoid hitting rate limits on multiple rapid searches
+- Uses `sleep()` helper function for the delay
+
+#### 3. Fixed Overpass QL query timeout
+- Changed `[timeout:30]` → `[timeout:25]` in both `buildTagQuery()` and `buildBroadQuery()`
+- Reduces the server-side query timeout, giving Overpass more headroom and reducing timeout-related 502 errors
+
+#### 4. Improved error message when all endpoints fail
+- Old: `Усі сервери Overpass недоступні. Спробуйте пізніше.`
+- New: Comprehensive Ukrainian message with:
+  - Number of endpoints attempted and retries per endpoint
+  - Last error from Overpass
+  - 💡 Tips: try again in a minute, reduce search radius, note that Overpass is a free service
+
+#### 5. Cache verification
+- Confirmed `getCachedOverpass()` is checked first in `executeQuery()` — returns immediately without hitting any Overpass endpoint
+- Empty results (`[]`) are also cached to avoid repeat lookups
+- Successful results are cached before returning
+
+#### 6. Content-type validation preserved
+- Response content-type is checked for "json" before calling `.json()`
+- Added try/catch around `.json()` call with retry on parse failure
+
+### Build Verification:
+- `npm run lint` — zero errors
+- Dev server compiles successfully (`✓ Compiled in 62ms`)
+- Public API unchanged: `searchOverpass()` and `geocodeCity()` signatures preserved
+- All 5 OVERPASS_ENDPOINTS preserved with same fallback chain logic
+
+### Stage Summary:
+- Retry with exponential backoff (1s/2s/4s) added for 502/503/504/429 errors, non-JSON server errors, JSON parse errors, and network errors
+- Up to 3 retries per endpoint × 5 endpoints = 20 total attempts (was 5)
+- Retry-After header respected for 429 rate limit responses (capped at 10s)
+- Random 0.5-1.5s jitter between endpoint switches to avoid rate limiting
+- Overpass QL timeout reduced from 30s to 25s
+- Helpful error message with troubleshooting tips when all retries exhausted
+- All existing functionality preserved (caching, fallback chain, content-type checks)
+
+---
+## Task ID: 2b
+### Agent: Bug fix agent
+### Task: Fix missing i18n keys and audit for bugs across the codebase
+
+### Work Log:
+
+#### 1. Fixed missing i18n keys in `/src/lib/i18n.ts`
+
+**Problem**: The `Translations` interface was missing two keys that were used in `page.tsx` with inline fallback strings, indicating they were forgotten during the initial i18n integration.
+
+**Added keys:**
+- `advanced` — used on line 657 of page.tsx as a section separator label ("— Advanced —")
+  - ua: "Розширений"
+  - en: "Advanced"
+  - ru: "Расширенный"
+- `foundLocations` — used on line 759 of page.tsx as a heading for resolved geo locations
+  - ua: "Знайдені локації"
+  - en: "Found locations"
+  - ru: "Найденные локации"
+
+**Changes:**
+- Added `advanced: string` and `foundLocations: string` to the `Translations` interface
+- Added translations for both keys in all 3 locale objects (ua, en, ru)
+
+#### 2. Removed fallback patterns from `/src/app/page.tsx`
+
+- Line 657: Changed `{t.advanced || 'Advanced'}` → `{t.advanced}` (fallback no longer needed)
+- Line 759: Changed `{t.foundLocations || 'Found locations'}` → `{t.foundLocations}` (fallback no longer needed)
+
+#### 3. Comprehensive i18n key audit
+
+Searched all `t.xxx` usages in page.tsx and cross-referenced against the Translations interface. After filtering out JavaScript/React built-in methods (t.map, t.slice, t.trim, t.toLowerCase, t.toFixed, t.createElement, t.MouseEvent, t.ReactNode, t.add, t.body, t.csv, t.has, t.id, t.me, t.replace, t.xlsx, t.value), verified all remaining keys exist in the interface. No other missing keys found.
+
+#### 4. Audited search API route (`/src/app/api/search/route.ts`)
+
+- ✅ `maxDuration = 60` confirmed set
+- ✅ All error responses return JSON via `NextResponse.json()`
+- ✅ Input sanitization: `String().trim()` for city/query, `parseInt()` with bounds clamping for maxResults (1-200) and radius (1-100)
+- **Fixed**: Reordered validation to trim first, then check for empty strings. Previously, whitespace-only values (e.g., city: "   ") would pass the `!city` check and proceed to search with an empty trimmed city string. Now validation runs after trimming with `String(city || "").trim()`.
+
+#### 5. Audited analyze API route (`/src/app/api/analyze/route.ts`)
+
+- ✅ `maxDuration = 30` confirmed set
+- ✅ Proper timeout handling: `website-analyzer.ts` uses `AbortSignal.timeout(TIMEOUT)` with 10-second timeout, plus HTTP fallback with its own timeout
+- ✅ Non-HTML content types handled: checks `contentType.includes("text/html")` and returns empty result for non-HTML
+- ✅ URL protocol normalization: adds `https://` prefix if missing
+- ✅ All error responses return JSON
+- ✅ Handles `!url || url === "N/A"` with a valid empty response (skipped: true)
+- No issues found.
+
+### Build Verification:
+- `npm run lint` — zero errors
+- `npx next build` — compiles successfully, all 10 routes pass (1 static, 9 dynamic)
+
+### Stage Summary:
+- Added 2 missing i18n keys (`advanced`, `foundLocations`) with translations in all 3 languages
+- Removed 2 inline fallback patterns from page.tsx
+- Fixed input validation order in search API route (trim before check)
+- Full audit of search and analyze API routes — no other issues found
+
+---
+## Task ID: 3
+### Agent: Backend agent
+### Task: Add mass PageSpeed Insights checking functionality
+
+### Work Log:
+
+#### 1. Created `/src/app/api/pagespeed/route.ts` (NEW)
+
+POST endpoint for checking website performance via Google PageSpeed Insights API v5.
+
+**Request body:**
+- `url: string` — the website URL to check (required)
+- `strategy?: "mobile" | "desktop"` — device strategy, defaults to "mobile"
+
+**Response format (simplified):**
+```json
+{
+  "url": "https://example.com",
+  "strategy": "mobile",
+  "performanceScore": 85,
+  "firstContentfulPaint": 1200,
+  "largestContentfulPaint": 2500,
+  "totalBlockingTime": 150,
+  "cumulativeLayoutShift": 0.05,
+  "speedIndex": 2000,
+  "diagnostics": ["Render-blocking resources: 3 resources", "..."]
+}
+```
+
+**Key implementation details:**
+- `export const maxDuration = 30` set for Vercel compatibility
+- Uses `AbortController` with 28s timeout (within 30s maxDuration)
+- Calls `https://www.googleapis.com/pagespeedonline/v5/runPagespeed` with `category=performance`
+- URL validation: normalizes missing protocols, catches invalid URLs
+- Strategy validation: only "mobile" or "desktop" accepted
+- Content-type validation before JSON parsing (same pattern as other API routes)
+- Comprehensive error handling for:
+  - 429 rate limit → Ukrainian message to retry later
+  - 400 bad request → URL validation error
+  - Timeout (AbortError) → 504 with retry message
+  - Missing `lighthouseResult` → "Lighthouse couldn't reliably load page"
+  - API-level errors in response body → forwarded with partial data
+  - Non-JSON responses → graceful error with null metrics
+- Error responses always include partial data with null metrics + `error` field
+- Extracts up to 5 diagnostic suggestions from Lighthouse audits (only those scoring < 0.9)
+- Performance score converted from 0-1 scale to 0-100
+
+#### 2. Created `/src/lib/pagespeed.ts` (NEW)
+
+Client-side utility library with type-safe helpers:
+
+**Types:**
+- `PageSpeedResult` interface — matches the API response shape with all optional null fields
+
+**Core function:**
+- `checkPageSpeed(url, strategy?)` — Calls `/api/pagespeed` endpoint with proper error handling. Falls back gracefully if response is non-JSON.
+
+**Formatting helpers:**
+- `getScoreColor(score)` → Tailwind text color class (red < 50, orange < 90, green ≥ 90)
+- `getScoreBgColor(score)` → Tailwind background color class
+- `getScoreBorderColor(score)` → Tailwind border color class
+- `getScoreRating(score)` → Ukrainian rating label ("Погано" / "Потребує покращення" / "Добре" / "Н/Д")
+
+**Metric formatters:**
+- `formatMs(ms)` → "150ms" or "1.5s" (auto-detects unit)
+- `formatCls(cls)` → "0.050" (3 decimal places)
+
+**Core Web Vitals evaluation (Google thresholds):**
+- `getMetricRating(metric, value)` → `{ rating, label }` with Google's good/needs-improvement/poor thresholds:
+  - FCP: good ≤ 1.8s, poor > 3.0s
+  - LCP: good ≤ 2.5s, poor > 4.0s
+  - TBT: good ≤ 200ms, poor > 600ms
+  - CLS: good ≤ 0.1, poor > 0.25
+  - SI: good ≤ 3.4s, poor > 5.8s
+- `getMetricDotColor(rating)` → Tailwind bg color for CWV dot indicators
+
+### Build Verification:
+- `npm run lint` — zero errors
+- Dev server compiles successfully with new files
+- No changes to `page.tsx` (UI integration is a separate task)
+- All existing routes unaffected
+
+### Stage Summary:
+- PageSpeed Insights API endpoint created at `/api/pagespeed` with 28s timeout and comprehensive error handling
+- Client-side utility library with 9 exported functions for score formatting, metric display, and CWV evaluation
+- Ukrainian error messages throughout for consistency with existing API routes
+- Designed for one-at-a-time URL checking (API takes 10-30s per request)
+- Ready for UI integration in a subsequent task

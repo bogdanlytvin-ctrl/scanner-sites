@@ -545,7 +545,7 @@ function buildTagQuery(
   const output = elementType === "node" ? "out body" : "out center";
 
   return (
-    `[out:json][timeout:30];\n` +
+    `[out:json][timeout:25];\n` +
     `(\n  ${conditions.join("\n  ")}\n);\n` +
     `${output};`
   );
@@ -577,16 +577,34 @@ function buildBroadQuery(
   }
 
   return (
-    `[out:json][timeout:30];\n` +
+    `[out:json][timeout:25];\n` +
     `(\n  ${conditions.join("\n  ")}\n);\n` +
     `out body qt ${maxResults};`
   );
 }
 
-// ─── Query execution with fallback ──────────────────────────
+// ─── Retry helpers ──────────────────────────────────────────
+
+/** Sleep for a given number of milliseconds */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Random delay between min and max milliseconds */
+function randomDelay(minMs: number, maxMs: number): number {
+  return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+}
+
+/** HTTP status codes that are worth retrying */
+const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
+
+// ─── Query execution with fallback + retry ───────────────────
+
+const MAX_RETRIES_PER_ENDPOINT = 3;
+const RETRY_DELAYS_MS = [1000, 2000, 4000]; // exponential backoff: 1s, 2s, 4s
 
 async function executeQuery(query: string): Promise<any[]> {
-  // Check cache first
+  // Check cache first — return immediately without hitting Overpass
   const cached = getCachedOverpass(query);
   if (cached !== null) {
     console.log(`[Overpass] Cache hit for query (length: ${query.length})`);
@@ -594,60 +612,145 @@ async function executeQuery(query: string): Promise<any[]> {
   }
 
   let lastError = "";
+  let attemptedEndpoints = 0;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
-        },
-        body: `data=${encodeURIComponent(query)}`,
-      });
+    attemptedEndpoints++;
 
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        lastError = extractOverpassError(text, resp.status);
-        console.warn(`[Overpass] ${endpoint} → ${resp.status}, trying next...`);
-        continue;
+    // Add a small random delay before each request to avoid hitting rate limits
+    if (attemptedEndpoints > 1) {
+      const jitter = randomDelay(500, 1500);
+      console.log(`[Overpass] Waiting ${jitter}ms before trying ${endpoint}...`);
+      await sleep(jitter);
+    }
+
+    for (let attempt = 0; attempt <= MAX_RETRIES_PER_ENDPOINT; attempt++) {
+      try {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
+          },
+          body: `data=${encodeURIComponent(query)}`,
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          lastError = extractOverpassError(text, resp.status);
+
+          // Only retry on retryable status codes (502, 503, 504, 429)
+          if (RETRYABLE_STATUS_CODES.has(resp.status) && attempt < MAX_RETRIES_PER_ENDPOINT) {
+            let delay = RETRY_DELAYS_MS[attempt];
+
+            // For 429 (rate limit), try to respect Retry-After header
+            if (resp.status === 429) {
+              const retryAfter = resp.headers.get("retry-after");
+              if (retryAfter) {
+                const retryAfterSec = parseInt(retryAfter, 10);
+                if (!isNaN(retryAfterSec) && retryAfterSec > 0) {
+                  delay = Math.min(retryAfterSec * 1000, 10000); // cap at 10s
+                }
+              }
+            }
+
+            console.warn(
+              `[Overpass] ${endpoint} → ${resp.status} (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
+            );
+            await sleep(delay);
+            continue; // retry same endpoint
+          }
+
+          console.warn(`[Overpass] ${endpoint} → ${resp.status}, trying next endpoint...`);
+          break; // move to next endpoint
+        }
+
+        // Check if response is JSON (not HTML error page)
+        const contentType = resp.headers.get("content-type") || "";
+        if (!contentType.includes("json")) {
+          const text = await resp.text().catch(() => "");
+          lastError = extractOverpassError(text, resp.status);
+
+          // Retry if it looks like a server error (HTML error page often means 502)
+          if (attempt < MAX_RETRIES_PER_ENDPOINT && (
+            text.includes("502") || text.includes("Bad Gateway") ||
+            text.includes("503") || text.includes("Service Unavailable") ||
+            text.includes("504") || text.includes("Gateway Timeout")
+          )) {
+            const delay = RETRY_DELAYS_MS[attempt];
+            console.warn(
+              `[Overpass] ${endpoint} → non-JSON with server error HTML (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
+            );
+            await sleep(delay);
+            continue;
+          }
+
+          console.warn(`[Overpass] ${endpoint} → non-JSON response, trying next endpoint...`);
+          break;
+        }
+
+        let data: any;
+        try {
+          data = await resp.json();
+        } catch (parseErr) {
+          // JSON parse failed — treat as server error and retry
+          if (attempt < MAX_RETRIES_PER_ENDPOINT) {
+            const delay = RETRY_DELAYS_MS[attempt];
+            console.warn(
+              `[Overpass] ${endpoint} → JSON parse error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
+            );
+            await sleep(delay);
+            continue;
+          }
+          lastError = `JSON parse error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`;
+          console.warn(`[Overpass] ${endpoint} → JSON parse failed after all retries, trying next endpoint...`);
+          break;
+        }
+
+        if (!data.elements || data.elements.length === 0) {
+          // Cache empty results too to avoid repeat lookups
+          setCachedOverpass(query, []);
+          return [];
+        }
+
+        // Check for Overpass runtime errors in response
+        if (data.remark && data.remark.includes("error")) {
+          lastError = data.remark;
+          console.warn(`[Overpass] ${endpoint} → runtime error: ${data.remark}`);
+          break; // move to next endpoint
+        }
+
+        // Cache successful results
+        setCachedOverpass(query, data.elements);
+        return data.elements;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+
+        // Retry on network errors
+        if (attempt < MAX_RETRIES_PER_ENDPOINT) {
+          const delay = RETRY_DELAYS_MS[attempt];
+          console.warn(
+            `[Overpass] ${endpoint} → network error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms: ${lastError}`
+          );
+          await sleep(delay);
+          continue;
+        }
+
+        console.warn(`[Overpass] ${endpoint} → ${lastError}, trying next endpoint...`);
+        break; // move to next endpoint
       }
-
-      // Check if response is JSON (not HTML error page)
-      const contentType = resp.headers.get("content-type") || "";
-      if (!contentType.includes("json")) {
-        const text = await resp.text().catch(() => "");
-        lastError = extractOverpassError(text, resp.status);
-        console.warn(`[Overpass] ${endpoint} → non-JSON response, trying next...`);
-        continue;
-      }
-
-      const data = await resp.json();
-
-      if (!data.elements || data.elements.length === 0) {
-        // Cache empty results too to avoid repeat lookups
-        setCachedOverpass(query, []);
-        return [];
-      }
-
-      // Check for Overpass runtime errors in response
-      if (data.remark && data.remark.includes("error")) {
-        lastError = data.remark;
-        console.warn(`[Overpass] ${endpoint} → runtime error: ${data.remark}`);
-        continue;
-      }
-
-      // Cache successful results
-      setCachedOverpass(query, data.elements);
-      return data.elements;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      console.warn(`[Overpass] ${endpoint} → ${lastError}, trying next...`);
     }
   }
 
-  // All endpoints failed
-  throw new Error(lastError || "Усі сервери Overpass недоступні. Спробуйте пізніше.");
+  // All endpoints failed after all retries
+  throw new Error(
+    `Усі сервери Overpass недоступні після ${attemptedEndpoints} спроб (${MAX_RETRIES_PER_ENDPOINT + 1} повторень кожна). ` +
+    `Остання помилка: ${lastError || "невідома"}.\n\n` +
+    `💡 Поради:\n` +
+    `• Спробуйте повторити запит через хвилину\n` +
+    `• Зменште радіус пошуку (наприклад, до 5 км)\n` +
+    `• Overpass API — це безкоштовний сервіс, який може бути перевантажений`
+  );
 }
 
 function extractOverpassError(html: string, status: number): string {

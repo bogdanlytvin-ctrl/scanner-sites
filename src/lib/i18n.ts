@@ -126,6 +126,8 @@ export interface Translations {
   emptyTitle: string;
   emptyDescription: string;
   // Misc
+  advanced: string;
+  foundLocations: string;
   notAvailable: string;
   delete: string;
   formal: string;
@@ -249,6 +251,8 @@ const ua: Translations = {
   footer: "Lead Finder • Безкоштовна лідогенерація • OpenStreetMap + thum.io",
   emptyTitle: "Знайдіть та перегляньте сайти конкурентів",
   emptyDescription: "Скріншоти сайтів, аналіз дизайну, контакти, соцмережі. Все що потрібно для пошуку клієнтів. Підтримка пошуку в декількох містах.",
+  advanced: "Розширений",
+  foundLocations: "Знайдені локації",
   notAvailable: "Немає",
   delete: "Видалити",
   formal: "форм.",
@@ -372,6 +376,8 @@ const en: Translations = {
   footer: "Lead Finder • Free Lead Generation • OpenStreetMap + thum.io",
   emptyTitle: "Find and review competitor sites",
   emptyDescription: "Site screenshots, design analysis, contacts, social media. Everything you need for lead generation. Multi-city search support.",
+  advanced: "Advanced",
+  foundLocations: "Found locations",
   notAvailable: "N/A",
   delete: "Delete",
   formal: "formal",
@@ -495,6 +501,8 @@ const ru: Translations = {
   footer: "Lead Finder • Бесплатная лидогенерация • OpenStreetMap + thum.io",
   emptyTitle: "Найдите и просмотрите сайты конкурентов",
   emptyDescription: "Скриншоты сайтов, анализ дизайна, контакты, соцсети. Всё что нужно для поиска клиентов. Поддержка поиска в нескольких городах.",
+  advanced: "Расширенный",
+  foundLocations: "Найденные локации",
   notAvailable: "Нет",
   delete: "Удалить",
   formal: "офиц.",

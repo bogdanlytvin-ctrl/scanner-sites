@@ -8,15 +8,15 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { city, query, maxResults = 20, radius = 15 } = body;
 
-    if (!city || !query) {
+    const trimmedCity = String(city || "").trim();
+    const trimmedQuery = String(query || "").trim();
+
+    if (!trimmedCity || !trimmedQuery) {
       return NextResponse.json(
         { error: "Вкажіть місто та ключове слово" },
         { status: 400 }
       );
     }
-
-    const trimmedCity = String(city).trim();
-    const trimmedQuery = String(query).trim();
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
     const parsedRadius = Math.min(Math.max(parseInt(radius) || 15, 1), 100);
 

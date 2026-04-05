@@ -654,7 +654,7 @@ export default function Home() {
             </div>
             <div className="relative flex items-center my-2">
               <div className="flex-grow border-t"></div>
-              <span className="flex-shrink mx-2 text-[10px] text-muted-foreground">— {t.advanced || 'Advanced'} —</span>
+              <span className="flex-shrink mx-2 text-[10px] text-muted-foreground">— {t.advanced} —</span>
               <div className="flex-grow border-t"></div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -756,7 +756,7 @@ export default function Home() {
           <div className="space-y-1">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <MapPin className="w-3.5 h-3.5" />
-              <span className="font-medium">{t.foundLocations || 'Found locations'}:</span>
+              <span className="font-medium">{t.foundLocations}:</span>
             </div>
             <div className="flex flex-wrap gap-2">
               {geoLocations.map((geo, i) => (
