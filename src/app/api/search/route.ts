@@ -58,9 +58,10 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("[Search API]", error);
-    const message =
-      error instanceof Error ? error.message : "Невідома помилка";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Невідома помилка";
+    console.error("[Search API] Error:", message);
+    // Return 200 with error field so the client sees the actual message
+    // (some proxies/CDNs strip 500 response bodies)
+    return NextResponse.json({ error: message, businesses: [], total: 0 }, { status: 500 });
   }
 }

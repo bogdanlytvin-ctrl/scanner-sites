@@ -272,6 +272,7 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
     const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=10`;
     const resp = await fetch(url, {
       headers: { "User-Agent": "LeadFinder/1.0" },
+      signal: AbortSignal.timeout(8000), // 8s timeout
     });
 
     if (!resp.ok) return null;
@@ -392,6 +393,7 @@ async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
       headers: {
         "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
       },
+      signal: AbortSignal.timeout(8000), // 8s timeout
     });
 
     // Nominatim returns 403 when rate-limited
