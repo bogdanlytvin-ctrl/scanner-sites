@@ -152,12 +152,8 @@ export default function Home() {
   const [tgSettings, setTgSettings] = useState<TelegramSettings>({ botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false });
   const [tgTesting, setTgTesting] = useState(false);
 
-  // i18n
-  const [locale, setLocale] = useState<Locale>(() => {
-    if (typeof window === 'undefined') return 'ua';
-    const saved = localStorage.getItem('leadfinder_locale');
-    return (saved as Locale) || 'ua';
-  });
+  // i18n — always start with 'ua' to match SSR, load saved locale after hydration
+  const [locale, setLocale] = useState<Locale>('ua');
 
   // Smart Query Parser
   const [smartQuery, setSmartQuery] = useState("");
@@ -178,17 +174,24 @@ export default function Home() {
 
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load history and favorites on mount
+  // Load history, favorites, and saved locale on mount (after hydration)
   useEffect(() => {
     setSearchHistory(getSearchHistory());
     const favNames = getFavorites().map((f) => f.name);
     setFavoritesSet(new Set(favNames));
     setTgSettings(getTelegramSettings());
+    // Load saved locale after hydration to avoid SSR mismatch
+    const savedLocale = localStorage.getItem('leadfinder_locale') as Locale | null;
+    if (savedLocale && ['ua', 'en', 'ru'].includes(savedLocale)) {
+      setLocale(savedLocale);
+    }
   }, []);
 
   // Persist locale
   useEffect(() => {
-    localStorage.setItem('leadfinder_locale', locale);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('leadfinder_locale', locale);
+    }
   }, [locale]);
 
   // Translations

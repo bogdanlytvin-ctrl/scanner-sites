@@ -14,10 +14,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Lead Finder — Google Maps Lead Generator",
-  description: "Find business leads via Google Maps. Analyze websites, score leads (HOT/WARM/COLD), export to Excel & CSV.",
+  title: "Lead Finder — Site Scanner & Lead Generator",
+  description: "Find business leads via OpenStreetMap. Analyze websites, score leads (HOT/WARM/COLD), export to Excel & CSV.",
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.svg",
   },
 };
 
@@ -27,9 +27,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="uk" suppressHydrationWarning translate="no">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        suppressHydrationWarning
       >
         {children}
         <Toaster />
