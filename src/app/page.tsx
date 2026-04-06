@@ -416,7 +416,7 @@ export default function Home() {
           rating: b.rating, reviews: b.reviews,
           copyrightYear, isMobileFriendly, hasSsl, finalUrl, technologies,
           designScore, designNotes, pageTitle, hasContactForm,
-          score: scoreLead(b.website, copyrightYear, isMobileFriendly),
+          score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl),
           status: "new", notes: "", contactDate: null,
         };
         analyzed.push(lead);

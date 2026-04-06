@@ -540,12 +540,14 @@ function buildTagQuery(
   }
 
   // Use "out body" for nodes (has lat/lon directly) or "out center" for ways
+  // qt = sort by quadtile (faster), limit to maxResults*2 to allow deduplication headroom
   const output = elementType === "node" ? "out body" : "out center";
+  const limit = Math.min(maxResults * 2, 400);
 
   return (
     `[out:json][timeout:25];\n` +
     `(\n  ${conditions.join("\n  ")}\n);\n` +
-    `${output};`
+    `${output} qt ${limit};`
   );
 }
 

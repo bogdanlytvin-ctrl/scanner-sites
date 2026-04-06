@@ -2,8 +2,8 @@ export type LeadScore = "HOT" | "WARM" | "COLD";
 export type DesignScore = "ancient" | "outdated" | "modern" | "unknown";
 export type LeadStatus = "new" | "contacted" | "replied" | "not_interested" | "deal" | "archived";
 
-export const HOT_YEAR_THRESHOLD = 2018;
-export const WARM_YEAR_UPPER = 2021;
+export const HOT_YEAR_THRESHOLD = 2020;
+export const WARM_YEAR_UPPER = 2023;
 
 export interface LeadBusiness {
   name: string;
@@ -108,9 +108,9 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     });
     totalPoints += 60;
   } else {
-    // 2. Copyright year checks
+    // 2. Copyright year checks (align with HOT_YEAR_THRESHOLD / WARM_YEAR_UPPER)
     if (lead.copyrightYear !== null) {
-      if (lead.copyrightYear <= 2016) {
+      if (lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
         factors.push({
           name: `Застарілий копірайт (${lead.copyrightYear})`,
           icon: "📅",
@@ -118,7 +118,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
           severity: "critical",
         });
         totalPoints += 25;
-      } else if (lead.copyrightYear >= 2017 && lead.copyrightYear <= 2019) {
+      } else if (lead.copyrightYear > HOT_YEAR_THRESHOLD && lead.copyrightYear <= WARM_YEAR_UPPER) {
         factors.push({
           name: `Старий копірайт (${lead.copyrightYear})`,
           icon: "📅",
@@ -300,12 +300,27 @@ function generateOpportunityText(
 export function scoreLead(
   website: string,
   copyrightYear: number | null,
-  _isMobileFriendly: boolean
+  isMobileFriendly: boolean,
+  hasSsl: boolean = true
 ): LeadScore {
   if (!website || website === "N/A") return "HOT";
-  if (copyrightYear === null) return "WARM";
-  if (copyrightYear <= HOT_YEAR_THRESHOLD) return "HOT";
-  if (copyrightYear <= WARM_YEAR_UPPER) return "WARM";
+
+  // Count critical issues
+  let hotSignals = 0;
+  let warmSignals = 0;
+
+  if (copyrightYear !== null) {
+    if (copyrightYear <= HOT_YEAR_THRESHOLD) hotSignals++;
+    else if (copyrightYear <= WARM_YEAR_UPPER) warmSignals++;
+  } else {
+    warmSignals++; // unknown copyright year = uncertain quality
+  }
+
+  if (!isMobileFriendly) hotSignals++;
+  if (!hasSsl) warmSignals++;
+
+  if (hotSignals >= 1) return "HOT";
+  if (warmSignals >= 1) return "WARM";
   return "COLD";
 }
 

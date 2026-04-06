@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 15; // Telegram API is fast, 15s is enough
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();

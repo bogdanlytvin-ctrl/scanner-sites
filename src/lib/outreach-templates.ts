@@ -33,7 +33,7 @@ const problemLibrary: ProblemType[] = [
     id: "old-design",
     icon: "📅",
     problem: "Дуже старий дизайн сайту",
-    description: "Сайт має копірайт 2016 року або старіший, що вказує на те, що він не оновлювався понад 8 років. Дизайн виглядає застарілим і непривабливим для сучасних користувачів.",
+    description: "Сайт має копірайт 2020 року або старіший, що вказує на те, що він не оновлювався понад 5 років. Дизайн виглядає застарілим і непривабливим для сучасних користувачів.",
     solution: "Повний редизайн сайту з використанням сучасних трендів UI/UX, адаптивної верстки та свіжої палітри кольорів.",
     benefits: [
       "Сучасний та привабливий вигляд",
@@ -42,7 +42,7 @@ const problemLibrary: ProblemType[] = [
       "Адаптивність для всіх пристроїв",
     ],
     priceRange: { min: 600, max: 2000 },
-    detectCondition: "copyrightYear && copyrightYear <= 2016",
+    detectCondition: "copyrightYear && copyrightYear <= 2020",
   },
   {
     id: "not-mobile-friendly",
@@ -181,7 +181,7 @@ export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
         matches = !lead.website || lead.website === "N/A";
         break;
       case "old-design":
-        matches = !!(lead.copyrightYear && lead.copyrightYear <= 2016);
+        matches = !!(lead.copyrightYear && lead.copyrightYear <= 2020);
         break;
       case "not-mobile-friendly":
         matches = lead.website !== "N/A" && !lead.isMobileFriendly;

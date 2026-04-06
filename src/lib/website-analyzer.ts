@@ -357,8 +357,7 @@ export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
   }
 
   // Ancient design
-  const currentYear = new Date().getFullYear();
-  if (lead.copyrightYear && lead.copyrightYear <= 2016) {
+  if (lead.copyrightYear && lead.copyrightYear <= 2020) {
     score += 30;
     reasons.push(`Дуже старий дизайн (© ${lead.copyrightYear})`);
   } else if (lead.designScore === "ancient") {
