@@ -1,10 +1,14 @@
 import sqlite3
 import os
+import time
 from datetime import datetime, timezone
 
 # On Railway: set DB_PATH=/data/data.db and mount a Volume at /data
 _default = os.path.join(os.path.dirname(__file__), "data.db")
 DB_PATH  = os.getenv("DB_PATH", _default)
+
+_STATS_CACHE_TTL_SEC = int(os.getenv("STATS_CACHE_TTL_SEC", "45"))
+_stats_cache: dict[str, tuple[float, dict]] = {}
 
 # Ensure the parent directory exists (needed when Volume is mounted at /data)
 _db_dir = os.path.dirname(DB_PATH)
@@ -18,6 +22,38 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _cache_get(key: str) -> dict | None:
+    if _STATS_CACHE_TTL_SEC <= 0:
+        return None
+    item = _stats_cache.get(key)
+    if not item:
+        return None
+    cached_at, value = item
+    if time.time() - cached_at > _STATS_CACHE_TTL_SEC:
+        _stats_cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value: dict) -> dict:
+    if _STATS_CACHE_TTL_SEC > 0:
+        _stats_cache[key] = (time.time(), value)
+    return value
+
+
+def _cache_invalidate(prefixes: tuple[str, ...]) -> None:
+    for key in list(_stats_cache.keys()):
+        if any(key.startswith(prefix) for prefix in prefixes):
+            _stats_cache.pop(key, None)
+
+
+def _invalidate_trade_caches(user_id: int | None = None) -> None:
+    prefixes = ["perf:global", "public_trades", "daily_stats:"]
+    if user_id is not None:
+        prefixes.append(f"perf:user:{user_id}")
+    _cache_invalidate(tuple(prefixes))
 
 
 def init_db() -> None:
@@ -101,6 +137,12 @@ def init_db() -> None:
                 chain         TEXT NOT NULL,
                 token_address TEXT NOT NULL,
                 token_symbol  TEXT,
+                token         TEXT,
+                buy_price     REAL,
+                sell_price    REAL,
+                amount        REAL,
+                pnl_usd       REAL,
+                pnl_percent   REAL,
                 trade_type    TEXT NOT NULL,
                 amount_in     REAL,
                 amount_out    REAL,
@@ -108,7 +150,8 @@ def init_db() -> None:
                 tx_hash       TEXT,
                 status        TEXT NOT NULL DEFAULT 'pending',
                 mode          TEXT NOT NULL DEFAULT 'manual',
-                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS positions (
@@ -188,6 +231,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_signals_chain     ON signals(chain);
             CREATE INDEX IF NOT EXISTS idx_signal_sends_user ON signal_sends(user_id);
             CREATE INDEX IF NOT EXISTS idx_trades_user       ON trades(user_id);
+            CREATE INDEX IF NOT EXISTS idx_trades_status     ON trades(status);
             CREATE INDEX IF NOT EXISTS idx_positions_user    ON positions(user_id);
             CREATE INDEX IF NOT EXISTS idx_payments_user     ON payments(user_id);
             CREATE INDEX IF NOT EXISTS idx_payments_status   ON payments(status);
@@ -212,11 +256,54 @@ def init_db() -> None:
             # positions columns added in v3
             ("take_profit_pct", "ALTER TABLE positions ADD COLUMN take_profit_pct REAL DEFAULT 0"),
             ("exit_reason",     "ALTER TABLE positions ADD COLUMN exit_reason TEXT"),
+            # trades trust/performance fields
+            ("token",           "ALTER TABLE trades ADD COLUMN token TEXT"),
+            ("buy_price",       "ALTER TABLE trades ADD COLUMN buy_price REAL"),
+            ("sell_price",      "ALTER TABLE trades ADD COLUMN sell_price REAL"),
+            ("amount",          "ALTER TABLE trades ADD COLUMN amount REAL"),
+            ("pnl_usd",         "ALTER TABLE trades ADD COLUMN pnl_usd REAL"),
+            ("pnl_percent",     "ALTER TABLE trades ADD COLUMN pnl_percent REAL"),
+            ("closed_at",       "ALTER TABLE trades ADD COLUMN closed_at TEXT"),
         ]:
             try:
                 conn.execute(ddl)
             except Exception:
                 pass
+
+        # Keep additional indexes in sync for existing DBs.
+        for ddl in [
+            "CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_token_addr ON trades(token_address)",
+        ]:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
+        # Backfill trust fields for legacy trade rows.
+        try:
+            conn.execute("""
+                UPDATE trades
+                SET token = COALESCE(NULLIF(token, ''), NULLIF(token_symbol, ''), token_address)
+                WHERE token IS NULL OR token = ''
+            """)
+            conn.execute("""
+                UPDATE trades
+                SET amount = COALESCE(amount, amount_out, amount_in)
+                WHERE amount IS NULL
+            """)
+            conn.execute("""
+                UPDATE trades
+                SET buy_price = COALESCE(buy_price, price_usd)
+                WHERE trade_type='buy' AND buy_price IS NULL AND price_usd IS NOT NULL
+            """)
+            conn.execute("""
+                UPDATE trades
+                SET sell_price = COALESCE(sell_price, price_usd)
+                WHERE trade_type='sell' AND sell_price IS NULL AND price_usd IS NOT NULL
+            """)
+        except Exception:
+            pass
 
         # Default bot settings
         defaults = {
@@ -473,6 +560,20 @@ def get_recent_signals(limit: int = 50, chain: str | None = None) -> list[sqlite
             "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
 
 
+def get_signal_price(signal_id: int | None) -> float | None:
+    if not signal_id:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("SELECT price_usd FROM signals WHERE id=?", (signal_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        price = float(row["price_usd"])
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
 def was_signal_sent(user_id: int, signal_id: int) -> bool:
     with get_conn() as conn:
         return bool(conn.execute(
@@ -535,18 +636,40 @@ def delete_wallet(user_id: int, chain: str) -> None:
 
 # ── Trades ─────────────────────────────────────────────────────────────────────
 
+def _calc_pnl(buy_price: float | None, sell_price: float | None, amount: float | None) -> tuple[float | None, float | None]:
+    if buy_price is None or sell_price is None or amount is None:
+        return None, None
+    if amount <= 0:
+        return None, None
+    pnl_usd = (sell_price - buy_price) * amount
+    if buy_price <= 0:
+        return pnl_usd, None
+    pnl_percent = ((sell_price - buy_price) / buy_price) * 100
+    return pnl_usd, pnl_percent
+
+
 def save_trade(user_id: int, chain: str, token_address: str, token_symbol: str,
                trade_type: str, amount_in: float, amount_out: float,
                price_usd: float, tx_hash: str | None, status: str,
                mode: str = "manual", signal_id: int | None = None) -> int:
+    token_label = token_symbol or token_address
+    amount = amount_out if amount_out and amount_out > 0 else amount_in
+    buy_price = price_usd if trade_type == "buy" else None
+    sell_price = price_usd if trade_type == "sell" else None
+    pnl_usd, pnl_percent = _calc_pnl(buy_price, sell_price, amount)
+    closed_at = datetime.now(timezone.utc).isoformat() if status == "closed" else None
+
     with get_conn() as conn:
         cur = conn.execute("""
             INSERT INTO trades (user_id, signal_id, chain, token_address, token_symbol,
+                                token, buy_price, sell_price, amount, pnl_usd, pnl_percent,
                                 trade_type, amount_in, amount_out, price_usd,
-                                tx_hash, status, mode)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                tx_hash, status, mode, closed_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (user_id, signal_id, chain, token_address, token_symbol,
-              trade_type, amount_in, amount_out, price_usd, tx_hash, status, mode))
+              token_label, buy_price, sell_price, amount, pnl_usd, pnl_percent,
+              trade_type, amount_in, amount_out, price_usd, tx_hash, status, mode, closed_at))
+        _invalidate_trade_caches(user_id)
         return cur.lastrowid
 
 
@@ -561,6 +684,248 @@ def update_trade_status(trade_id: int, status: str, tx_hash: str | None = None) 
     with get_conn() as conn:
         conn.execute("UPDATE trades SET status=?, tx_hash=COALESCE(?,tx_hash) WHERE id=?",
                      (status, tx_hash, trade_id))
+        row = conn.execute("SELECT user_id FROM trades WHERE id=?", (trade_id,)).fetchone()
+    if row:
+        _invalidate_trade_caches(row["user_id"])
+
+
+def create_trade_on_buy(
+    user_id: int,
+    token: str,
+    chain: str,
+    buy_price: float | None,
+    amount: float | None,
+    token_address: str,
+    signal_id: int | None = None,
+    token_symbol: str | None = None,
+    tx_hash: str | None = None,
+    mode: str = "manual",
+) -> int:
+    token_label = token or token_symbol or token_address
+    with get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO trades (
+                user_id, signal_id, token, token_symbol, token_address, chain,
+                buy_price, amount, trade_type, amount_in, amount_out, price_usd,
+                tx_hash, status, mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'open', ?)
+        """, (
+            user_id, signal_id, token_label, token_symbol or token_label, token_address, chain,
+            buy_price, amount, amount, amount, buy_price, tx_hash, mode,
+        ))
+        trade_id = cur.lastrowid
+    _invalidate_trade_caches(user_id)
+    return trade_id
+
+
+def close_trade_on_sell(
+    user_id: int,
+    chain: str,
+    token_address: str,
+    sell_price: float | None,
+    amount: float | None = None,
+    tx_hash: str | None = None,
+) -> int | None:
+    with get_conn() as conn:
+        open_trade = conn.execute("""
+            SELECT * FROM trades
+            WHERE user_id=? AND chain=? AND token_address=? AND status='open'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (user_id, chain, token_address)).fetchone()
+
+        if not open_trade:
+            token_label = token_address
+            cur = conn.execute("""
+                INSERT INTO trades (
+                    user_id, token, token_symbol, token_address, chain,
+                    sell_price, amount, trade_type, amount_in, amount_out, price_usd,
+                    tx_hash, status, mode, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'sell', ?, ?, ?, ?, 'closed', 'manual', ?)
+            """, (
+                user_id, token_label, token_label, token_address, chain,
+                sell_price, amount, amount, amount, sell_price, tx_hash,
+                datetime.now(timezone.utc).isoformat(),
+            ))
+            _invalidate_trade_caches(user_id)
+            return cur.lastrowid
+
+        base_amount = open_trade["amount"] or open_trade["amount_out"] or open_trade["amount_in"] or 0
+        sold_amount = amount if amount and amount > 0 else base_amount
+        if sold_amount <= 0:
+            sold_amount = base_amount
+
+        buy_price = open_trade["buy_price"] or open_trade["price_usd"]
+        pnl_usd, pnl_percent = _calc_pnl(buy_price, sell_price, sold_amount)
+        closed_at = datetime.now(timezone.utc).isoformat()
+        open_amount = base_amount or 0
+        is_partial = open_amount > 0 and sold_amount < open_amount - 1e-12
+
+        if is_partial:
+            cur = conn.execute("""
+                INSERT INTO trades (
+                    user_id, signal_id, token, token_symbol, token_address, chain,
+                    buy_price, sell_price, amount, pnl_usd, pnl_percent,
+                    trade_type, amount_in, amount_out, price_usd,
+                    tx_hash, status, mode, created_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sell', ?, ?, ?, ?, 'closed', ?, ?, ?)
+            """, (
+                open_trade["user_id"], open_trade["signal_id"], open_trade["token"], open_trade["token_symbol"],
+                open_trade["token_address"], open_trade["chain"], buy_price, sell_price, sold_amount,
+                pnl_usd, pnl_percent, sold_amount, sold_amount, sell_price, tx_hash,
+                open_trade["mode"] or "manual", open_trade["created_at"], closed_at,
+            ))
+            conn.execute("UPDATE trades SET amount=? WHERE id=?", (open_amount - sold_amount, open_trade["id"]))
+            trade_id = cur.lastrowid
+        else:
+            conn.execute("""
+                UPDATE trades
+                SET sell_price=?,
+                    amount=COALESCE(?, amount),
+                    pnl_usd=?,
+                    pnl_percent=?,
+                    trade_type='sell',
+                    amount_in=COALESCE(?, amount_in),
+                    amount_out=COALESCE(?, amount_out),
+                    price_usd=COALESCE(?, price_usd),
+                    tx_hash=COALESCE(?, tx_hash),
+                    status='closed',
+                    closed_at=?
+                WHERE id=?
+            """, (
+                sell_price, sold_amount, pnl_usd, pnl_percent,
+                sold_amount, sold_amount, sell_price, tx_hash, closed_at, open_trade["id"],
+            ))
+            trade_id = open_trade["id"]
+
+    _invalidate_trade_caches(user_id)
+    return trade_id
+
+
+def get_trade_history(user_id: int, limit: int = 10) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("""
+            SELECT id,
+                   COALESCE(NULLIF(token, ''), NULLIF(token_symbol, ''), token_address) AS token,
+                   chain, token_address,
+                   buy_price, sell_price, amount,
+                   pnl_usd, pnl_percent, status, created_at, closed_at
+            FROM trades
+            WHERE user_id=?
+            ORDER BY COALESCE(closed_at, created_at) DESC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
+
+
+def get_trade_performance(user_id: int | None = None) -> dict:
+    cache_key = f"perf:user:{user_id}" if user_id is not None else "perf:global"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    where = """
+        status='closed'
+        AND amount IS NOT NULL AND amount > 0
+        AND buy_price IS NOT NULL AND buy_price > 0
+        AND sell_price IS NOT NULL
+    """
+    params: list = []
+    if user_id is not None:
+        where += " AND user_id=?"
+        params.append(user_id)
+
+    with get_conn() as conn:
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total_trades,
+                COALESCE(SUM(pnl_usd), 0) AS total_pnl,
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                COALESCE(SUM(CASE WHEN pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses
+            FROM trades
+            WHERE {where}
+        """, params).fetchone()
+
+    total = int(row["total_trades"] or 0)
+    wins = int(row["wins"] or 0)
+    result = {
+        "total_pnl": float(row["total_pnl"] or 0),
+        "total_trades": total,
+        "wins": wins,
+        "losses": int(row["losses"] or 0),
+        "winrate": (wins / total * 100) if total > 0 else 0.0,
+    }
+    return _cache_set(cache_key, result)
+
+
+def get_public_trades(limit: int = 10) -> list[sqlite3.Row]:
+    cache_key = f"public_trades:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached["rows"]
+
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT
+                COALESCE(NULLIF(token, ''), NULLIF(token_symbol, ''), token_address) AS token,
+                chain, buy_price, sell_price, amount, pnl_usd, pnl_percent,
+                status, created_at, closed_at
+            FROM trades
+            WHERE status='closed'
+            ORDER BY closed_at DESC, id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    _cache_set(cache_key, {"rows": rows})
+    return rows
+
+
+def get_daily_stats(day: str = "now") -> dict:
+    cache_key = f"daily_stats:{day}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    with get_conn() as conn:
+        signals = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM signals WHERE date(created_at)=date(?)",
+            (day,),
+        ).fetchone()["cnt"]
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS trades,
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                COALESCE(SUM(CASE WHEN pnl_usd <= 0 THEN 1 ELSE 0 END), 0) AS losses,
+                COALESCE(AVG(pnl_percent), 0) AS avg_pnl
+            FROM trades
+            WHERE status='closed'
+              AND amount IS NOT NULL AND amount > 0
+              AND buy_price IS NOT NULL AND buy_price > 0
+              AND sell_price IS NOT NULL
+              AND date(COALESCE(closed_at, created_at))=date(?)
+        """, (day,)).fetchone()
+
+    result = {
+        "signals": int(signals or 0),
+        "trades": int(row["trades"] or 0),
+        "wins": int(row["wins"] or 0),
+        "losses": int(row["losses"] or 0),
+        "avg_pnl": float(row["avg_pnl"] or 0),
+    }
+    return _cache_set(cache_key, result)
+
+
+def get_latest_signal_id_for_user_token(user_id: int, chain: str, token_address: str) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT ss.signal_id
+            FROM signal_sends ss
+            JOIN signals s ON s.id=ss.signal_id
+            WHERE ss.user_id=?
+              AND s.chain=?
+              AND s.token_address=?
+            ORDER BY ss.sent_at DESC
+            LIMIT 1
+        """, (user_id, chain, token_address)).fetchone()
+    return int(row["signal_id"]) if row else None
 
 
 # ── Positions ──────────────────────────────────────────────────────────────────

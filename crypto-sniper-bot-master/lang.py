@@ -243,6 +243,7 @@ _T: dict[str, dict[str, str]] = {
     'menu_signals':   {UA: '📡 Сигнали',     EN: '📡 Signals'},
     'menu_positions': {UA: '📦 Позиції',     EN: '📦 Positions'},
     'menu_automode':  {UA: '🤖 Авто-трейд', EN: '🤖 Auto-trade'},
+    'menu_results':   {UA: '📊 Результати', EN: '📊 Results'},
     'menu_trades':    {UA: '📋 Угоди',       EN: '📋 Trades'},
 
     # ── Wallet ───────────────────────────────────────────────────────────────
@@ -525,9 +526,57 @@ _T: dict[str, dict[str, str]] = {
         ),
     },
 
-    # ── Trades ────────────────────────────────────────────────────────────────
+    # ── Trades / Results ──────────────────────────────────────────────────────
     'trades_empty':  {UA: '📋 Угод ще немає.',        EN: '📋 No trades yet.'},
     'trades_header': {UA: '📋 <b>Останні угоди:</b>', EN: '📋 <b>Recent trades:</b>'},
+    'trade_history_header': {
+        UA: '📋 <b>Останні 10 угод:</b>',
+        EN: '📋 <b>Last 10 trades:</b>',
+    },
+    'trade_history_item': {
+        UA: (
+            "{chain_icon} <b>{token}</b>\n"
+            "BUY: {buy_price}\n"
+            "SELL: {sell_price}\n"
+            "P&L: <b>{pnl_percent}</b>"
+        ),
+        EN: (
+            "{chain_icon} <b>{token}</b>\n"
+            "BUY: {buy_price}\n"
+            "SELL: {sell_price}\n"
+            "P&L: <b>{pnl_percent}</b>"
+        ),
+    },
+    'results_summary': {
+        UA: (
+            "📊 <b>Bot Performance:</b>\n\n"
+            "- Total P&L: <b>${total_pnl}</b>\n"
+            "- Winrate: <b>{winrate}%</b>\n"
+            "- Trades: <b>{trades}</b>"
+        ),
+        EN: (
+            "📊 <b>Bot Performance:</b>\n\n"
+            "- Total P&L: <b>${total_pnl}</b>\n"
+            "- Winrate: <b>{winrate}%</b>\n"
+            "- Trades: <b>{trades}</b>"
+        ),
+    },
+    'daily_stats_report': {
+        UA: (
+            "📅 <b>Daily Stats:</b>\n\n"
+            "Signals: <b>{signals}</b>\n"
+            "Wins: <b>{wins}</b>\n"
+            "Losses: <b>{losses}</b>\n"
+            "Avg P&L: <b>{avg_pnl}%</b>"
+        ),
+        EN: (
+            "📅 <b>Daily Stats:</b>\n\n"
+            "Signals: <b>{signals}</b>\n"
+            "Wins: <b>{wins}</b>\n"
+            "Losses: <b>{losses}</b>\n"
+            "Avg P&L: <b>{avg_pnl}%</b>"
+        ),
+    },
 
     # ── Trading ───────────────────────────────────────────────────────────────
     'buy_no_wallet': {

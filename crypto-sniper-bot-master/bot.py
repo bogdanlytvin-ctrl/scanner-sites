@@ -66,12 +66,13 @@ def _main_keyboard(lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(t(lang, 'menu_signals'),   callback_data="menu:signals"),
          InlineKeyboardButton(t(lang, 'menu_positions'), callback_data="menu:positions")],
         [InlineKeyboardButton(t(lang, 'menu_automode'),  callback_data="menu:automode"),
-         InlineKeyboardButton(t(lang, 'menu_trades'),    callback_data="menu:trades")],
-        [InlineKeyboardButton(t(lang, 'menu_notif'),     callback_data="menu:notif")],
+         InlineKeyboardButton(t(lang, 'menu_results'),   callback_data="menu:results")],
+        [InlineKeyboardButton(t(lang, 'menu_trades'),    callback_data="menu:trades"),
+         InlineKeyboardButton(t(lang, 'menu_notif'),     callback_data="menu:notif")],
     ])
 
 
-def _buy_keyboard(chain: str, token_address: str) -> InlineKeyboardMarkup | None:
+def _buy_keyboard(chain: str, token_address: str, signal_id: int | None = None) -> InlineKeyboardMarkup | None:
     """Inline buy buttons for signal messages. Returns None if address missing."""
     if not token_address:
         return None
@@ -82,11 +83,16 @@ def _buy_keyboard(chain: str, token_address: str) -> InlineKeyboardMarkup | None
     buttons = [
         InlineKeyboardButton(
             f"💰 {label}",
-            callback_data=f"buy:{chain}:{token_address}:{amt}",
+            callback_data=f"buy:{chain}:{token_address}:{amt}:{signal_id or 0}",
         )
         for label, amt in amounts
     ]
     return InlineKeyboardMarkup([buttons, [InlineKeyboardButton("❌ Skip", callback_data="skip")]])
+
+
+def _fmt_signed_usd(value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
 
 
 def _plans_keyboard(lang: str, current_tier: str) -> InlineKeyboardMarkup:
@@ -109,6 +115,40 @@ def _plans_keyboard(lang: str, current_tier: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _extract_sell_price(result: dict, amount_sold: float, chain: str) -> float | None:
+    """Best-effort sell price extraction from swap result payloads."""
+    if amount_sold <= 0:
+        return None
+    if not result:
+        return None
+
+    # If integration already returns normalized USD price.
+    for key in ("price_usd", "sell_price_usd"):
+        value = result.get(key)
+        if value is not None:
+            try:
+                price = float(value)
+                return price if price > 0 else None
+            except (TypeError, ValueError):
+                pass
+
+    # Fallback by deriving from amount_out in native units (rough approximation).
+    amount_out = result.get("amount_out")
+    if amount_out is None:
+        return None
+    try:
+        amount_out = float(amount_out)
+    except (TypeError, ValueError):
+        return None
+    if amount_out <= 0:
+        return None
+
+    # Keep deterministic approximation without external calls.
+    if chain == "solana":
+        return amount_out / amount_sold
+    return amount_out / amount_sold
+
+
 # ── Monitor send callback ──────────────────────────────────────────────────────
 
 async def _send_signal(telegram_id: int, message: str,
@@ -127,6 +167,7 @@ async def _send_signal(telegram_id: int, message: str,
         keyboard = _buy_keyboard(
             pair_data.get("chain", ""),
             pair_data.get("token_address", ""),
+            signal_meta.get("signal_id") if signal_meta else None,
         )
 
     await _app.bot.send_message(
@@ -237,10 +278,19 @@ async def _maybe_auto_buy(telegram_id: int, pair_data: dict, signal_meta: dict) 
 
     if result["success"]:
         entry_price = signal_meta.get("price_usd", 0)
-        signal_id   = signal_meta.get("signal_id")
-        db.save_trade(user_id, chain, token_address, token_symbol, "buy",
-                      amount, result.get("amount_out", 0), entry_price,
-                      result["tx_hash"], "confirmed", "auto", signal_id)
+        signal_id = signal_meta.get("signal_id")
+        db.create_trade_on_buy(
+            user_id=user_id,
+            token=token_symbol,
+            chain=chain,
+            buy_price=entry_price if entry_price and entry_price > 0 else None,
+            amount=amount,
+            token_address=token_address,
+            signal_id=signal_id,
+            token_symbol=token_symbol,
+            tx_hash=result.get("tx_hash"),
+            mode="auto",
+        )
         db.upsert_position(user_id, chain, token_address, token_symbol, token_name,
                            amount, entry_price, amount, sl_pct, tp_pct)
         try:
@@ -426,6 +476,7 @@ async def cb_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "signals":   _menu_signals,
         "positions": _menu_positions,
         "automode":  _menu_automode,
+        "results":   _menu_results,
         "trades":    _menu_trades,
         "notif":     _menu_notif,
         "plans":     lambda q, uid, lng: cmd_plans_via_callback(q, uid, lng),
@@ -536,7 +587,7 @@ async def _menu_signals(query, user_id: int, lang: str) -> None:
         if sig["token_address"]:
             msg += f"\n<code>{sig['token_address']}</code>"
 
-        keyboard = _buy_keyboard(sig["chain"], sig["token_address"] or "")
+        keyboard = _buy_keyboard(sig["chain"], sig["token_address"] or "", sig["id"])
         await query.message.reply_text(
             msg,
             parse_mode=ParseMode.HTML,
@@ -684,23 +735,70 @@ async def _menu_notif(query, user_id: int, lang: str) -> None:
 
 
 async def _menu_trades(query, user_id: int, lang: str) -> None:
-    trades = db.get_user_trades(user_id, limit=10)
+    trades = db.get_trade_history(user_id, limit=10)
     if not trades:
         await query.edit_message_text(t(lang, 'trades_empty'))
         return
 
-    lines = [t(lang, 'trades_header')]
+    lines = [t(lang, 'trade_history_header')]
     for tr in trades:
-        type_icon  = "🟢" if tr["trade_type"] == "buy" else "🔴"
         chain_icon = "◎" if tr["chain"] == "solana" else "🔶"
-        stat_icon  = {"confirmed": "✅", "pending": "⏳", "failed": "❌"}.get(tr["status"], "❓")
+        buy_price = tr["buy_price"] or 0
+        sell_price = tr["sell_price"]
+        pnl_percent = tr["pnl_percent"]
+        pnl_text = "—" if pnl_percent is None else f"{pnl_percent:+.2f}%"
+        sell_text = "—" if sell_price is None else f"${sell_price:,.8f}"
         lines.append(
-            f"\n{type_icon} {tr['trade_type'].upper()} {chain_icon} "
-            f"<b>{tr['token_symbol'] or '?'}</b>\n"
-            f"  {tr['amount_in']} → {tr['amount_out'] or '?'} | {stat_icon} {tr['status']}\n"
-            f"  {tr['created_at'][:16]}"
+            t(
+                lang,
+                'trade_history_item',
+                chain_icon=chain_icon,
+                token=tr["token"] or tr["token_address"][:8],
+                buy_price=f"${buy_price:,.8f}",
+                sell_price=sell_text,
+                pnl_percent=pnl_text,
+            )
         )
     await query.edit_message_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def _menu_results(query, user_id: int, lang: str) -> None:
+    perf = db.get_trade_performance(user_id)
+    await query.edit_message_text(
+        t(
+            lang,
+            'results_summary',
+            total_pnl=f"{perf['total_pnl']:+,.2f}",
+            winrate=f"{perf['winrate']:.1f}",
+            trades=perf["total_trades"],
+        ),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+def _derive_sell_price(
+    chain: str,
+    quote: dict | None,
+    sell_amount: float,
+    fallback_buy_price: float | None = None,
+) -> float | None:
+    """Best-effort sell price derivation for P&L without breaking flow."""
+    if sell_amount <= 0:
+        return None
+    try:
+        if chain == "solana" and quote:
+            out_amount = float(quote.get("outAmount") or 0)
+            if out_amount > 0:
+                out_sol = out_amount / 1_000_000_000
+                return out_sol / sell_amount
+        if chain == "bsc" and quote:
+            out_raw = float(quote.get("amount_out_raw") or 0)
+            if out_raw > 0:
+                out_bnb = out_raw / 1_000_000_000_000_000_000
+                return out_bnb / sell_amount
+    except Exception:
+        return fallback_buy_price
+    return fallback_buy_price
 
 
 # ── Plans / Payment callbacks ──────────────────────────────────────────────────
@@ -962,13 +1060,23 @@ async def cb_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang    = db.get_user_lang(user_id)
     await query.answer()
 
-    parts = query.data.split(":", 3)
+    parts = query.data.split(":", 4)
     if len(parts) < 4:
         await query.message.reply_text("❌ Invalid callback data.")
         return
 
     _, chain, token_address, amount_str = parts
     amount = float(amount_str)
+    signal_id = None
+    if len(parts) >= 5:
+        try:
+            sid = int(parts[4])
+            signal_id = sid if sid > 0 else None
+        except ValueError:
+            signal_id = None
+
+    if signal_id is None:
+        signal_id = db.get_latest_signal_id_for_user_token(user_id, chain, token_address)
 
     wallet = db.get_wallet(user_id, chain)
     if not wallet:
@@ -1004,13 +1112,27 @@ async def cb_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         result = execute_buy(token_address, amount, pk)
 
     if result["success"]:
-        trade_id = db.save_trade(user_id, chain, token_address, "?", "buy",
-                                 amount, 0, 0, result["tx_hash"], "pending")
+        entry_price = 0.0
+        if chain == "solana":
+            entry_price = _extract_buy_price(result, amount, chain)
+        signal_id = signal_id or db.get_latest_signal_id_for_user_token(user_id, chain, token_address)
+        trade_id = db.create_trade_on_buy(
+            user_id=user_id,
+            token=token_address,
+            chain=chain,
+            buy_price=entry_price if entry_price > 0 else None,
+            amount=amount,
+            token_address=token_address,
+            signal_id=signal_id,
+            token_symbol=token_address[:8],
+            tx_hash=result.get("tx_hash"),
+            mode="manual",
+        )
         # Create position record
         settings = db.get_user_settings(user_id)
         sl_pct = settings["auto_stop_loss"] if settings else 20
-        db.upsert_position(user_id, chain, token_address, "?", "?",
-                           amount, 0, amount, sl_pct)
+        db.upsert_position(user_id, chain, token_address, token_address[:8], token_address[:8],
+                           amount, entry_price, amount, sl_pct)
         await query.message.reply_text(
             t(lang, 'buy_success', tx=result["tx_hash"]),
             parse_mode=ParseMode.HTML,
@@ -1103,9 +1225,15 @@ async def cb_sell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         result = execute_sell(pos["token_address"], amount_raw, pk)
 
     if result["success"]:
-        db.save_trade(user_id, chain, pos["token_address"],
-                      pos["token_symbol"] or "?", "sell",
-                      sell_amount, 0, 0, result["tx_hash"], "pending")
+        sell_price = _extract_sell_price(result, sell_amount, chain)
+        db.close_trade_on_sell(
+            user_id=user_id,
+            chain=chain,
+            token_address=pos["token_address"],
+            sell_price=sell_price,
+            amount=sell_amount,
+            tx_hash=result["tx_hash"],
+        )
         if sell_pct == 100:
             db.close_position(pos_id)
         else:
@@ -1327,12 +1455,16 @@ async def _evaluate_position(session, pos, current_price: float) -> None:
     # Close position in DB regardless of sell success (to avoid looping)
     db.close_position_with_reason(pos["id"], triggered_reason)
 
-    # Record trade if sell went through
-    if sell_ok and _app:
-        db.save_trade(pos["user_id"], pos["chain"], pos["token_address"],
-                      pos["token_symbol"] or "?", "sell",
-                      pos["amount"], 0, current_price,
-                      tx_hash, "confirmed", "auto")
+    # Record/close trade only if sell tx succeeded.
+    if sell_ok:
+        db.close_trade_on_sell(
+            user_id=pos["user_id"],
+            chain=pos["chain"],
+            token_address=pos["token_address"],
+            sell_price=current_price if current_price > 0 else None,
+            amount=pos["amount"],
+            tx_hash=tx_hash,
+        )
 
     # Notify user
     if _app is None:
@@ -1404,6 +1536,35 @@ async def _send_expiry_reminders() -> None:
             logger.warning("Expiry reminder send error to %d: %s", row["telegram_id"], e)
 
 
+# ── Background: daily trust statistics ─────────────────────────────────────────
+
+async def _daily_stats_loop() -> None:
+    """Compute daily statistics once per day and log summary."""
+    logger.info("Daily stats loop started.")
+    await asyncio.sleep(75)  # initial delay after startup
+    while True:
+        try:
+            stats = db.get_daily_stats("now")
+            report = t(
+                "en",
+                "daily_stats_report",
+                signals=stats["signals"],
+                trades=stats["trades"],
+                wins=stats["wins"],
+                losses=stats["losses"],
+                avg_pnl=f"{stats['avg_pnl']:.2f}",
+            )
+            logger.info(
+                "Daily trust stats snapshot:\n%s",
+                report,
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Daily stats loop error: %s", e)
+        await asyncio.sleep(86400)
+
+
 # ── Background: broadcast task ─────────────────────────────────────────────────
 
 async def _broadcast_loop() -> None:
@@ -1472,6 +1633,7 @@ async def post_init(app: Application) -> None:
     loop.create_task(_broadcast_loop())
     loop.create_task(_subscription_reminder_loop())
     loop.create_task(_position_monitor_loop())
+    loop.create_task(_daily_stats_loop())
     logger.info("All background tasks started.")
 
 

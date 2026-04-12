@@ -583,17 +583,31 @@ def trades():
     page     = max(1, request.args.get("page", 1, type=int))
     per_page = 30
     offset   = (page - 1) * per_page
+    status_f = request.args.get("status", "")
+    pnl_f    = request.args.get("pnl", "")
+
+    where_parts, params = [], []
+    if status_f in ("open", "closed"):
+        where_parts.append("t.status=?")
+        params.append(status_f)
+    if pnl_f == "profit":
+        where_parts.append("COALESCE(t.pnl_usd, 0) > 0")
+    elif pnl_f == "loss":
+        where_parts.append("COALESCE(t.pnl_usd, 0) <= 0")
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     with db.get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-        rows  = conn.execute("""
+        total = conn.execute(f"SELECT COUNT(*) FROM trades t {where_sql}", params).fetchone()[0]
+        rows  = conn.execute(f"""
             SELECT t.*, u.first_name, u.username
             FROM trades t JOIN users u ON u.id=t.user_id
-            ORDER BY t.created_at DESC LIMIT ? OFFSET ?
-        """, (per_page, offset)).fetchall()
+            {where_sql}
+            ORDER BY COALESCE(t.closed_at, t.created_at) DESC LIMIT ? OFFSET ?
+        """, params + [per_page, offset]).fetchall()
 
     return render_template("trades.html", trades=rows, page=page,
-                           total=total, per_page=per_page)
+                           total=total, per_page=per_page,
+                           status_f=status_f, pnl_f=pnl_f)
 
 
 # ── Positions ──────────────────────────────────────────────────────────────────

@@ -5,13 +5,40 @@
   <span class="text-muted small">{{ 'Всього' if lang=='ua' else 'Total' }}: {{ total }}</span>
 </div>
 
+<form method="get" class="card mb-3 p-3">
+  <div class="row g-2">
+    <div class="col-md-3">
+      <label class="form-label small mb-1">{{ UI.trades_status }}</label>
+      <select class="form-select form-select-sm" name="status">
+        <option value="">{{ UI.all_statuses }}</option>
+        <option value="open" {{ 'selected' if status_f=='open' }}>open</option>
+        <option value="closed" {{ 'selected' if status_f=='closed' }}>closed</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label small mb-1">{{ 'P&L' if lang=='en' else 'P&L' }}</label>
+      <select class="form-select form-select-sm" name="pnl">
+        <option value="">{{ 'All' if lang=='en' else 'Усі' }}</option>
+        <option value="profit" {{ 'selected' if pnl_f=='profit' }}>{{ 'Profit' if lang=='en' else 'Прибуток' }}</option>
+        <option value="loss" {{ 'selected' if pnl_f=='loss' }}>{{ 'Loss' if lang=='en' else 'Збиток' }}</option>
+      </select>
+    </div>
+    <div class="col-md-2 d-flex align-items-end">
+      <button class="btn btn-sm btn-primary w-100" type="submit">{{ UI.search }}</button>
+    </div>
+  </div>
+</form>
+
 <div class="card">
   <table class="table table-hover mb-0">
     <thead>
       <tr>
         <th>{{ UI.trades_type }}</th><th>{{ UI.sig_chain }}</th><th>{{ UI.sig_token }}</th>
-        <th>{{ 'Сума in' if lang=='ua' else 'Amount in' }}</th>
-        <th>{{ 'Сума out' if lang=='ua' else 'Amount out' }}</th>
+        <th>{{ 'Buy' if lang=='en' else 'Купівля' }}</th>
+        <th>{{ 'Sell' if lang=='en' else 'Продаж' }}</th>
+        <th>{{ 'P&L' if lang=='en' else 'P&L' }}</th>
+        <th>{{ 'P&L %' if lang=='en' else 'P&L %' }}</th>
+        <th>{{ 'Amount' if lang=='en' else 'Кількість' }}</th>
         <th>{{ UI.trades_tx }}</th><th>{{ UI.trades_status }}</th>
         <th>{{ 'Режим' if lang=='ua' else 'Mode' }}</th>
         <th>{{ UI.user }}</th><th>{{ UI.date }}</th>
@@ -30,8 +57,15 @@
         <code class="small" style="cursor:pointer" data-copy="{{ tr.token_address }}"
               title="{{ 'Натисни щоб скопіювати' if lang=='ua' else 'Click to copy' }}">{{ tr.token_address[:12] }}...</code>
       </td>
-      <td>{{ tr.amount_in }}</td>
-      <td>{{ tr.amount_out or '—' }}</td>
+      <td>{{ ('$%.8f'|format(tr.buy_price)) if tr.buy_price is not none else '—' }}</td>
+      <td>{{ ('$%.8f'|format(tr.sell_price)) if tr.sell_price is not none else '—' }}</td>
+      <td class="{{ 'text-success' if (tr.pnl_usd or 0) > 0 else ('text-danger' if (tr.pnl_usd or 0) < 0 else 'text-muted') }}">
+        {{ ('$%+.2f'|format(tr.pnl_usd)) if tr.pnl_usd is not none else '—' }}
+      </td>
+      <td class="{{ 'text-success' if (tr.pnl_percent or 0) > 0 else ('text-danger' if (tr.pnl_percent or 0) < 0 else 'text-muted') }}">
+        {{ ('%+.2f%%'|format(tr.pnl_percent)) if tr.pnl_percent is not none else '—' }}
+      </td>
+      <td>{{ tr.amount or tr.amount_out or tr.amount_in or '—' }}</td>
       <td>
         {% if tr.tx_hash %}
           {% if tr.chain=='solana' %}
@@ -61,7 +95,7 @@
       <td class="text-muted small">{{ tr.created_at[:16] }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="10" class="text-center text-muted py-4">{{ 'Угод ще немає' if lang=='ua' else 'No trades yet' }}</td></tr>
+    <tr><td colspan="13" class="text-center text-muted py-4">{{ 'Угод ще немає' if lang=='ua' else 'No trades yet' }}</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -71,15 +105,15 @@
 <nav class="mt-3">
   <ul class="pagination">
     {% if page > 1 %}
-      <li class="page-item"><a class="page-link" href="?page={{ page-1 }}">←</a></li>
+      <li class="page-item"><a class="page-link" href="?page={{ page-1 }}&status={{ status_f }}&pnl={{ pnl_f }}">←</a></li>
     {% endif %}
     {% for p in range(1, (total // per_page) + 2) %}
       <li class="page-item {{ 'active' if p==page }}">
-        <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+        <a class="page-link" href="?page={{ p }}&status={{ status_f }}&pnl={{ pnl_f }}">{{ p }}</a>
       </li>
     {% endfor %}
     {% if page * per_page < total %}
-      <li class="page-item"><a class="page-link" href="?page={{ page+1 }}">→</a></li>
+      <li class="page-item"><a class="page-link" href="?page={{ page+1 }}&status={{ status_f }}&pnl={{ pnl_f }}">→</a></li>
     {% endif %}
   </ul>
 </nav>
