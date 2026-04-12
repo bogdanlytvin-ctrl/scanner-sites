@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">⚙️ Налаштування бота</h4>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-8">
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <!-- Signals section -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">📡 Сигнали</div>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label text-muted small">{{ meta.min_signal_score.0 }}</label>
+            <input type="number" name="min_signal_score" class="form-control form-control-sm"
+                   value="{{ settings.get('min_signal_score', '40') }}" min="0" max="100">
+            <div class="form-text text-muted small">{{ meta.min_signal_score.2 }}</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label text-muted small">Режим обслуговування</label>
+            <select name="maintenance_mode" class="form-select form-select-sm">
+              <option value="0" {% if settings.get('maintenance_mode','0')=='0' %}selected{% endif %}>🟢 Вимкнено (бот працює)</option>
+              <option value="1" {% if settings.get('maintenance_mode','0')=='1' %}selected{% endif %}>🔴 Увімкнено (сигнали зупинені)</option>
+            </select>
+            <div class="form-text text-muted small">{{ meta.maintenance_mode.2 }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily limits -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">📊 Ліміти сигналів/день</div>
+        <div class="row g-3">
+          {% for key, label in [('free_daily_signals','🆓 Free'), ('basic_daily_signals','💳 Basic'), ('pro_daily_signals','🚀 Pro')] %}
+          <div class="col-md-4">
+            <label class="form-label text-muted small">{{ label }}</label>
+            <input type="number" name="{{ key }}" class="form-control form-control-sm"
+                   value="{{ settings.get(key, '0') }}" min="0" max="9999">
+            <div class="form-text text-muted small">0 = без ліміту</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- Pricing -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">💰 Ціни та тривалість</div>
+        <div class="row g-3">
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Basic ціна ($)</label>
+            <input type="number" name="basic_price_usd" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_price_usd', '29') }}" min="1" step="0.01">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Basic тривалість (днів)</label>
+            <input type="number" name="basic_duration_days" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_duration_days', '30') }}" min="1" max="365">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Pro ціна ($)</label>
+            <input type="number" name="pro_price_usd" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_price_usd', '79') }}" min="1" step="0.01">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Pro тривалість (днів)</label>
+            <input type="number" name="pro_duration_days" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_duration_days', '30') }}" min="1" max="365">
+          </div>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-success">💾 Зберегти налаштування</button>
+    </form>
+  </div>
+
+  <!-- Right: info panel -->
+  <div class="col-md-4">
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-2">🔧 Env змінні (тільки читання)</div>
+      <p class="text-muted small mb-2">Ці параметри потребують перезапуску бота:</p>
+      <table class="table table-sm mb-0" style="font-size:.78rem">
+        <tr>
+          <td class="text-muted">TELEGRAM_TOKEN</td>
+          <td>{% if env_vars.telegram %}<span class="text-success">✓ Set</span>{% else %}<span class="text-danger">✗ Missing</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">CRYPTOBOT_TOKEN</td>
+          <td>{% if env_vars.cryptobot %}<span class="text-success">✓ Set</span>{% else %}<span class="text-warning">— Not set (payments disabled)</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">ENCRYPTION_KEY</td>
+          <td>{% if env_vars.encryption %}<span class="text-success">✓ Set</span>{% else %}<span class="text-danger">✗ Missing (trading disabled)</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">ADMIN_TOTP_SECRET</td>
+          <td>{% if env_vars.totp %}<span class="text-success">✓ 2FA active</span>{% else %}<span class="text-muted">— Disabled</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">SOLANA_RPC</td>
+          <td>{% if env_vars.solana_rpc %}<span class="text-success">✓ Custom</span>{% else %}<span class="text-muted">Default</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="text-muted">BSC_RPC</td>
+          <td>{% if env_vars.bsc_rpc %}<span class="text-success">✓ Custom</span>{% else %}<span class="text-muted">Default</span>{% endif %}</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card p-3">
+      <div class="fw-bold mb-2">ℹ️ Підказки</div>
+      <ul class="text-muted small mb-0" style="padding-left:1rem">
+        <li>Зміни <b>одразу</b> набувають чинності без перезапуску</li>
+        <li><b>Maintenance mode = 1</b> — зупиняє відправку сигналів всім</li>
+        <li>Ціни впливають на нові рахунки (інвойси), діючі підписки не змінюються</li>
+        <li>Ліміт 0 = необмежена кількість сигналів</li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

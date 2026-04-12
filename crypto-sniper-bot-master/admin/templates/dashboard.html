@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">📊 Dashboard</h4>
+  <span class="text-muted small" id="last-refresh">{{ 'оновлено щойно' if lang=='ua' else 'just updated' }}</span>
+</div>
+
+<!-- Row 1: Users & subscriptions -->
+<div class="row g-3 mb-3">
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-blue p-3">
+      <div class="text-muted small">{{ UI.db_users }}</div>
+      <div class="fs-4 fw-bold">{{ stats.total_users }}</div>
+      {% if stats.banned_users %}<div class="text-muted" style="font-size:.75rem">🚫 {{ stats.banned_users }} {{ 'забанено' if lang=='ua' else 'banned' }}</div>{% endif %}
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-yellow p-3">
+      <div class="text-muted small">💳 Basic</div>
+      <div class="fs-4 fw-bold">{{ stats.subs_basic }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-purple p-3">
+      <div class="text-muted small">🚀 Pro</div>
+      <div class="fs-4 fw-bold">{{ stats.subs_pro }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-green p-3">
+      <div class="text-muted small">{{ 'Дохід всього' if lang=='ua' else 'Total revenue' }}</div>
+      <div class="fs-4 fw-bold">${{ '%.0f'|format(stats.revenue_total) }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-cyan p-3">
+      <div class="text-muted small">{{ 'Дохід сьогодні' if lang=='ua' else 'Revenue today' }}</div>
+      <div class="fs-4 fw-bold">${{ '%.0f'|format(stats.revenue_today) }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-orange p-3">
+      <div class="text-muted small">{{ 'Очікують оплату' if lang=='ua' else 'Pending payments' }}</div>
+      <div class="fs-4 fw-bold">{{ stats.payments_pending }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 2: Trading stats -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-blue p-3">
+      <div class="text-muted small">З гаманцем</div>
+      <div class="fs-4 fw-bold">{{ stats.with_wallet }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-orange p-3">
+      <div class="text-muted small">З ключем 🔐</div>
+      <div class="fs-4 fw-bold">{{ stats.with_pk }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-purple p-3">
+      <div class="text-muted small">Авто-трейд 🤖</div>
+      <div class="fs-4 fw-bold">{{ stats.auto_mode_on }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-cyan p-3">
+      <div class="text-muted small">Угод сьогодні</div>
+      <div class="fs-4 fw-bold">{{ stats.trades_today }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-pink p-3">
+      <div class="text-muted small">Відкр. позиції</div>
+      <div class="fs-4 fw-bold">{{ stats.open_positions }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card stat-card stat-green p-3">
+      <div class="text-muted small">Сигналів сьогодні</div>
+      <div class="fs-4 fw-bold">{{ stats.signals_today }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 3: tables -->
+<div class="row g-3 mb-3">
+  <!-- Recent payments -->
+  <div class="col-md-5">
+    <div class="card p-3">
+      <div class="d-flex justify-content-between mb-2">
+        <strong>💳 Останні платежі</strong>
+        <a href="{{ url_for('payments') }}" class="text-muted small">Всі →</a>
+      </div>
+      {% if recent_payments %}
+      <table class="table table-sm table-hover mb-0">
+        <thead><tr><th>Юзер</th><th>Тариф</th><th>Сума</th><th>Статус</th><th>Дата</th></tr></thead>
+        <tbody>
+        {% for p in recent_payments %}
+        <tr>
+          <td><a href="{{ url_for('user_detail', uid=p.user_id) }}" class="text-info">{{ p.first_name or '—' }}</a></td>
+          <td>
+            {% if p.tier=='pro' %}<span class="tier-pro fw-bold">Pro</span>
+            {% else %}<span class="tier-basic fw-bold">Basic</span>{% endif %}
+          </td>
+          <td>${{ '%.0f'|format(p.amount_usd) }}</td>
+          <td>
+            {% if p.status=='paid' %}<span class="badge bg-success">✓ paid</span>
+            {% elif p.status=='pending' %}<span class="badge bg-warning text-dark">⏳</span>
+            {% else %}<span class="badge bg-secondary">expired</span>{% endif %}
+          </td>
+          <td class="text-muted small">{{ p.created_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="text-muted small">Платежів ще немає.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Signal breakdown + recent users -->
+  <div class="col-md-7">
+    <div class="row g-3">
+      {% if signal_breakdown %}
+      <div class="col-12">
+        <div class="card p-3">
+          <div class="text-muted small mb-2">Сигнали сьогодні за типом</div>
+          {% for row in signal_breakdown %}
+            {% set color = {'STRONG_BUY':'success','BUY':'warning','WATCH':'info'}.get(row.signal_type,'secondary') %}
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span class="badge bg-{{ color }}">{{ row.signal_type }}</span>
+              <div class="progress flex-grow-1 mx-2" style="height:6px;background:#21262d">
+                <div class="progress-bar bg-{{ color }}" style="width:{{ [row.cnt * 10, 100]|min }}%"></div>
+              </div>
+              <strong class="small">{{ row.cnt }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="col-12">
+        <div class="card p-3">
+          <div class="d-flex justify-content-between mb-2">
+            <strong>👥 Нові користувачі</strong>
+            <a href="{{ url_for('users') }}" class="text-muted small">Всі →</a>
+          </div>
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>Ім'я</th><th>Тариф</th><th>Гаманці</th><th>Дата</th></tr></thead>
+            <tbody>
+            {% for u in recent_users %}
+            <tr>
+              <td><a href="{{ url_for('user_detail', uid=u.id) }}" class="text-info">{{ u.first_name or '—' }}</a></td>
+              <td>
+                {% if u.tier=='pro' %}<span class="tier-pro">🚀 Pro</span>
+                {% elif u.tier=='basic' %}<span class="tier-basic">💳 Basic</span>
+                {% else %}<span class="tier-free">Free</span>{% endif %}
+              </td>
+              <td>{{ u.wallet_count }}</td>
+              <td class="text-muted small">{{ u.created_at[:10] }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent trades -->
+<div class="card p-3 mb-3">
+  <div class="d-flex justify-content-between mb-2">
+    <strong>💱 Останні угоди</strong>
+    <a href="{{ url_for('trades') }}" class="text-muted small">Всі →</a>
+  </div>
+  {% if recent_trades %}
+  <table class="table table-sm table-hover mb-0">
+    <thead><tr><th>Тип</th><th>Токен</th><th>Сума</th><th>Статус</th><th>Юзер</th><th>Дата</th></tr></thead>
+    <tbody>
+    {% for tr in recent_trades %}
+    <tr>
+      <td>
+        {% if tr.trade_type=='buy' %}<span class="badge bg-success">BUY</span>
+        {% else %}<span class="badge bg-danger">SELL</span>{% endif %}
+        {% if tr.chain=='solana' %}◎{% else %}🔶{% endif %}
+      </td>
+      <td><code>{{ tr.token_symbol or tr.token_address[:8]+'...' }}</code></td>
+      <td>{{ tr.amount_in }}</td>
+      <td>
+        {% if tr.status=='confirmed' %}<span class="badge bg-success">✓</span>
+        {% elif tr.status=='pending' %}<span class="badge bg-warning text-dark">⏳</span>
+        {% else %}<span class="badge bg-danger">✗</span>{% endif %}
+      </td>
+      <td><a href="{{ url_for('user_detail', uid=tr.user_id) }}" class="text-info">{{ tr.first_name or '—' }}</a></td>
+      <td class="text-muted small">{{ tr.created_at[:10] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="text-muted small">Угод ще немає.</div>
+  {% endif %}
+</div>
+
+<!-- Recent signals -->
+<div class="card p-3">
+  <div class="d-flex justify-content-between mb-2">
+    <strong>📡 Останні сигнали</strong>
+    <a href="{{ url_for('signals') }}" class="text-muted small">Всі →</a>
+  </div>
+  <table class="table table-sm table-hover mb-0">
+    <thead><tr><th>Ланцюг</th><th>Токен</th><th>Score</th><th>Тип</th><th>Ліквідність</th><th>Час</th></tr></thead>
+    <tbody>
+    {% for s in recent_signals %}
+    <tr>
+      <td>{% if s.chain=='solana' %}◎ SOL{% else %}🔶 BSC{% endif %}</td>
+      <td><b>{{ s.token_symbol or '?' }}</b> <span class="text-muted small">{{ s.token_name or '' }}</span></td>
+      <td>
+        <div class="d-flex align-items-center gap-2">
+          <div class="progress flex-grow-1" style="height:5px;min-width:40px;background:#21262d">
+            <div class="progress-bar {% if s.score>=85 %}bg-success{% elif s.score>=70 %}bg-warning{% else %}bg-info{% endif %}"
+                 style="width:{{ s.score }}%"></div>
+          </div>
+          <span class="small">{{ s.score }}</span>
+        </div>
+      </td>
+      <td>
+        {% if s.signal_type=='STRONG_BUY' %}<span class="badge badge-strong">SB</span>
+        {% elif s.signal_type=='BUY' %}<span class="badge badge-buy">BUY</span>
+        {% elif s.signal_type=='WATCH' %}<span class="badge badge-watch">W</span>
+        {% else %}<span class="badge badge-skip">—</span>{% endif %}
+      </td>
+      <td>${{ '{:,.0f}'.format(s.liquidity_usd or 0) }}</td>
+      <td class="text-muted small">{{ s.created_at[11:16] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Auto-refresh stats every 60s
+setInterval(function() {
+  fetch('/api/stats').then(r => r.json()).then(d => {
+    document.getElementById('last-refresh').textContent = 'оновлено ' + new Date().toLocaleTimeString('uk');
+  });
+}, 60000);
+</script>
+{% endblock %}

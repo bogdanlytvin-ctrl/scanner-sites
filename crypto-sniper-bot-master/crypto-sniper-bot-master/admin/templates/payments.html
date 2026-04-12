@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">💳 Платежі</h4>
+  <span class="text-muted small">Всього: {{ total }}</span>
+</div>
+
+<!-- Revenue stats -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card stat-card stat-green p-3">
+      <div class="text-muted small">Дохід всього</div>
+      <div class="fs-3 fw-bold">${{ '%.2f'|format(revenue) }}</div>
+    </div>
+  </div>
+  {% for row in by_tier %}
+  <div class="col-6 col-md-3">
+    <div class="card stat-card {% if row.tier=='pro' %}stat-purple{% else %}stat-yellow{% endif %} p-3">
+      <div class="text-muted small">
+        {% if row.tier=='pro' %}🚀 Pro{% else %}💳 Basic{% endif %}
+        ({{ row.cnt }} оплат)
+      </div>
+      <div class="fs-3 fw-bold">${{ '%.0f'|format(row.total) }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Filter -->
+<div class="card p-3 mb-3">
+  <form class="row g-2" method="GET">
+    <div class="col-auto">
+      <select name="status" class="form-select form-select-sm">
+        <option value="" {% if not status_f %}selected{% endif %}>Всі статуси</option>
+        <option value="paid"    {% if status_f=='paid' %}selected{% endif %}>✓ Оплачені</option>
+        <option value="pending" {% if status_f=='pending' %}selected{% endif %}>⏳ Очікують</option>
+        <option value="expired" {% if status_f=='expired' %}selected{% endif %}>✗ Протерміновані</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-sm btn-outline-secondary">Фільтр</button>
+    </div>
+    {% if status_f %}
+    <div class="col-auto">
+      <a href="{{ url_for('payments') }}" class="btn btn-sm btn-outline-secondary">Скинути</a>
+    </div>
+    {% endif %}
+  </form>
+</div>
+
+<!-- Table -->
+<div class="card">
+  <table class="table table-hover mb-0">
+    <thead>
+      <tr>
+        <th>#</th><th>Користувач</th><th>Тариф</th><th>Сума</th>
+        <th>Статус</th><th>Invoice ID</th><th>Створено</th><th>Оплачено</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in payments %}
+    <tr>
+      <td class="text-muted small">{{ p.id }}</td>
+      <td>
+        <a href="{{ url_for('user_detail', uid=p.user_id) }}" class="text-info fw-bold">
+          {{ p.first_name or '—' }}
+        </a>
+        {% if p.username %}<span class="text-muted small">@{{ p.username }}</span>{% endif %}
+      </td>
+      <td>
+        {% if p.tier=='pro' %}<span class="tier-pro fw-bold">🚀 Pro</span>
+        {% else %}<span class="tier-basic fw-bold">💳 Basic</span>{% endif %}
+      </td>
+      <td><strong>${{ '%.2f'|format(p.amount_usd) }}</strong></td>
+      <td>
+        {% if p.status=='paid' %}
+          <span class="badge bg-success">✓ paid</span>
+        {% elif p.status=='pending' %}
+          <span class="badge bg-warning text-dark">⏳ pending</span>
+        {% else %}
+          <span class="badge bg-secondary">expired</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if p.invoice_id %}
+          <code data-copy="{{ p.invoice_id }}" style="cursor:pointer;font-size:.78rem">
+            {{ p.invoice_id[:12] }}…
+          </code>
+        {% else %}—{% endif %}
+      </td>
+      <td class="text-muted small">{{ p.created_at[:16] }}</td>
+      <td class="text-muted small">{{ p.paid_at[:10] if p.paid_at else '—' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="text-center text-muted py-4">Платежів немає</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if total > per_page %}
+<nav class="mt-3">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}&status={{ status_f }}">←</a></li>{% endif %}
+    {% for p in range(1, (total // per_page) + 2) %}
+      <li class="page-item {{ 'active' if p==page }}">
+        <a class="page-link" href="?page={{ p }}&status={{ status_f }}">{{ p }}</a>
+      </li>
+    {% endfor %}
+    {% if page * per_page < total %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}&status={{ status_f }}">→</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex align-items-center gap-3 mb-4">
+  <a href="{{ url_for('users') }}" class="btn btn-sm btn-outline-secondary">← {{ 'Назад' if lang=='ua' else 'Back' }}</a>
+  <h4 class="mb-0">
+    👤 {{ user.first_name or '—' }}
+    {% if user.username %}<span class="text-muted small">@{{ user.username }}</span>{% endif %}
+    {% if user.banned %}<span class="badge bg-danger ms-2">BANNED</span>{% endif %}
+  </h4>
+</div>
+
+<div class="row g-3">
+
+  <!-- Left: user info + actions -->
+  <div class="col-md-4">
+
+    <!-- Info card -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-3">📋 {{ 'Інформація' if lang=='ua' else 'Information' }}</div>
+      <table class="table table-sm mb-0" style="font-size:.875rem">
+        <tr><td class="text-muted">ID</td><td>{{ user.id }}</td></tr>
+        <tr><td class="text-muted">Telegram ID</td>
+            <td><code data-copy="{{ user.telegram_id }}" style="cursor:pointer">{{ user.telegram_id }}</code></td></tr>
+        <tr><td class="text-muted">{{ "Ім'я" if lang=='ua' else 'Name' }}</td><td>{{ user.first_name or '—' }}</td></tr>
+        <tr><td class="text-muted">Username</td>
+            <td>{% if user.username %}<a href="https://t.me/{{ user.username }}" target="_blank" class="text-info">@{{ user.username }}</a>{% else %}—{% endif %}</td></tr>
+        <tr><td class="text-muted">{{ 'Мова' if lang=='ua' else 'Language' }}</td><td>{% if user.lang=='ua' %}🇺🇦 UA{% else %}🇬🇧 EN{% endif %}</td></tr>
+        <tr><td class="text-muted">{{ 'Реєстрація' if lang=='ua' else 'Registered' }}</td><td>{{ user.created_at[:10] }}</td></tr>
+        <tr><td class="text-muted">{{ UI.status }}</td>
+            <td>{% if user.banned %}<span class="text-danger">{{ 'Заблоковано' if lang=='ua' else 'Banned' }}</span>{% else %}<span class="text-success">{{ 'Активний' if lang=='ua' else 'Active' }}</span>{% endif %}</td></tr>
+        <tr><td class="text-muted">{{ 'Сигналів отримано' if lang=='ua' else 'Signals received' }}</td><td>{{ signals_sent }}</td></tr>
+      </table>
+    </div>
+
+    <!-- Subscription card -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-3">💎 {{ UI.nav_subscriptions }}</div>
+      {% if sub %}
+      <table class="table table-sm mb-3" style="font-size:.875rem">
+        <tr><td class="text-muted">{{ UI.tier }}</td>
+            <td>
+              {% if sub.tier=='pro' %}<span class="tier-pro fw-bold">🚀 Pro</span>
+              {% elif sub.tier=='basic' %}<span class="tier-basic fw-bold">💳 Basic</span>
+              {% else %}<span class="tier-free">🆓 Free</span>{% endif %}
+            </td></tr>
+        <tr><td class="text-muted">{{ UI.status }}</td><td>{{ sub.status }}</td></tr>
+        <tr><td class="text-muted">{{ 'Дійсна до' if lang=='ua' else 'Valid until' }}</td><td>{{ sub.expires_at[:10] if sub.expires_at else '∞' }}</td></tr>
+      </table>
+      {% endif %}
+
+      <!-- Change tier form -->
+      <form method="POST" action="{{ url_for('user_set_tier', uid=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mb-2">
+          <label class="form-label text-muted small">{{ 'Змінити тариф' if lang=='ua' else 'Change tier' }}</label>
+          <select name="tier" class="form-select form-select-sm">
+            <option value="free" {% if not sub or sub.tier=='free' %}selected{% endif %}>🆓 Free</option>
+            <option value="basic" {% if sub and sub.tier=='basic' %}selected{% endif %}>💳 Basic</option>
+            <option value="pro" {% if sub and sub.tier=='pro' %}selected{% endif %}>🚀 Pro</option>
+          </select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label text-muted small">{{ 'Тривалість (днів)' if lang=='ua' else 'Duration (days)' }}</label>
+          <input type="number" name="days" value="30" min="1" max="365" class="form-control form-control-sm">
+        </div>
+        <button type="submit" class="btn btn-sm btn-warning w-100">{{ 'Зберегти тариф' if lang=='ua' else 'Save tier' }}</button>
+      </form>
+    </div>
+
+    <!-- Ban / unban -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-3">🛡 {{ 'Безпека' if lang=='ua' else 'Security' }}</div>
+      {% if user.banned %}
+      <form method="POST" action="{{ url_for('user_unban', uid=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-success w-100">✅ {{ UI.unban }}</button>
+      </form>
+      {% else %}
+      <form method="POST" action="{{ url_for('user_ban', uid=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-danger w-100"
+                data-confirm="{{ 'Заблокувати користувача' if lang=='ua' else 'Ban user' }} {{ user.first_name }}?">
+          🚫 {{ UI.ban }}
+        </button>
+      </form>
+      {% endif %}
+    </div>
+
+    <!-- Settings -->
+    {% if settings %}
+    <div class="card p-3">
+      <div class="fw-bold mb-2">⚙️ {{ UI.nav_settings }}</div>
+      <table class="table table-sm mb-0" style="font-size:.8rem">
+        <tr><td class="text-muted">{{ 'Авто-трейд' if lang=='ua' else 'Auto-trade' }}</td>
+            <td>{% if settings.auto_mode %}<span class="badge" style="background:#a371f7">ON</span>{% else %}OFF{% endif %}</td></tr>
+        <tr><td class="text-muted">{{ 'Мін. score' if lang=='ua' else 'Min score' }}</td><td>{{ settings.auto_min_score }}</td></tr>
+        <tr><td class="text-muted">{{ 'Макс. SOL' if lang=='ua' else 'Max SOL' }}</td><td>{{ settings.auto_max_buy_sol }}</td></tr>
+        <tr><td class="text-muted">{{ 'Макс. BNB' if lang=='ua' else 'Max BNB' }}</td><td>{{ settings.auto_max_buy_bnb }}</td></tr>
+        <tr><td class="text-muted">Stop-loss</td><td>-{{ settings.auto_stop_loss }}%</td></tr>
+        <tr><td class="text-muted">pump.fun</td>
+            <td>{% if settings.notify_all_tokens %}ON{% else %}OFF{% endif %}</td></tr>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Right: wallets, payments, trades, positions -->
+  <div class="col-md-8">
+
+    <!-- Wallets -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-2">👛 {{ 'Гаманці' if lang=='ua' else 'Wallets' }} ({{ wallets|length }})</div>
+      {% if wallets %}
+      <table class="table table-sm mb-0">
+        <thead><tr>
+          <th>{{ 'Мережа' if lang=='ua' else 'Network' }}</th>
+          <th>{{ 'Адреса' if lang=='ua' else 'Address' }}</th>
+          <th>{{ 'Ключ' if lang=='ua' else 'Key' }}</th>
+          <th>{{ UI.date }}</th>
+        </tr></thead>
+        <tbody>
+        {% for w in wallets %}
+        <tr>
+          <td>{% if w.chain=='solana' %}◎ SOL{% else %}🔶 BSC{% endif %}</td>
+          <td><code data-copy="{{ w.address }}" style="cursor:pointer;font-size:.8rem">
+            {{ w.address[:10] }}...{{ w.address[-6:] }}</code></td>
+          <td>{% if w.encrypted_pk %}<span class="badge bg-warning text-dark">🔐 {{ 'Так' if lang=='ua' else 'Yes' }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
+          <td class="text-muted small">{{ w.created_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <span class="text-muted small">{{ 'Гаманців немає.' if lang=='ua' else 'No wallets.' }}</span>
+      {% endif %}
+    </div>
+
+    <!-- Payments -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-2">💳 {{ UI.nav_payments }} ({{ payments|length }})</div>
+      {% if payments %}
+      <table class="table table-sm mb-0">
+        <thead><tr>
+          <th>{{ UI.tier }}</th><th>{{ UI.trades_amount }}</th><th>{{ UI.status }}</th>
+          <th>Invoice ID</th><th>{{ UI.date }}</th>
+        </tr></thead>
+        <tbody>
+        {% for p in payments %}
+        <tr>
+          <td>{% if p.tier=='pro' %}<span class="tier-pro">Pro</span>{% else %}<span class="tier-basic">Basic</span>{% endif %}</td>
+          <td>${{ '%.0f'|format(p.amount_usd) }}</td>
+          <td>
+            {% if p.status=='paid' %}<span class="badge bg-success">✓ paid</span>
+            {% elif p.status=='pending' %}<span class="badge bg-warning text-dark">⏳ pending</span>
+            {% else %}<span class="badge bg-secondary">expired</span>{% endif %}
+          </td>
+          <td><code style="font-size:.75rem">{{ p.invoice_id or '—' }}</code></td>
+          <td class="text-muted small">{{ p.created_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <span class="text-muted small">{{ 'Платежів немає.' if lang=='ua' else 'No payments.' }}</span>
+      {% endif %}
+    </div>
+
+    <!-- Trades -->
+    <div class="card p-3 mb-3">
+      <div class="fw-bold mb-2">💱 {{ UI.nav_trades }} ({{ trades|length }})</div>
+      {% if trades %}
+      <table class="table table-sm mb-0">
+        <thead><tr>
+          <th>{{ UI.trades_type }}</th><th>{{ UI.sig_token }}</th>
+          <th>{{ UI.trades_amount }}</th><th>{{ UI.status }}</th>
+          <th>TX</th><th>{{ UI.date }}</th>
+        </tr></thead>
+        <tbody>
+        {% for tr in trades %}
+        <tr>
+          <td>
+            {% if tr.trade_type=='buy' %}<span class="badge bg-success">BUY</span>
+            {% else %}<span class="badge bg-danger">SELL</span>{% endif %}
+            {% if tr.chain=='solana' %}◎{% else %}🔶{% endif %}
+          </td>
+          <td><code>{{ tr.token_symbol or tr.token_address[:8]+'...' }}</code></td>
+          <td>{{ tr.amount_in }}</td>
+          <td>
+            {% if tr.status=='confirmed' %}<span class="badge bg-success">✓</span>
+            {% elif tr.status=='pending' %}<span class="badge bg-warning text-dark">⏳</span>
+            {% else %}<span class="badge bg-danger">✗</span>{% endif %}
+          </td>
+          <td>{% if tr.tx_hash %}<code data-copy="{{ tr.tx_hash }}" style="cursor:pointer;font-size:.75rem">{{ tr.tx_hash[:10] }}…</code>{% else %}—{% endif %}</td>
+          <td class="text-muted small">{{ tr.created_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <span class="text-muted small">{{ 'Угод немає.' if lang=='ua' else 'No trades.' }}</span>
+      {% endif %}
+    </div>
+
+    <!-- Positions -->
+    <div class="card p-3">
+      <div class="fw-bold mb-2">📦 {{ UI.nav_positions }} ({{ positions|length }})</div>
+      {% if positions %}
+      <table class="table table-sm mb-0">
+        <thead><tr>
+          <th>{{ UI.sig_token }}</th><th>{{ UI.pos_amount }}</th>
+          <th>{{ UI.pos_buy_price }}</th><th>{{ UI.pos_sl }}</th>
+          <th>{{ UI.status }}</th><th>{{ UI.date }}</th>
+        </tr></thead>
+        <tbody>
+        {% for p in positions %}
+        <tr>
+          <td>
+            {% if p.chain=='solana' %}◎{% else %}🔶{% endif %}
+            <b>{{ p.token_symbol or '?' }}</b>
+          </td>
+          <td>{{ '%.4f'|format(p.amount) }}</td>
+          <td>${{ '%.8f'|format(p.buy_price_usd or 0) }}</td>
+          <td>-{{ p.stop_loss_pct }}%</td>
+          <td>{% if p.status=='open' %}<span class="badge bg-success">open</span>{% else %}<span class="badge bg-secondary">closed</span>{% endif %}</td>
+          <td class="text-muted small">{{ p.opened_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <span class="text-muted small">{{ 'Позицій немає.' if lang=='ua' else 'No positions.' }}</span>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">⚙️ {{ UI.settings_title }}</h4>
+</div>
+
+<form method="POST">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="row g-3">
+
+    <!-- LEFT COLUMN -->
+    <div class="col-md-8">
+
+      <!-- Score thresholds -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">📡 {{ 'Мінімальний score сигналу (по тарифах)' if lang=='ua' else 'Minimum signal score (by tier)' }}</div>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label text-muted small">🆓 Free ({{ 'дефолт' if lang=='ua' else 'default' }} 35)</label>
+            <input type="number" name="free_min_score" class="form-control form-control-sm"
+                   value="{{ settings.get('free_min_score', '35') }}" min="0" max="100">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted small">💳 Basic ({{ 'дефолт' if lang=='ua' else 'default' }} 35)</label>
+            <input type="number" name="basic_min_score" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_min_score', '35') }}" min="0" max="100">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted small">🚀 Pro ({{ 'дефолт' if lang=='ua' else 'default' }} 35)</label>
+            <input type="number" name="pro_min_score" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_min_score', '35') }}" min="0" max="100">
+          </div>
+        </div>
+        <div class="form-text text-muted small mt-2">
+          {% if lang=='ua' %}
+            Сигнали з score нижче порогу <b>не відправляються</b> юзерам відповідного тарифу.
+            Score типів: STRONG BUY ≥85, BUY ≥70, WATCH ≥55, SKIP &lt;55.
+            Встанови 35 щоб отримувати всі сигнали. Підніми до 70+ для тільки якісних.
+          {% else %}
+            Signals below the threshold are <b>not sent</b> to users of that tier.
+            Score types: STRONG BUY ≥85, BUY ≥70, WATCH ≥55, SKIP &lt;55.
+            Set to 35 to receive all signals. Raise to 70+ for quality only.
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Daily limits -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">📊 {{ 'Ліміти сигналів на день' if lang=='ua' else 'Daily signal limits' }}</div>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label text-muted small">🆓 Free</label>
+            <input type="number" name="free_daily_signals" class="form-control form-control-sm"
+                   value="{{ settings.get('free_daily_signals', '3') }}" min="0" max="9999">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted small">💳 Basic</label>
+            <input type="number" name="basic_daily_signals" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_daily_signals', '20') }}" min="0" max="9999">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted small">🚀 Pro</label>
+            <input type="number" name="pro_daily_signals" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_daily_signals', '0') }}" min="0" max="9999">
+          </div>
+        </div>
+        <div class="form-text text-muted small mt-2">{{ '0 = без ліміту' if lang=='ua' else '0 = unlimited' }}</div>
+      </div>
+
+      <!-- Pricing -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-3">💰 {{ 'Ціни та тривалість підписки' if lang=='ua' else 'Subscription prices & duration' }}</div>
+        <div class="row g-3">
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Basic {{ 'ціна' if lang=='ua' else 'price' }} ($)</label>
+            <input type="number" name="basic_price_usd" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_price_usd', '29') }}" min="1" step="0.01">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Basic ({{ 'днів' if lang=='ua' else 'days' }})</label>
+            <input type="number" name="basic_duration_days" class="form-control form-control-sm"
+                   value="{{ settings.get('basic_duration_days', '30') }}" min="1" max="365">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Pro {{ 'ціна' if lang=='ua' else 'price' }} ($)</label>
+            <input type="number" name="pro_price_usd" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_price_usd', '79') }}" min="1" step="0.01">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label text-muted small">Pro ({{ 'днів' if lang=='ua' else 'days' }})</label>
+            <input type="number" name="pro_duration_days" class="form-control form-control-sm"
+                   value="{{ settings.get('pro_duration_days', '30') }}" min="1" max="365">
+          </div>
+        </div>
+      </div>
+
+      <!-- Maintenance -->
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-2">🔧 {{ 'Режим обслуговування' if lang=='ua' else 'Maintenance mode' }}</div>
+        <select name="maintenance_mode" class="form-select form-select-sm">
+          <option value="0" {% if settings.get('maintenance_mode','0')=='0' %}selected{% endif %}>
+            🟢 {{ 'Вимкнено — бот працює нормально' if lang=='ua' else 'Off — bot runs normally' }}
+          </option>
+          <option value="1" {% if settings.get('maintenance_mode','0')=='1' %}selected{% endif %}>
+            🔴 {{ 'Увімкнено — сигнали зупинені для всіх' if lang=='ua' else 'On — signals stopped for everyone' }}
+          </option>
+        </select>
+      </div>
+
+      <button type="submit" class="btn btn-success px-4">💾 {{ UI.save }}</button>
+    </div>
+
+    <!-- RIGHT COLUMN: env vars status -->
+    <div class="col-md-4">
+      <div class="card p-3 mb-3">
+        <div class="fw-bold mb-2">🔧 Env {{ 'змінні (read-only)' if lang=='ua' else 'variables (read-only)' }}</div>
+        <p class="text-muted small mb-2">{{ 'Потребують перезапуску бота:' if lang=='ua' else 'Require bot restart:' }}</p>
+        <table class="table table-sm mb-0" style="font-size:.78rem">
+          <tr>
+            <td class="text-muted">TELEGRAM_TOKEN</td>
+            <td>{% if env_vars.telegram %}<span class="text-success">✓ Set</span>{% else %}<span class="text-danger">✗ Missing</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">CRYPTOBOT_TOKEN</td>
+            <td>{% if env_vars.cryptobot %}<span class="text-success">✓ Set</span>{% else %}<span class="text-warning">— Not set</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">ENCRYPTION_KEY</td>
+            <td>{% if env_vars.encryption %}<span class="text-success">✓ Set</span>{% else %}<span class="text-danger">✗ Missing</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">ADMIN_TOTP_SECRET</td>
+            <td>{% if env_vars.totp %}<span class="text-success">✓ 2FA active</span>{% else %}<span class="text-muted">— Disabled</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">SOLANA_RPC</td>
+            <td>{% if env_vars.solana_rpc %}<span class="text-success">✓ Custom</span>{% else %}<span class="text-muted">Default</span>{% endif %}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">BSC_RPC</td>
+            <td>{% if env_vars.bsc_rpc %}<span class="text-success">✓ Custom</span>{% else %}<span class="text-muted">Default</span>{% endif %}</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="card p-3">
+        <div class="fw-bold mb-2">ℹ️ {{ 'Підказки' if lang=='ua' else 'Tips' }}</div>
+        <ul class="text-muted small mb-0 ps-3">
+          {% if lang=='ua' %}
+          <li>Зміни <b>одразу</b> набувають чинності</li>
+          <li>Якщо сигнали не доходять — знизь <b>free_min_score</b> до 35</li>
+          <li>Maintenance mode зупиняє сигнали для ВСІХ</li>
+          <li>Ціни впливають тільки на нові інвойси</li>
+          <li>Ліміт 0 = необмежено</li>
+          {% else %}
+          <li>Changes take effect <b>immediately</b></li>
+          <li>If signals aren't arriving — lower <b>free_min_score</b> to 35</li>
+          <li>Maintenance mode stops signals for <b>everyone</b></li>
+          <li>Prices only affect new invoices</li>
+          <li>Limit 0 = unlimited</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+
+  </div><!-- row -->
+</form>
+{% endblock %}

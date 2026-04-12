@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Crypto Sniper Admin</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .sidebar{min-height:100vh;background:#161b22;border-right:1px solid #30363d;position:sticky;top:0;height:100vh;overflow-y:auto}
+    .sidebar .brand{padding:16px 20px;font-size:1rem;font-weight:700;color:#58a6ff;border-bottom:1px solid #30363d}
+    .sidebar .nav-section{padding:8px 20px 4px;font-size:.7rem;text-transform:uppercase;color:#484f58;letter-spacing:.08em}
+    .sidebar a{color:#8b949e;text-decoration:none;display:flex;align-items:center;gap:8px;padding:8px 20px;font-size:.875rem}
+    .sidebar a:hover,.sidebar a.active{color:#e6edf3;background:#21262d}
+    main{padding:1.5rem;min-height:100vh}
+    .card{background:#161b22;border:1px solid #30363d;color:#e6edf3}
+    .card .text-muted{color:#8b949e!important}
+    .table{color:#e6edf3}
+    .table>:not(caption)>*>*{background:#161b22;border-color:#30363d}
+    .table-hover tbody tr:hover>*{background:#21262d}
+    .badge-strong{background:#1a7f37}
+    .badge-buy{background:#9a6700}
+    .badge-watch{background:#1158c7}
+    .badge-skip{background:#6e7681}
+    .stat-card{border-left:3px solid}
+    .stat-blue{border-color:#58a6ff}
+    .stat-green{border-color:#3fb950}
+    .stat-orange{border-color:#d29922}
+    .stat-purple{border-color:#a371f7}
+    .stat-pink{border-color:#f778ba}
+    .stat-cyan{border-color:#39c5cf}
+    .stat-red{border-color:#f85149}
+    .stat-yellow{border-color:#e3b341}
+    .form-control,.form-select,.form-check-input{background:#21262d;border:1px solid #30363d;color:#e6edf3}
+    .form-control:focus,.form-select:focus{background:#21262d;border-color:#58a6ff;color:#e6edf3;box-shadow:none}
+    .form-control:read-only{color:#8b949e}
+    textarea.form-control{font-family:monospace}
+    .page-link{background:#161b22;border-color:#30363d;color:#58a6ff}
+    .page-link:hover{background:#21262d;color:#e6edf3}
+    .page-item.active .page-link{background:#58a6ff;border-color:#58a6ff;color:#0d1117}
+    .alert{background:#21262d;border-color:#30363d}
+    .alert-warning{border-color:#d29922}
+    .alert-success{border-color:#3fb950;color:#3fb950}
+    .alert-danger{border-color:#f85149;color:#f85149}
+    code,pre{color:#79c0ff}
+    .btn-outline-secondary{border-color:#30363d;color:#8b949e}
+    .btn-outline-secondary:hover{background:#21262d;color:#e6edf3;border-color:#58a6ff}
+    .tier-free{color:#8b949e}
+    .tier-basic{color:#d29922}
+    .tier-pro{color:#a371f7}
+    .banned-row td{opacity:.5}
+    .progress{background:#21262d}
+    input[type=number]{-moz-appearance:textfield}
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+  </style>
+</head>
+<body>
+<div class="container-fluid g-0">
+  <div class="row g-0">
+
+    <!-- Sidebar -->
+    <nav class="col-md-2 sidebar d-none d-md-block">
+      <div class="brand">🎯 Crypto Sniper</div>
+
+      <!-- Language toggle -->
+      <div style="padding:6px 20px 10px;display:flex;gap:6px">
+        <a href="{{ url_for('set_lang', lang='ua') }}"
+           style="padding:3px 8px;border-radius:4px;font-size:.8rem;text-decoration:none;
+                  background:{{ '#58a6ff22' if lang=='ua' else 'transparent' }};
+                  color:{{ '#58a6ff' if lang=='ua' else '#8b949e' }};border:1px solid {{ '#58a6ff44' if lang=='ua' else '#30363d' }}">
+          🇺🇦 UA
+        </a>
+        <a href="{{ url_for('set_lang', lang='en') }}"
+           style="padding:3px 8px;border-radius:4px;font-size:.8rem;text-decoration:none;
+                  background:{{ '#58a6ff22' if lang=='en' else 'transparent' }};
+                  color:{{ '#58a6ff' if lang=='en' else '#8b949e' }};border:1px solid {{ '#58a6ff44' if lang=='en' else '#30363d' }}">
+          🇬🇧 EN
+        </a>
+      </div>
+
+      <div class="nav-section">{{ UI.nav_main }}</div>
+      <a href="{{ url_for('dashboard') }}"      class="{{ 'active' if request.endpoint=='dashboard' }}">📊 {{ UI.nav_dashboard }}</a>
+      <a href="{{ url_for('users') }}"           class="{{ 'active' if request.endpoint in ('users','user_detail') }}">👥 {{ UI.nav_users }}</a>
+      <a href="{{ url_for('subscriptions') }}"   class="{{ 'active' if request.endpoint=='subscriptions' }}">💎 {{ UI.nav_subscriptions }}</a>
+      <a href="{{ url_for('payments') }}"        class="{{ 'active' if request.endpoint=='payments' }}">💳 {{ UI.nav_payments }}</a>
+
+      <div class="nav-section">{{ UI.nav_trading }}</div>
+      <a href="{{ url_for('signals') }}"         class="{{ 'active' if request.endpoint=='signals' }}">📡 {{ UI.nav_signals }}</a>
+      <a href="{{ url_for('trades') }}"          class="{{ 'active' if request.endpoint=='trades' }}">💱 {{ UI.nav_trades }}</a>
+      <a href="{{ url_for('positions') }}"       class="{{ 'active' if request.endpoint=='positions' }}">📦 {{ UI.nav_positions }}</a>
+
+      <div class="nav-section">{{ UI.nav_management }}</div>
+      <a href="{{ url_for('broadcast') }}"       class="{{ 'active' if request.endpoint=='broadcast' }}">📢 {{ UI.nav_broadcast }}</a>
+      <a href="{{ url_for('settings') }}"        class="{{ 'active' if request.endpoint=='settings' }}">⚙️ {{ UI.nav_settings }}</a>
+      <a href="{{ url_for('audit') }}"           class="{{ 'active' if request.endpoint=='audit' }}">🔍 {{ UI.nav_audit }}</a>
+
+      <hr style="border-color:#30363d;margin:8px 20px">
+      <a href="{{ url_for('logout') }}" style="color:#f85149">🚪 {{ UI.nav_logout }}</a>
+    </nav>
+
+    <!-- Main content -->
+    <main class="col-md-10">
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% if msgs %}
+          {% for cat, m in msgs %}
+            <div class="alert alert-{{ 'success' if cat=='success' else 'warning' }} alert-dismissible mb-3">
+              {{ m }}
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+            </div>
+          {% endfor %}
+        {% else %}
+          {% set plain_msgs = get_flashed_messages() %}
+          {% for m in plain_msgs %}
+            <div class="alert alert-warning alert-dismissible mb-3">{{ m }}
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// Copy on click
+document.addEventListener("click", function(e) {
+  var el = e.target.closest("[data-copy]");
+  if (!el) return;
+  var text = el.getAttribute("data-copy");
+  navigator.clipboard.writeText(text).then(function() {
+    var orig = el.textContent;
+    el.textContent = "✓";
+    setTimeout(function() { el.textContent = orig; }, 1200);
+  }).catch(function() {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+    document.body.removeChild(ta);
+  });
+});
+
+// Confirm dangerous actions
+document.querySelectorAll("[data-confirm]").forEach(function(el) {
+  el.addEventListener("click", function(e) {
+    if (!confirm(el.getAttribute("data-confirm"))) e.preventDefault();
+  });
+});
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0">🔍 Аудит лог</h4>
+  <span class="text-muted small">Останні {{ logs|length }} записів</span>
+</div>
+
+<div class="card">
+  <table class="table table-hover mb-0" style="font-size:.875rem">
+    <thead>
+      <tr>
+        <th>#</th><th>Час</th><th>Адмін</th><th>Дія</th><th>Деталі</th><th>IP</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for log in logs %}
+    <tr>
+      <td class="text-muted small">{{ log.id }}</td>
+      <td class="text-muted small" style="white-space:nowrap">{{ log.created_at[:16] }}</td>
+      <td><span class="badge bg-secondary">{{ log.admin_user }}</span></td>
+      <td>
+        {% if 'login_ok' in log.action %}
+          <span class="text-success">🟢 {{ log.action }}</span>
+        {% elif 'failed' in log.action %}
+          <span class="text-danger">🔴 {{ log.action }}</span>
+        {% elif 'ban' in log.action %}
+          <span style="color:#f78166">🚫 {{ log.action }}</span>
+        {% elif 'tier' in log.action %}
+          <span style="color:#d29922">💎 {{ log.action }}</span>
+        {% elif 'broadcast' in log.action %}
+          <span style="color:#58a6ff">📢 {{ log.action }}</span>
+        {% elif 'settings' in log.action %}
+          <span style="color:#a371f7">⚙️ {{ log.action }}</span>
+        {% else %}
+          {{ log.action }}
+        {% endif %}
+      </td>
+      <td class="text-muted small">{{ log.details or '—' }}</td>
+      <td class="text-muted small">{{ log.ip or '—' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="text-center text-muted py-4">Логів немає</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

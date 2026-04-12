@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4>📡 {{ UI.nav_signals }}</h4>
+  <span class="text-muted small">{{ 'Всього' if lang=='ua' else 'Total' }}: {{ total }}</span>
+</div>
+
+<form class="d-flex gap-2 mb-3">
+  <select name="chain" class="form-select form-select-sm" style="width:auto">
+    <option value="">{{ UI.all_chains }}</option>
+    <option value="solana" {{ 'selected' if chain=='solana' }}>◎ Solana</option>
+    <option value="bsc"    {{ 'selected' if chain=='bsc' }}>🔶 BSC</option>
+  </select>
+  <select name="type" class="form-select form-select-sm" style="width:auto">
+    <option value="">{{ 'Всі типи' if lang=='ua' else 'All types' }}</option>
+    <option value="STRONG_BUY" {{ 'selected' if sig_type=='STRONG_BUY' }}>🟢 STRONG BUY</option>
+    <option value="BUY"        {{ 'selected' if sig_type=='BUY' }}>🟡 BUY</option>
+    <option value="WATCH"      {{ 'selected' if sig_type=='WATCH' }}>👀 WATCH</option>
+    <option value="LAUNCH"     {{ 'selected' if sig_type=='LAUNCH' }}>🚀 LAUNCH (pump.fun)</option>
+  </select>
+  <button type="submit" class="btn btn-sm btn-outline-secondary">{{ 'Фільтр' if lang=='ua' else 'Filter' }}</button>
+  <a href="{{ url_for('signals') }}" class="btn btn-sm btn-outline-danger">✕</a>
+</form>
+
+<div class="card">
+  <table class="table table-hover mb-0">
+    <thead>
+      <tr>
+        <th>{{ UI.sig_chain }}</th>
+        <th>{{ UI.sig_token }}</th>
+        <th>{{ UI.sig_score }}</th>
+        <th>{{ UI.sig_type }}</th>
+        <th>{{ UI.sig_liq }}</th>
+        <th>{{ UI.sig_chg }}</th>
+        <th>{{ 'Створено (токен)' if lang=='ua' else 'Token created' }}</th>
+        <th>{{ 'Час сигналу' if lang=='ua' else 'Signal time' }}</th>
+        <th>{{ 'Посилання' if lang=='ua' else 'Link' }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in signals %}
+    <tr>
+      <td>{% if s.chain=='solana' %}◎ SOL{% else %}🔶 BSC{% endif %}</td>
+      <td>
+        <b>{{ s.token_symbol or '?' }}</b> {{ s.token_name or '' }}<br>
+        {% if s.token_address %}
+          <code class="small" style="font-size:.72rem;cursor:pointer;user-select:all"
+                data-copy="{{ s.token_address }}"
+                title="Натисни щоб скопіювати">{{ s.token_address }}</code>
+        {% else %}—{% endif %}
+      </td>
+      <td>
+        <div class="d-flex align-items-center gap-2">
+          <div class="progress flex-grow-1" style="height:6px;min-width:60px;background:#30363d">
+            <div class="progress-bar {% if s.score>=85 %}bg-success{% elif s.score>=70 %}bg-warning{% else %}bg-info{% endif %}"
+                 style="width:{{ s.score }}%"></div>
+          </div>
+          <span>{{ s.score }}</span>
+        </div>
+      </td>
+      <td>
+        {% if s.signal_type=='STRONG_BUY' %}<span class="badge badge-strong">STRONG BUY</span>
+        {% elif s.signal_type=='BUY' %}<span class="badge badge-buy">BUY</span>
+        {% elif s.signal_type=='WATCH' %}<span class="badge badge-watch">WATCH</span>
+        {% elif s.signal_type=='LAUNCH' %}<span class="badge" style="background:#9b59b6;color:#fff">🚀 LAUNCH</span>
+        {% else %}<span class="badge badge-skip">{{ s.signal_type or 'SKIP' }}</span>{% endif %}
+      </td>
+      <td>${{ '{:,.0f}'.format(s.liquidity_usd or 0) }}</td>
+      <td>
+        {% if s.price_change_1h %}
+          {% if s.price_change_1h > 0 %}
+            <span class="text-success">+{{ '{:.1f}'.format(s.price_change_1h) }}%</span>
+          {% else %}
+            <span class="text-danger">{{ '{:.1f}'.format(s.price_change_1h) }}%</span>
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td class="small text-muted">
+        {% if s.pair_created_at %}
+          {{ (s.pair_created_at // 1000)|int|format_ts if s.pair_created_at else '—' }}
+          {% set age_min = ((now_ts - s.pair_created_at / 1000) / 60)|int %}
+          {% if age_min < 60 %}
+            <br><span class="text-warning">{{ age_min }}хв тому</span>
+          {% else %}
+            <br><span class="text-muted">{{ (age_min // 60) }}г тому</span>
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td class="text-muted small">{{ s.created_at[:16] }}</td>
+      <td>
+        {% if s.pair_url %}
+          <a href="{{ s.pair_url }}" target="_blank" class="btn btn-outline-info btn-sm py-0">DEX</a>
+        {% elif s.token_address %}
+          {% if s.chain == 'solana' %}
+            <a href="https://solscan.io/token/{{ s.token_address }}" target="_blank" class="btn btn-outline-secondary btn-sm py-0">Solscan</a>
+          {% else %}
+            <a href="https://bscscan.com/token/{{ s.token_address }}" target="_blank" class="btn btn-outline-secondary btn-sm py-0">BSCScan</a>
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="text-center text-muted py-4">Сигналів немає</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if total > per_page %}
+<nav class="mt-3">
+  <ul class="pagination">
+    {% set base = '?chain='+chain+'&type='+sig_type %}
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="{{ base }}&page={{ page-1 }}">←</a></li>{% endif %}
+    {% for p in range([1,page-2]|max, [page+3,(total//per_page)+2]|min) %}
+      <li class="page-item {{ 'active' if p==page }}"><a class="page-link" href="{{ base }}&page={{ p }}">{{ p }}</a></li>
+    {% endfor %}
+    {% if page * per_page < total %}<li class="page-item"><a class="page-link" href="{{ base }}&page={{ page+1 }}">→</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

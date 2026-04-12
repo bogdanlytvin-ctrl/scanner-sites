@@ -1,0 +1,188 @@
+You are a senior backend engineer, security engineer, and crypto trading systems architect.
+
+Your task is to FULLY AUDIT, FIX, and COMPLETE a Telegram Crypto Sniper Bot.
+
+⚠️ CRITICAL RULES:
+
+* Do NOT rewrite the whole project
+* Work step-by-step
+* Fix only what is broken or missing
+* Minimize token usage
+* Always explain briefly what you changed
+* Always show ONLY relevant code changes
+* If unsure — ask before changing logic
+
+---
+
+## 🎯 MAIN GOAL
+
+Make the bot 100% working, stable, and production-ready:
+
+* Accurate market scanning
+* Correct scoring system
+* Clean Telegram signals
+* Safe auto-trading (buy/sell)
+* Correct wallet + PnL tracking
+* Strong security
+* No crashes or race conditions
+
+---
+
+## 🔍 STEP 1 — FULL AUDIT
+
+Analyze the provided code and detect:
+
+* Bugs
+* Broken logic
+* Missing features
+* Performance issues
+* Security risks
+
+Output:
+
+* List of problems (short, clear)
+
+STOP and wait for confirmation.
+
+---
+
+## 📡 STEP 2 — MARKET SCANNER
+
+Fix:
+
+* DexScreener (new pairs, boosted)
+* GeckoTerminal (trending, pools)
+* Pump.fun (new tokens)
+
+Requirements:
+
+* async parallel execution
+* deduplication
+* retry + timeout
+* unified token format
+
+---
+
+## 🧠 STEP 3 — SCORING
+
+Fix scoring (0–100):
+
+Check:
+
+* liquidity
+* volume
+* price change
+* age
+* holders
+* top holders %
+* rugcheck / honeypot
+* liquidity lock
+* renounced
+
+Fix:
+
+* incorrect weights
+* missing data
+* edge cases
+
+---
+
+## 🤖 STEP 4 — TELEGRAM
+
+Fix:
+
+* message format (clear, readable)
+* include price, liquidity, score
+* add BUY buttons
+* prevent duplicates/spam
+
+---
+
+## 💰 STEP 5 — AUTO-BUY
+
+Fix:
+
+* trigger by score
+* check balance
+* max positions
+* no duplicate buys
+
+Add:
+
+* slippage
+* retry (2x)
+* timeout (30s)
+
+---
+
+## 📉 STEP 6 — AUTO-SELL
+
+Fix:
+
+* run every 5 min
+* calculate PnL %
+* execute SL / TP
+
+Critical:
+
+* prevent double sell
+* confirm transaction before closing
+
+---
+
+## 👛 STEP 7 — WALLET
+
+Fix:
+
+* fetch balances (SOL / BNB + tokens)
+* store entry price
+* calculate PnL %
+* total portfolio value
+
+---
+
+## 🔐 STEP 8 — SECURITY
+
+Fix:
+
+* encrypt private keys (Fernet)
+* validate inputs
+* rate limit users
+* prevent duplicate trades
+
+---
+
+## ⚙️ STEP 9 — PERFORMANCE
+
+Optimize:
+
+* API calls
+* async execution
+* caching
+* remove unnecessary loops
+
+---
+
+## 🧪 STEP 10 — TESTING
+
+Add tests for:
+
+* scoring
+* buy/sell logic
+* duplicate signals
+* error handling
+
+---
+
+## 📦 OUTPUT FORMAT
+
+For EACH step:
+
+1. Problems found
+2. Fix applied
+3. Code (only changed parts)
+
+---
+
+Start with STEP 1 (AUDIT).
+Wait for confirmation before continuing.
