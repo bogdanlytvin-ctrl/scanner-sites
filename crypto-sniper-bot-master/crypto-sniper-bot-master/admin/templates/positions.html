@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4>📦 Відкриті позиції</h4>
+  <span class="text-muted small">{{ positions|length }} відкрито</span>
+</div>
+
+<div class="card">
+  <table class="table table-hover mb-0">
+    <thead>
+      <tr>
+        <th>Ланцюг</th><th>Токен</th><th>Кількість</th><th>Ціна купівлі</th>
+        <th>Витрачено</th><th>Stop-loss</th><th>Користувач</th><th>Відкрито</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for pos in positions %}
+    <tr>
+      <td>{% if pos.chain=='solana' %}◎ SOL{% else %}🔶 BSC{% endif %}</td>
+      <td>
+        <b>{{ pos.token_symbol or '?' }}</b> {{ pos.token_name or '' }}<br>
+        <code class="small">{{ pos.token_address[:16] }}...</code>
+      </td>
+      <td>{{ '{:,.4f}'.format(pos.amount) }}</td>
+      <td>${{ '{:,.8f}'.format(pos.buy_price_usd or 0) }}</td>
+      <td>{{ pos.buy_amount_native }} {% if pos.chain=='solana' %}SOL{% else %}BNB{% endif %}</td>
+      <td><span class="text-danger">-{{ pos.stop_loss_pct }}%</span></td>
+      <td>
+        {{ pos.first_name or '—' }}
+        {% if pos.username %}<br><a href="https://t.me/{{ pos.username }}" target="_blank" class="text-info small">@{{ pos.username }}</a>{% endif %}
+      </td>
+      <td class="text-muted small">{{ pos.opened_at[:16] }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="text-center text-muted py-4">Відкритих позицій немає</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

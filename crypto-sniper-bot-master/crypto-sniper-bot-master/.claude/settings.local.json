@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth:*)",
+      "Bash(git push:*)",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/mfo-lawyer-bot/admin/templates\")",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/mfo-lawyer-bot/payments\")",
+      "Bash(grep -r \"def \" /c/Users/Bogdan/Desktop/проекти/mfo-lawyer-bot/*.py)",
+      "Bash(grep:*)",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/crypto-sniper-bot/scanner\")",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/crypto-sniper-bot/admin/templates\")",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/crypto-sniper-bot/payments\")",
+      "Bash(winpty gh:*)",
+      "Bash(git:*)",
+      "Bash(python -c \"import database; from scanner import signals, dexscreener, rugcheck, honeypot; print\\('Sniper imports OK'\\)\")",
+      "Bash(pip install:*)",
+      "Bash(wait)",
+      "Read(//c/Users/Bogdan/AppData/Local/Temp/claude/C--Users-Bogdan-Desktop-VSCODE/edcb37c9-126e-4f85-a47d-f1f8769e36ad/tasks/**)",
+      "Bash(pip list:*)",
+      "Bash(python:*)",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/parser-bot/parsers\")",
+      "Bash(mkdir -p \"/c/Users/Bogdan/Desktop/проекти/parser-bot/admin/templates\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\Bogdan\\\\Desktop\\\\проекти\\\\business-bot\\\\admin\\\\templates\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\Bogdan\\\\Desktop\\\\проекти\\\\business-bot\\\\payments\")",
+      "Bash(gh --version)",
+      "Bash(dir \"C:\\\\Users\\\\Bogdan\\\\Desktop\\\\проекти\\\\portfolio\")",
+      "Bash(powershell.exe:*)",
+      "Read(//c/Users/Bogdan/**)",
+      "Bash(gh repo:*)"
+    ]
+  }
+}
