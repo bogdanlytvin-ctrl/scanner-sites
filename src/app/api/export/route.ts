@@ -217,11 +217,17 @@ async function generateCSV(leads: LeadBusiness[]) {
     ];
   });
 
+  // Neutralize CSV formula injection: a cell starting with = + - @ (or tab/CR)
+  // is executed as a formula by Excel/Sheets. Prefix with ' to force text.
+  const csvCell = (cell: unknown): string => {
+    let s = String(cell ?? "");
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+
   const csvContent = [
     headers.join(","),
-    ...rows.map((row) =>
-      row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")
-    ),
+    ...rows.map((row) => row.map(csvCell).join(",")),
   ].join("\n");
 
   return new NextResponse(csvContent, {

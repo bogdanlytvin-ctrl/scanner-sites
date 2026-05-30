@@ -32,6 +32,7 @@ import { isWorthContacting } from "@/lib/website-analyzer";
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
 import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
+import { COUNTRIES, flagEmoji } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
   calculateLeadScoreDetailed, getDetailedScoreColor,
@@ -122,6 +123,36 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [maxResults, setMaxResults] = useState("20");
   const [radius, setRadius] = useState("15");
+
+  // Country + city autocomplete. selectedGeoRef holds the exact coords of a
+  // picked city so the search skips fuzzy geocoding (which mis-resolved some
+  // city names to same-named villages).
+  const [country, setCountry] = useState("ua");
+  const [cityHits, setCityHits] = useState<Array<{ name: string; displayName: string; lat: number; lng: number; country: string }>>([]);
+  const [cityOpen, setCityOpen] = useState(false);
+  const [cityLoading, setCityLoading] = useState(false);
+  const selectedGeoRef = useRef<{ name: string; lat: number; lng: number; displayName: string } | null>(null);
+  const cityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchCities = useCallback((q: string, cc: string) => {
+    if (cityDebounceRef.current) clearTimeout(cityDebounceRef.current);
+    if (q.trim().length < 2) { setCityHits([]); setCityOpen(false); return; }
+    cityDebounceRef.current = setTimeout(async () => {
+      setCityLoading(true);
+      try {
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&country=${encodeURIComponent(cc)}`);
+        const data = await res.json();
+        setCityHits(data.cities || []);
+        setCityOpen(true);
+      } catch { setCityHits([]); } finally { setCityLoading(false); }
+    }, 350);
+  }, []);
+
+  const pickCity = useCallback((hit: { name: string; displayName: string; lat: number; lng: number }) => {
+    setCity(hit.name);
+    selectedGeoRef.current = { name: hit.name, lat: hit.lat, lng: hit.lng, displayName: hit.displayName };
+    setCityHits([]); setCityOpen(false);
+  }, []);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
@@ -351,10 +382,16 @@ export default function Home() {
         setProgressLabel(`Пошук у: ${currentCity} (${ci + 1}/${cities.length})`);
         setProgress(Math.round((ci / cities.length) * 30));
 
+        const sel = selectedGeoRef.current;
+        const useCoords = sel && sel.name.toLowerCase() === currentCity.toLowerCase();
         const searchData = await safeJsonFetch("/api/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city: currentCity, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15 }),
+          body: JSON.stringify({
+            city: currentCity, query: q,
+            maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15,
+            ...(useCoords ? { lat: sel!.lat, lng: sel!.lng, displayName: sel!.displayName } : {}),
+          }),
           timeoutMs: 60000,
         }, `Помилка пошуку у ${currentCity}`);
 
@@ -395,6 +432,7 @@ export default function Home() {
         let copyrightYear: number | null = null, isMobileFriendly = false, hasSsl = false;
         let finalUrl = "", technologies: string[] = [], designScore: DesignScore = "unknown";
         let designNotes: string[] = [], pageTitle = "", hasContactForm = false;
+        let securityIssues: string[] = [];
 
         if (b.website && b.website !== "N/A") {
           try {
@@ -409,6 +447,7 @@ export default function Home() {
             technologies = d.technologies || []; designScore = d.designScore || "unknown";
             designNotes = d.designNotes || []; pageTitle = d.pageTitle || "";
             hasContactForm = d.hasContactForm || false;
+            securityIssues = d.securityIssues || [];
           } catch { /* skip failed analysis */ }
         }
 
@@ -418,7 +457,7 @@ export default function Home() {
           openingHours: b.openingHours, description: b.description,
           rating: b.rating, reviews: b.reviews,
           copyrightYear, isMobileFriendly, hasSsl, finalUrl, technologies,
-          designScore, designNotes, pageTitle, hasContactForm,
+          designScore, designNotes, securityIssues, pageTitle, hasContactForm,
           score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl),
           status: "new", notes: "", contactDate: null,
         };
@@ -801,11 +840,41 @@ export default function Home() {
               <span className="flex-shrink mx-2 text-[10px] text-muted-foreground">— {t.advanced} —</span>
               <div className="flex-grow border-t"></div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
               <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Країна</label>
+                <Select value={country} onValueChange={(v) => { setCountry(v); selectedGeoRef.current = null; if (city.trim().length >= 2) fetchCities(city, v); }}
+                  disabled={phase === "searching" || phase === "analyzing"}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {COUNTRIES.map((co) => (
+                      <SelectItem key={co.code} value={co.code}>{flagEmoji(co.code)} {co.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1 relative">
                 <label className="text-xs font-medium text-muted-foreground">{t.cityLabel}</label>
-                <Input placeholder={t.cityPlaceholder} value={city} onChange={(e) => setCity(e.target.value)}
-                  disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
+                <Input placeholder={t.cityPlaceholder} value={city} autoComplete="off"
+                  onChange={(e) => { setCity(e.target.value); selectedGeoRef.current = null; fetchCities(e.target.value, country); }}
+                  onFocus={() => { if (cityHits.length > 0) setCityOpen(true); }}
+                  onBlur={() => setTimeout(() => setCityOpen(false), 150)}
+                  disabled={phase === "searching" || phase === "analyzing"}
+                  onKeyDown={(e) => { if (e.key === "Enter") { setCityOpen(false); handleSearch(); } }} />
+                {cityLoading && <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[30px] text-muted-foreground" />}
+                {cityOpen && cityHits.length > 0 && (
+                  <div className="absolute z-50 left-0 right-0 top-[58px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
+                    {cityHits.map((hit, i) => (
+                      <button key={`${hit.lat}-${hit.lng}-${i}`} type="button"
+                        onMouseDown={(e) => { e.preventDefault(); pickCity(hit); }}
+                        className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-start gap-1.5">
+                        <MapPin className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
+                        <span><span className="font-medium">{hit.name}</span>
+                          <span className="text-[11px] text-muted-foreground block leading-tight">{hit.displayName}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">{t.nicheLabel}</label>
@@ -1211,6 +1280,23 @@ export default function Home() {
                                 <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-300 dark:border-blue-700"><Mail className="w-3 h-3 mr-1" />{t.formBadge}</Badge>
                               )}
                             </div>
+                          </div>
+                        )}
+
+                        {/* Security findings (header-derived, factual) */}
+                        {lead.website !== "N/A" && lead.securityIssues && lead.securityIssues.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                              <ShieldOff className="w-3.5 h-3.5 text-red-500" /> {t.securityTitle}
+                            </h4>
+                            <ul className="space-y-1">
+                              {lead.securityIssues.map((issue, ii) => (
+                                <li key={ii} className="flex items-start gap-1.5 text-[11px] text-red-600 dark:text-red-400">
+                                  <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                                  <span>{issue}</span>
+                                </li>
+                              ))}
+                            </ul>
                           </div>
                         )}
 

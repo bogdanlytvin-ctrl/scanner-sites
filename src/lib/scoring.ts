@@ -26,6 +26,7 @@ export interface LeadBusiness {
   technologies: string[];
   designScore: DesignScore;
   designNotes: string[];
+  securityIssues: string[];
   pageTitle: string;
   hasContactForm: boolean;
   // Overall score

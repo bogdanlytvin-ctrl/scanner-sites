@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchOverpass, geocodeCity } from "@/lib/osm-search";
+import { searchOverpass, searchOverpassAt, geocodeCity } from "@/lib/osm-search";
 
 export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { city, query, maxResults = 20, radius = 15 } = body;
+    const { city, query, maxResults = 20, radius = 15, lat, lng, displayName } = body;
 
     const trimmedCity = String(city || "").trim();
     const trimmedQuery = String(query || "").trim();
@@ -20,15 +20,19 @@ export async function POST(request: NextRequest) {
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
     const parsedRadius = Math.min(Math.max(parseInt(radius) || 15, 1), 100);
 
-    // First geocode the city so we can return the resolved location
-    const geo = await geocodeCity(trimmedCity);
+    // If the client picked a city from autocomplete it sends exact coordinates,
+    // so we skip geocoding entirely (more accurate, one less round-trip).
+    const numLat = Number(lat);
+    const numLng = Number(lng);
+    const hasCoords = Number.isFinite(numLat) && Number.isFinite(numLng);
 
-    const results = await searchOverpass(
-      trimmedCity,
-      trimmedQuery,
-      parsedMax,
-      parsedRadius
-    );
+    const geo = hasCoords
+      ? { lat: numLat, lng: numLng, displayName: String(displayName || trimmedCity) }
+      : await geocodeCity(trimmedCity);
+
+    const results = hasCoords
+      ? await searchOverpassAt(numLat, numLng, trimmedQuery, parsedMax, parsedRadius)
+      : await searchOverpass(trimmedCity, trimmedQuery, parsedMax, parsedRadius);
 
     const businesses = results.slice(0, parsedMax).map((r) => ({
       name: r.name,

@@ -14,6 +14,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Validate token/chat format so they can't inject path segments into the
+    // Telegram API URL (e.g. "123/../../foo"). Real tokens are "<digits>:<base64url>".
+    if (!/^\d{6,}:[A-Za-z0-9_-]{30,}$/.test(String(botToken))) {
+      return NextResponse.json({ error: "Некоректний формат botToken" }, { status: 400 });
+    }
+    if (!/^(-?\d+|@[A-Za-z0-9_]{4,})$/.test(String(chatId))) {
+      return NextResponse.json({ error: "Некоректний формат chatId" }, { status: 400 });
+    }
+
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
     const resp = await fetch(url, {
       method: "POST",

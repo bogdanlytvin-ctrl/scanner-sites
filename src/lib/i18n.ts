@@ -136,6 +136,7 @@ export interface Translations {
   km: string;
   results: string;
   formBadge: string;
+  securityTitle: string;
   none: string;
   // PageSpeed
   pageSpeed: string;
@@ -278,6 +279,7 @@ const ua: Translations = {
   km: "км",
   results: "рез.",
   formBadge: "Форма",
+  securityTitle: "Безпека та вразливості",
   none: "—",
   pageSpeed: "PageSpeed",
   checkPageSpeed: "Перевірити PageSpeed",
@@ -419,6 +421,7 @@ const en: Translations = {
   km: "km",
   results: "res.",
   formBadge: "Form",
+  securityTitle: "Security & vulnerabilities",
   none: "—",
   pageSpeed: "PageSpeed",
   checkPageSpeed: "Check PageSpeed",
@@ -560,6 +563,7 @@ const ru: Translations = {
   km: "км",
   results: "рез.",
   formBadge: "Форма",
+  securityTitle: "Безопасность и уязвимости",
   none: "—",
   pageSpeed: "PageSpeed",
   checkPageSpeed: "Проверить PageSpeed",

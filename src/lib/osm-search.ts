@@ -161,6 +161,119 @@ const KEYWORD_MAP: Record<string, string[]> = {
   // Religious
   church: ["amenity=place_of_worship"],
   церква: ["amenity=place_of_worship"],
+
+  // ── Extended vocabulary (synonyms + niches) ──
+  // Food & Drink
+  pub: ["amenity=pub"],
+  паб: ["amenity=pub"],
+  їдальня: ["amenity=restaurant"],
+  бістро: ["amenity=fast_food"],
+  bistro: ["amenity=fast_food"],
+  бургерна: ["amenity=fast_food", "cuisine=burger"],
+  burger: ["amenity=fast_food", "cuisine=burger"],
+  шаурма: ["amenity=fast_food"],
+  шаверма: ["amenity=fast_food"],
+  кондитерська: ["shop=confectionery", "shop=pastry"],
+  кондитерка: ["shop=confectionery", "shop=pastry"],
+  винарня: ["shop=wine", "amenity=bar"],
+  wine: ["shop=wine"],
+  пивна: ["amenity=pub", "amenity=bar"],
+
+  // Health & Beauty
+  clinic: ["amenity=clinic"],
+  клініка: ["amenity=clinic"],
+  медцентр: ["amenity=clinic"],
+  косметолог: ["shop=beauty"],
+  косметологія: ["shop=beauty"],
+  манікюр: ["shop=beauty"],
+  барбершоп: ["shop=hairdresser"],
+  barbershop: ["shop=hairdresser"],
+  тату: ["shop=tattoo"],
+  tattoo: ["shop=tattoo"],
+  оптика: ["shop=optician"],
+  фітнес: ["leisure=fitness_centre"],
+  спортклуб: ["leisure=fitness_centre"],
+
+  // Auto
+  автосервіс: ["craft=car_repair", "shop=car_repair"],
+  автомийка: ["amenity=car_wash"],
+  шиномонтаж: ["shop=tyres"],
+  tyres: ["shop=tyres"],
+  автозапчастини: ["shop=car_parts"],
+  car_parts: ["shop=car_parts"],
+  автосалон: ["shop=car"],
+  автошкола: ["amenity=driving_school"],
+  driving_school: ["amenity=driving_school"],
+
+  // Home & Trades
+  меблі: ["shop=furniture"],
+  furniture: ["shop=furniture"],
+  будматеріали: ["shop=doityourself", "shop=hardware"],
+  hardware: ["shop=hardware"],
+  будівельник: ["craft=builder"],
+  builder: ["craft=builder"],
+  ательє: ["shop=tailor", "craft=tailor"],
+  кравець: ["craft=tailor"],
+  tailor: ["craft=tailor"],
+  хімчистка: ["shop=dry_cleaning", "shop=laundry"],
+  пральня: ["shop=laundry"],
+  laundry: ["shop=laundry"],
+
+  // Professional / Creative
+  реклама: ["office=advertising_agency"],
+  фотограф: ["craft=photographer", "shop=photo"],
+  photographer: ["craft=photographer"],
+  фотостудія: ["craft=photographer", "shop=photo"],
+  друкарня: ["shop=copyshop", "craft=printer"],
+  типографія: ["shop=copyshop", "craft=printer"],
+  copyshop: ["shop=copyshop"],
+  it: ["office=it"],
+  айті: ["office=it"],
+
+  // Shopping
+  продукти: ["shop=convenience", "shop=supermarket"],
+  продуктовий: ["shop=convenience", "shop=supermarket"],
+  мʼясо: ["shop=butcher"],
+  butcher: ["shop=butcher"],
+  риба: ["shop=seafood"],
+  алкоголь: ["shop=alcohol"],
+  alcohol: ["shop=alcohol"],
+  зоомагазин: ["shop=pet"],
+  pet: ["shop=pet"],
+  іграшки: ["shop=toys"],
+  toys: ["shop=toys"],
+  косметика: ["shop=cosmetics", "shop=chemist"],
+  cosmetics: ["shop=cosmetics"],
+  парфуми: ["shop=perfumery"],
+  спорттовари: ["shop=sports"],
+  sports: ["shop=sports"],
+  велосипеди: ["shop=bicycle"],
+  bicycle: ["shop=bicycle"],
+  телефони: ["shop=mobile_phone"],
+  mobile: ["shop=mobile_phone"],
+  компʼютери: ["shop=computer"],
+  computer: ["shop=computer"],
+  канцтовари: ["shop=stationery"],
+  подарунки: ["shop=gift"],
+  gift: ["shop=gift"],
+  магазин: ["shop"],
+
+  // Leisure & Culture
+  басейн: ["leisure=swimming_pool"],
+  боулінг: ["leisure=bowling_alley"],
+  кінотеатр: ["amenity=cinema"],
+  cinema: ["amenity=cinema"],
+  театр: ["amenity=theatre"],
+  theatre: ["amenity=theatre"],
+  клуб: ["amenity=nightclub"],
+  nightclub: ["amenity=nightclub"],
+  музей: ["tourism=museum"],
+  museum: ["tourism=museum"],
+
+  // Hotels
+  апартаменти: ["tourism=apartment"],
+  мотель: ["tourism=motel"],
+  motel: ["tourism=motel"],
 };
 
 // Broad tags for unknown keywords — combined with name search to avoid timeout
@@ -173,6 +286,113 @@ const BROAD_BUSINESS_TAGS = [
   "office",
   "craft",
 ];
+
+// ─── Keyword resolution: normalize → stem → fuzzy ───────────
+// Ukrainian queries arrive in many forms (plural, cases, apostrophe variants).
+// Exact-map lookup misses them, so we reduce every keyword and every map key
+// to a common stem and match on that, with a typo-tolerant fallback.
+
+// Lowercase, unify the 6 apostrophe glyphs, drop stray punctuation, collapse spaces.
+function normalizeKeyword(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[ʼʹ'`´’‘]/g, "'")
+    .replace(/[^a-zа-яіїєґ0-9'\s-]/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Ukrainian inflectional endings, longest-first so multi-char endings win.
+const UK_ENDINGS = [
+  "ами", "ями", "ах", "ях", "ів", "їв", "ою", "ею", "ом", "ем",
+  "і", "и", "а", "я", "у", "ю", "е", "є", "ї", "ь", "о",
+].sort((a, b) => b.length - a.length);
+
+// Strip one inflectional ending, keeping a stem of at least 3 chars.
+function ukStem(word: string): string {
+  for (const end of UK_ENDINGS) {
+    if (word.length - end.length >= 3 && word.endsWith(end)) {
+      return word.slice(0, word.length - end.length);
+    }
+  }
+  return word;
+}
+
+// Bounded Levenshtein for short single-token typo tolerance.
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 2) return 99;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= n; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const tmp = dp[i];
+      dp[i] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[i], dp[i - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[m];
+}
+
+// Lazily-built indexes over KEYWORD_MAP keyed by normalized form and by stem.
+let normIndex: Map<string, string[]> | null = null;
+let stemIndex: Map<string, string[]> | null = null;
+let stemKeys: string[] = [];
+
+function buildKeywordIndexes(): void {
+  if (normIndex) return;
+  normIndex = new Map();
+  stemIndex = new Map();
+  for (const [k, tags] of Object.entries(KEYWORD_MAP)) {
+    const nk = normalizeKeyword(k);
+    if (!normIndex.has(nk)) normIndex.set(nk, tags);
+    const sk = ukStem(nk);
+    if (!stemIndex.has(sk)) stemIndex.set(sk, tags);
+  }
+  stemKeys = [...stemIndex.keys()];
+}
+
+// Resolve a free-form keyword to OSM tags. Tries, in order: exact normalized
+// match, per-token stem match, stem prefix/substring, then a tight typo fuzzy.
+// Returns null only when nothing plausibly maps (caller falls back to name search).
+function resolveKeyword(keyword: string): string[] | null {
+  buildKeywordIndexes();
+  const norm = normalizeKeyword(keyword);
+  if (!norm) return null;
+
+  if (normIndex!.has(norm)) return normIndex!.get(norm)!;
+
+  const tokens = norm.split(" ").filter((t) => t.length >= 3);
+  const collected: string[] = [];
+
+  for (const tok of [norm, ...tokens]) {
+    if (normIndex!.has(tok)) { collected.push(...normIndex!.get(tok)!); continue; }
+
+    const st = ukStem(tok);
+    if (stemIndex!.has(st)) { collected.push(...stemIndex!.get(st)!); continue; }
+
+    if (st.length >= 4) {
+      const pref = stemKeys.find((k) => k.length >= 4 && (k.startsWith(st) || st.startsWith(k)));
+      if (pref) { collected.push(...stemIndex!.get(pref)!); continue; }
+    }
+
+    if (st.length >= 5) {
+      let best: string | null = null;
+      let bestD = 2;
+      for (const k of stemKeys) {
+        if (Math.abs(k.length - st.length) > 1) continue;
+        const d = levenshtein(st, k);
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      if (best) collected.push(...stemIndex!.get(best)!);
+    }
+  }
+
+  // Cap tag count so multi-word inputs ("піца суші бар кафе") can't balloon the
+  // Overpass query into a timeout.
+  return collected.length > 0 ? [...new Set(collected)].slice(0, 12) : null;
+}
 
 // ─── Geocoding cache (in-memory) ────────────────────────────
 const geoCache = new Map<string, GeoCoords>();
@@ -251,9 +471,15 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
     }
   }
 
+  // Final pass: global Nominatim with no country restriction so a Cyrillic-named
+  // city outside Ukraine (Алматы, София, Белград…) still resolves.
+  if (!coords) {
+    coords = await geocodeNominatim(city, false);
+  }
+
   if (!coords) {
     throw new Error(
-      `Місто "${city}" не знайдено. Спробуйте: Kyiv, Дніпро, Львів, London...`
+      `Місто "${city}" не знайдено. Спробуйте: Kyiv, Дніпро, Львів, London, Warszawa...`
     );
   }
 
@@ -375,7 +601,7 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
   }
 }
 
-async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
+async function geocodeNominatim(city: string, restrictToUA: boolean = true): Promise<GeoCoords | null> {
   try {
     // Detect Cyrillic for language/country preference
     const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
@@ -384,9 +610,10 @@ async function geocodeNominatim(city: string): Promise<GeoCoords | null> {
     // Request more results for better filtering
     let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=10&accept-language=${lang}`;
 
-    // For Cyrillic queries, prioritize Ukrainian results
-    if (isCyrillic) {
-      url += `&countrycodes=ua`; // Only Ukrainian results for Cyrillic queries
+    // For Cyrillic queries, prefer Ukraine — but only when restrictToUA is set.
+    // The final geocode pass clears this so cities in any country still resolve.
+    if (isCyrillic && restrictToUA) {
+      url += `&countrycodes=ua`;
     }
 
     const resp = await fetch(url, {
@@ -479,12 +706,31 @@ export async function searchOverpass(
   maxResults: number = 20,
   radiusKm: number = 15
 ): Promise<OSMResult[]> {
-  // Step 1: Geocode city
+  // Step 1: Geocode city, then delegate to the coordinate-based search.
   const coords = await geocodeCity(city);
+  return searchOverpassAt(coords.lat, coords.lng, keyword, maxResults, radiusKm);
+}
+
+// Coordinate-based search — used when the caller already has exact coordinates
+// (e.g. from the city autocomplete), so no geocoding guess is involved.
+export async function searchOverpassAt(
+  lat: number,
+  lng: number,
+  keyword: string,
+  maxResults: number = 20,
+  radiusKm: number = 15
+): Promise<OSMResult[]> {
+  const coords = { lat, lng };
 
   // Step 2: Determine search strategy
-  const keywordLower = keyword.toLowerCase().trim();
-  const matchedTags = KEYWORD_MAP[keywordLower];
+  // resolveKeyword handles plural/case forms, apostrophe variants and typos,
+  // so "ресторани", "аптек", "кавʼярні" all map to the right OSM tags.
+  const matchedTags = resolveKeyword(keyword);
+  if (matchedTags) {
+    console.log(`[Search] "${keyword}" → tags: ${matchedTags.join(", ")}`);
+  } else {
+    console.log(`[Search] "${keyword}" → no tag match, broad name search`);
+  }
 
   // Step 3: Build & execute query with fallback
   let allElements: any[] = [];
@@ -561,8 +807,14 @@ function buildBroadQuery(
   maxResults: number
 ): string {
   const radius = Math.min(radiusKm * 1000, 25000); // Smaller radius for broad search (cap 25km)
+  // Search on the stem so the name regex still matches declined/plural forms
+  // (e.g. stem "пекарн" matches "Пекарня", "Пекарні"). Fall back to the full
+  // normalized keyword when the stem is too short to be meaningful.
+  const norm = normalizeKeyword(keyword);
+  const stem = ukStem(norm);
+  const pattern = stem.length >= 4 ? stem : norm || keyword;
   // Escape regex special chars AND double quotes (QL uses " as string delimiter)
-  const escaped = keyword.replace(/[.*+?^${}()|[\]\\"]/g, "\\$&");
+  const escaped = pattern.replace(/[-.*+?^${}()|[\]\\"]/g, "\\$&");
 
   const conditions: string[] = [];
 

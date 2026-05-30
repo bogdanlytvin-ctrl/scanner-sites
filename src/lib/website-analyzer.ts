@@ -2,6 +2,7 @@
 // Extracts: copyright year, mobile friendliness, technology, SSL, design score
 
 import * as cheerio from "cheerio";
+import { safeFetch } from "./ssrf";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
@@ -17,6 +18,7 @@ export interface WebsiteAnalysis {
   designNotes: string[];
   pageTitle: string;
   hasContactForm: boolean;
+  securityIssues: string[]; // real, header-derived security findings (no guesses)
 }
 
 export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
@@ -30,6 +32,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     designNotes: [],
     pageTitle: "",
     hasContactForm: false,
+    securityIssues: [],
   };
 
   if (!url || url === "N/A") return empty;
@@ -41,16 +44,23 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
   let html = "";
   let finalUrl = url;
   let hasSsl = url.startsWith("https://");
+  let respHeaders: Record<string, string> = {};
+
+  const collectHeaders = (h: Headers): Record<string, string> => {
+    const out: Record<string, string> = {};
+    h.forEach((v, k) => { out[k.toLowerCase()] = v; });
+    return out;
+  };
 
   try {
-    const resp = await fetch(url, {
+    const resp = await safeFetch(url, {
       headers: { "User-Agent": USER_AGENT },
-      redirect: "follow",
       signal: AbortSignal.timeout(TIMEOUT),
     });
 
     finalUrl = resp.url || url;
     hasSsl = finalUrl.startsWith("https://");
+    respHeaders = collectHeaders(resp.headers);
 
     if (!resp.ok) return { ...empty, hasSsl, finalUrl };
 
@@ -62,13 +72,13 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     // Try HTTP fallback
     try {
       const httpUrl = url.replace("https://", "http://");
-      const resp = await fetch(httpUrl, {
+      const resp = await safeFetch(httpUrl, {
         headers: { "User-Agent": USER_AGENT },
-        redirect: "follow",
         signal: AbortSignal.timeout(TIMEOUT),
       });
       finalUrl = resp.url || httpUrl;
       hasSsl = finalUrl.startsWith("https://");
+      respHeaders = collectHeaders(resp.headers);
       if (!resp.ok) return { ...empty, hasSsl, finalUrl };
       html = await resp.text();
     } catch {
@@ -84,14 +94,19 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
   const pageTitle = $("title").text().trim();
 
   // ─── Mobile viewport ─────────────────────────────────────
-  const viewport = $('meta[name="viewport"]');
-  const isMobileFriendly = !!(viewport.length && viewport.attr("content"));
+  // A responsive site must declare width=device-width; a viewport pinned to a
+  // fixed width (e.g. width=1024) is a desktop layout, not mobile-friendly.
+  const viewportContent = ($('meta[name="viewport"]').attr("content") || "").toLowerCase();
+  const isMobileFriendly = /width\s*=\s*device-width/.test(viewportContent);
 
   // ─── Copyright year ──────────────────────────────────────
   const copyrightYear = extractCopyrightYear($, html);
 
-  // ─── Technology detection ────────────────────────────────
-  const technologies = detectTechnologies($, html);
+  // ─── Technology detection (HTML + response headers) ──────
+  const technologies = detectTechnologies($, html, respHeaders);
+
+  // ─── Security findings (header-derived, factual) ─────────
+  const securityIssues = detectSecurityIssues(respHeaders, hasSsl, html, finalUrl);
 
   // ─── Contact form detection ──────────────────────────────
   const hasContactForm = detectContactForm($);
@@ -106,6 +121,11 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     $,
   });
 
+  // Surface security findings in notes too, so they show in the existing UI.
+  const designNotes = securityIssues.length
+    ? [...notes, ...securityIssues.map((s) => `🔒 ${s}`)]
+    : notes;
+
   return {
     copyrightYear,
     isMobileFriendly,
@@ -113,18 +133,41 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     finalUrl,
     technologies,
     designScore: score,
-    designNotes: notes,
+    designNotes,
     pageTitle,
     hasContactForm,
+    securityIssues,
   };
 }
 
 // ─── Technology detection ──────────────────────────────────
 
-function detectTechnologies($: cheerio.CheerioAPI, html: string): string[] {
+function detectTechnologies(
+  $: cheerio.CheerioAPI,
+  html: string,
+  headers: Record<string, string> = {}
+): string[] {
   const techs: string[] = [];
 
-  // Meta generator tag
+  // ── Response headers: ground-truth server stack ──
+  const server = (headers["server"] || "").toLowerCase();
+  const poweredBy = (headers["x-powered-by"] || "").toLowerCase();
+  const xGenerator = (headers["x-generator"] || "").toLowerCase();
+  const setCookie = (headers["set-cookie"] || "").toLowerCase();
+
+  if (server.includes("nginx")) techs.push("Nginx");
+  if (server.includes("apache")) techs.push("Apache");
+  if (server.includes("litespeed")) techs.push("LiteSpeed");
+  if (server.includes("microsoft-iis") || server.includes("iis")) techs.push("IIS");
+  if (server.includes("cloudflare") || headers["cf-ray"]) techs.push("Cloudflare");
+  if (poweredBy.includes("php") || /php/i.test(server)) techs.push("PHP");
+  if (poweredBy.includes("asp.net")) techs.push("ASP.NET");
+  if (poweredBy.includes("express")) techs.push("Express");
+  if (xGenerator.includes("drupal")) techs.push("Drupal");
+  if (setCookie.includes("wordpress_") || setCookie.includes("wp-settings")) techs.push("WordPress");
+  if (setCookie.includes("phpsessid") && !poweredBy.includes("php") && !/php/i.test(server)) techs.push("PHP");
+
+  // ── Meta generator tag ──
   const generator = $('meta[name="generator"]').attr("content") || "";
   if (generator) {
     const g = generator.toLowerCase();
@@ -148,26 +191,62 @@ function detectTechnologies($: cheerio.CheerioAPI, html: string): string[] {
     else if (g) techs.push(generator.split(/[;,\s]/)[0].trim());
   }
 
-  // HTML patterns
+  // ── HTML patterns (anchored to avoid false positives) ──
   if (/wp-content|wp-includes/i.test(html)) techs.push("WordPress");
   if (/\/bitrix\//i.test(html)) techs.push("1C-Bitrix");
-  if (/shopify\.com/i.test(html)) techs.push("Shopify");
-  if (/wix\.com/i.test(html)) techs.push("Wix");
-  if (/tilda\.ws|tilda\.cc/i.test(html)) techs.push("Tilda");
-  if (/joomla/i.test(html)) techs.push("Joomla");
-  if (/drupal/i.test(html)) techs.push("Drupal");
-  if (/webflow\.com/i.test(html)) techs.push("Webflow");
-  if (/squarespace/i.test(html)) techs.push("Squarespace");
-  if (/modx/i.test(html)) techs.push("MODX");
-  if (/next\.js|__next/i.test(html)) techs.push("Next.js");
-  if (/nuxt/i.test(html)) techs.push("Nuxt");
-  if (/react/i.test(html) && /__next/i.test(html)) {} // already Next.js
-  if (/vue\.js|vue\.min/i.test(html)) techs.push("Vue.js");
-  if (/angular/i.test(html)) techs.push("Angular");
-  if (/laravel/i.test(html)) techs.push("Laravel");
+  if (/cdn\.shopify\.com|shopify\.com\/s\//i.test(html)) techs.push("Shopify");
+  if (/static\.wix(static)?\.com|wix\.com\/website/i.test(html)) techs.push("Wix");
+  if (/tilda\.ws|tilda\.cc|tildacdn/i.test(html)) techs.push("Tilda");
+  // Joomla/Drupal: require a real path/marker, not a stray word in copy
+  if (/\/components\/com_|\/media\/jui\/|joomla!|option=com_/i.test(html)) techs.push("Joomla");
+  if (/sites\/(?:all|default)\/(?:themes|modules|files)|drupal\.settings|data-drupal|drupal\.js/i.test(html)) techs.push("Drupal");
+  if (/webflow\.com|wf-/i.test(html) && /webflow/i.test(html)) techs.push("Webflow");
+  if (/static\d?\.squarespace\.com|squarespace\.com\/(?:universal|static)/i.test(html)) techs.push("Squarespace");
+  if (/\/assets\/components\/|modx/i.test(html) && /modx/i.test(html)) techs.push("MODX");
+  // JS frameworks — anchored markers, not bare framework names
+  if (/__next|\/_next\/static/i.test(html)) techs.push("Next.js");
+  if (/__nuxt|\/_nuxt\//i.test(html)) techs.push("Nuxt");
+  if (/data-reactroot|react-dom|\/react(?:\.production|\.min)?\.js/i.test(html)) techs.push("React");
+  if (/data-v-app|vue(?:\.min|\.runtime)?\.js|__vue__/i.test(html)) techs.push("Vue.js");
+  if (/ng-version=|_nghost|_ngcontent|angular(?:\.min)?\.js/i.test(html)) techs.push("Angular");
+  if (/laravel_session|\/vendor\/laravel/i.test(html) || setCookie.includes("laravel_session")) techs.push("Laravel");
 
   // Deduplicate
   return [...new Set(techs)];
+}
+
+// ─── Security findings (factual, header-derived — no guessing) ─────
+function detectSecurityIssues(
+  headers: Record<string, string>,
+  hasSsl: boolean,
+  html: string,
+  finalUrl: string
+): string[] {
+  const issues: string[] = [];
+
+  if (!hasSsl) {
+    issues.push("Немає HTTPS — трафік не шифрується");
+  } else {
+    if (!headers["strict-transport-security"]) issues.push("Немає HSTS — можливий downgrade на HTTP");
+    // Mixed content: HTTPS page that pulls http:// sub-resources
+    if (/(?:src|href)\s*=\s*["']http:\/\//i.test(html)) {
+      issues.push("Mixed content — підвантажує ресурси по незахищеному http://");
+    }
+  }
+
+  if (!headers["content-security-policy"]) issues.push("Немає Content-Security-Policy (захист від XSS)");
+  if (!headers["x-frame-options"] && !/frame-ancestors/i.test(headers["content-security-policy"] || "")) {
+    issues.push("Немає X-Frame-Options — ризик clickjacking");
+  }
+  if (!headers["x-content-type-options"]) issues.push("Немає X-Content-Type-Options (MIME-sniffing)");
+
+  // Version disclosure in headers = information leak
+  const server = headers["server"] || "";
+  if (/\d+\.\d+/.test(server)) issues.push(`Server розкриває версію: ${server}`);
+  const poweredBy = headers["x-powered-by"] || "";
+  if (poweredBy) issues.push(`X-Powered-By розкриває стек: ${poweredBy}`);
+
+  return issues;
 }
 
 // ─── Contact form detection ────────────────────────────────
@@ -250,9 +329,9 @@ function scoreDesign(opts: {
 
   // 5. HTML quality signals (0-2 points)
   let hasModernFeatures = 0;
-  if (opts.html.includes("charset=\"utf-8") || opts.html.includes("charset=UTF-8")) hasModernFeatures++;
+  if (/charset\s*=\s*["']?utf-8/i.test(opts.html)) hasModernFeatures++;
   if (opts.$("meta[name=\"description\"]").length) hasModernFeatures++;
-  if (opts.$("meta[property=\"og:\"]").length || opts.$('meta[property="og:title"]').length) hasModernFeatures++;
+  if (opts.$('meta[property^="og:"]').length) hasModernFeatures++;
   if (opts.$("header, nav, main, footer").length >= 2) hasModernFeatures++;
 
   if (hasModernFeatures >= 3) points += 2;
@@ -261,7 +340,7 @@ function scoreDesign(opts: {
   // 6. Visual style heuristics from CSS/HTML
   const hasInlineStyles = /style="[^"]{100,}"/.test(opts.html);
   const hasModernCSS = /flexbox|grid|rem|var\(--/.test(opts.html);
-  const hasOldPatterns = /<table[^>]*><tr><td>/i.test(opts.html) && !opts.technologies.includes("WordPress");
+  const hasOldPatterns = /<table[^>]*>\s*(?:<tbody[^>]*>\s*)?<tr[^>]*>\s*<td/i.test(opts.html) && !opts.technologies.includes("WordPress");
 
   if (hasModernCSS) points += 1;
   if (hasInlineStyles && !hasModernCSS) {
@@ -356,8 +435,11 @@ export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
     };
   }
 
-  // Ancient design
-  if (lead.copyrightYear && lead.copyrightYear <= 2020) {
+  // Ancient design — "very old" means >= 6 years stale, relative to today so the
+  // threshold doesn't drift out of date (and doesn't contradict scoreDesign,
+  // which still rewards copyrightYear >= currentYear-2).
+  const veryOldCutoff = new Date().getFullYear() - 6;
+  if (lead.copyrightYear && lead.copyrightYear <= veryOldCutoff) {
     score += 30;
     reasons.push(`Дуже старий дизайн (© ${lead.copyrightYear})`);
   } else if (lead.designScore === "ancient") {

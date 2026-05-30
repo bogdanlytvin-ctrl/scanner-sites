@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeWebsite } from "@/lib/website-analyzer";
 
+export const runtime = "nodejs"; // ssrf.ts needs node:dns / node:net (not Edge)
 export const maxDuration = 30; // Website fetching can take time
 
 export async function POST(request: NextRequest) {
@@ -19,6 +20,7 @@ export async function POST(request: NextRequest) {
         designNotes: [],
         pageTitle: "",
         hasContactForm: false,
+        securityIssues: [],
         skipped: true,
       });
     }
@@ -35,6 +37,7 @@ export async function POST(request: NextRequest) {
       designNotes: result.designNotes,
       pageTitle: result.pageTitle,
       hasContactForm: result.hasContactForm,
+      securityIssues: result.securityIssues,
     });
   } catch (error) {
     console.error("Analyze API error:", error);
