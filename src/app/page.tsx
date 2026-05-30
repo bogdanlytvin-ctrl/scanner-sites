@@ -121,7 +121,7 @@ export default function Home() {
   const [city, setCity] = useState("");
   const [query, setQuery] = useState("");
   const [maxResults, setMaxResults] = useState("20");
-  const [radius, setRadius] = useState("15");
+  const [radius, setRadius] = useState("10");
 
   // Country + city autocomplete. selectedGeoRef holds the exact coords of a
   // picked city so the search skips fuzzy geocoding (which mis-resolved some
@@ -388,7 +388,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             city: currentCity, query: q,
-            maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15,
+            maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10,
             ...(useCoords ? { lat: sel!.lat, lng: sel!.lng, displayName: sel!.displayName } : {}),
           }),
           timeoutMs: 60000,
@@ -415,7 +415,7 @@ export default function Home() {
 
       if (allBusinesses.length === 0) {
         setPhase("done"); setProgress(100); setProgressLabel("Нічого не знайдено.");
-        saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15, totalResults: 0 });
+        saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: 0 });
         setSearchHistory(getSearchHistory());
         return;
       }
@@ -470,7 +470,7 @@ export default function Home() {
       }
 
       // Save to search history
-      saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 15, totalResults: analyzed.length });
+      saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: analyzed.length });
       setSearchHistory(getSearchHistory());
 
       setPhase("done"); setProgress(100); setProgressLabel(`Готово! ${analyzed.length} лідів з ${cities.length} міст`);
@@ -895,8 +895,9 @@ export default function Home() {
                 <Select value={radius} onValueChange={setRadius} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
                   <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="5">5 {t.km}</SelectItem><SelectItem value="15">15 {t.km}</SelectItem>
-                    <SelectItem value="25">25 {t.km}</SelectItem><SelectItem value="50">50 {t.km}</SelectItem>
+                    <SelectItem value="5">5 {t.km}</SelectItem><SelectItem value="10">10 {t.km}</SelectItem>
+                    <SelectItem value="15">15 {t.km}</SelectItem><SelectItem value="25">25 {t.km}</SelectItem>
+                    <SelectItem value="50">50 {t.km}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

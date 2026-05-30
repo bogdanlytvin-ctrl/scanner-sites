@@ -404,8 +404,8 @@ interface OverpassCacheEntry {
   timestamp: number;
 }
 const overpassCache = new Map<string, OverpassCacheEntry>();
-const OVERPASS_CACHE_TTL = 600_000; // 10 minutes
-const OVERPASS_CACHE_MAX = 100; // max entries
+const OVERPASS_CACHE_TTL = 3_600_000; // 60 minutes — business locations change slowly
+const OVERPASS_CACHE_MAX = 250; // max entries
 
 function getCachedOverpass(query: string): any[] | null {
   const entry = overpassCache.get(query);
@@ -704,7 +704,7 @@ export async function searchOverpass(
   city: string,
   keyword: string,
   maxResults: number = 20,
-  radiusKm: number = 15
+  radiusKm: number = 10
 ): Promise<OSMResult[]> {
   // Step 1: Geocode city, then delegate to the coordinate-based search.
   const coords = await geocodeCity(city);
@@ -718,7 +718,7 @@ export async function searchOverpassAt(
   lng: number,
   keyword: string,
   maxResults: number = 20,
-  radiusKm: number = 15
+  radiusKm: number = 10
 ): Promise<OSMResult[]> {
   const coords = { lat, lng };
 
@@ -855,10 +855,10 @@ const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
 
 // ─── Query execution with fallback + retry ───────────────────
 
-const MAX_RETRIES_PER_ENDPOINT = 2; // 3 attempts per endpoint (0, 1, 2)
-const RETRY_DELAYS_MS = [2000, 5000]; // exponential backoff: 2s, 5s
+const MAX_RETRIES_PER_ENDPOINT = 1; // 2 attempts per endpoint (0, 1) — fail fast, move to next mirror
+const RETRY_DELAYS_MS = [1500]; // short backoff before the single retry
 const OVERALL_TIMEOUT_MS = 50000; // Hard deadline: 50s (Vercel limit is 60s)
-const PER_REQUEST_TIMEOUT_MS = 25000; // Each individual fetch: 25s
+const PER_REQUEST_TIMEOUT_MS = 12000; // Each individual fetch: 12s — lets 3-4 mirrors be tried within budget
 
 async function executeQuery(query: string): Promise<any[]> {
   // Check cache first — return immediately without hitting Overpass

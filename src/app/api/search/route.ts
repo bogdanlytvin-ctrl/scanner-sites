@@ -6,7 +6,7 @@ export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { city, query, maxResults = 20, radius = 15, lat, lng, displayName } = body;
+    const { city, query, maxResults = 20, radius = 10, lat, lng, displayName } = body;
 
     const trimmedCity = String(city || "").trim();
     const trimmedQuery = String(query || "").trim();
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
-    const parsedRadius = Math.min(Math.max(parseInt(radius) || 15, 1), 100);
+    const parsedRadius = Math.min(Math.max(parseInt(radius) || 10, 1), 100);
 
     // If the client picked a city from autocomplete it sends exact coordinates,
     // so we skip geocoding entirely (more accurate, one less round-trip).
