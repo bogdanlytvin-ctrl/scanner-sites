@@ -28,14 +28,13 @@ import {
   getTelegramSettings, saveTelegramSettings,
   type SearchHistoryEntry, type TelegramSettings,
 } from "@/lib/storage";
-import { isWorthContacting } from "@/lib/website-analyzer";
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
 import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
 import { COUNTRIES, flagEmoji } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
-  calculateLeadScoreDetailed, getDetailedScoreColor,
+  calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting,
   type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus, type ScoreBreakdown,
 } from "@/lib/scoring";
 
