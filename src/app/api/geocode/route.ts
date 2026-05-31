@@ -68,11 +68,14 @@ async function fromNominatim(q: string, country: string): Promise<CityHit[]> {
     const type = (r.type || "").toLowerCase();
     const cls = (r.class || "").toLowerCase();
     if (cls === "place" && !PLACE_TYPES.has(type) && type !== "administrative") continue;
+    const lat = parseFloat(r.lat);
+    const lng = parseFloat(r.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     hits.push({
       name: (r.display_name || "").split(",")[0] || q,
       displayName: r.display_name || q,
-      lat: parseFloat(r.lat),
-      lng: parseFloat(r.lon),
+      lat,
+      lng,
       country: (r.address?.country_code || country || "").toLowerCase(),
     });
   }

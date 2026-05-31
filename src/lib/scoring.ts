@@ -275,9 +275,6 @@ function generateOpportunityText(
   const priceRange = `$${estMin}-$${estMax}`;
 
   if (rating === "HOT") {
-    if (!score) {
-      // generic HOT — no website or very bad
-    }
     return `Власник потребує повний редизайн або створення сайту з нуля. Оцінена вартість: ${priceRange}. Високий пріоритет контакту.`;
   }
 

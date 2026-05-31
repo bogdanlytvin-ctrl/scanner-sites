@@ -39,7 +39,7 @@ const KNOWN_CITIES = new Set([
   "житомир", "zhytomyr",
   "луцьк", "lutsk",
   "івано-франківськ", "ivano-frankivsk",
-  "укаїна", "ukraine",
+  "україна", "ukraine",
   // International
   "london", "berlin", "paris", "prague", "praga",
   "warsaw", "варшава", "краків", "krakow",

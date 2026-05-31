@@ -83,6 +83,14 @@ async function generateExcel(leads: LeadBusiness[]) {
     };
   });
 
+  // Neutralize formula injection: a cell starting with = + - @ (or tab/CR) is
+  // executed as a formula by Excel. OSM names/addresses are attacker-editable,
+  // so prefix any such string with an apostrophe to force it to plain text.
+  const safe = (v: unknown): string => {
+    const str = String(v ?? "");
+    return /^[=+\-@\t\r]/.test(str) ? "'" + str : str;
+  };
+
   leads.forEach((lead, idx) => {
     const score = lead.score;
     let fill: ExcelJS.FillPattern;
@@ -112,27 +120,27 @@ async function generateExcel(leads: LeadBusiness[]) {
 
     const row = worksheet.addRow([
       idx + 1,
-      lead.name,
-      lead.phone,
-      lead.email || "",
-      lead.website,
-      lead.facebook || "",
-      lead.instagram || "",
-      lead.telegram || "",
-      lead.address,
-      lead.openingHours || "",
+      safe(lead.name),
+      safe(lead.phone),
+      safe(lead.email || ""),
+      safe(lead.website),
+      safe(lead.facebook || ""),
+      safe(lead.instagram || ""),
+      safe(lead.telegram || ""),
+      safe(lead.address),
+      safe(lead.openingHours || ""),
       lead.copyrightYear ?? "N/A",
       lead.isMobileFriendly ? "Yes" : "No",
       lead.hasSsl ? "Yes" : "No",
       lead.score,
       lead.designScore,
-      lead.technologies.join("; "),
-      issuesText.replace(/\n/g, " | "),
+      safe(lead.technologies.join("; ")),
+      safe(issuesText.replace(/\n/g, " | ")),
       lead.status || "new",
-      lead.notes || "",
+      safe(lead.notes || ""),
       `$${price.min}-$${price.max}`,
       price.note,
-      lead.contactDate || "",
+      safe(lead.contactDate || ""),
     ]);
 
     const fontColor =

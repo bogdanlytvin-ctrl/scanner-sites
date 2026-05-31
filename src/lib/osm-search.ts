@@ -687,10 +687,13 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
     if (!best) return null;
 
     const result = best.result;
+    const lat = parseFloat(result.lat);
+    const lng = parseFloat(result.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
     return {
-      lat: parseFloat(result.lat),
-      lng: parseFloat(result.lon),
+      lat,
+      lng,
       displayName: result.display_name || city,
     };
   } catch {

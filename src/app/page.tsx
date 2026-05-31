@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   Search, FileSpreadsheet, FileText, Globe, Phone, MapPin,
   Smartphone, Loader2, Target, AlertCircle, ExternalLink,
@@ -479,36 +479,49 @@ export default function Home() {
     }
   }, [city, query, maxResults, radius, sendTelegramNotification]);
 
-  // Filtering
-  const filteredLeads = leads
-    .filter((l) => filterScore === "ALL" || l.score === filterScore)
-    .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
-    .filter((l) => !onlyWithIssues || hasIssues(l))
-    .filter((l) => !onlyFavorites || favoritesSet.has(l.name))
-    .filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))
-    .sort((a, b) => {
-      const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
-      return order[a.score] - order[b.score];
-    });
+  // Filtering — memoized so it only recomputes when leads/filters change,
+  // not on every unrelated re-render (toasts, expand toggles, field edits).
+  const filteredLeads = useMemo(
+    () =>
+      leads
+        .filter((l) => filterScore === "ALL" || l.score === filterScore)
+        .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
+        .filter((l) => !onlyWithIssues || hasIssues(l))
+        .filter((l) => !onlyFavorites || favoritesSet.has(l.name))
+        .filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))
+        .sort((a, b) => {
+          const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
+          return order[a.score] - order[b.score];
+        }),
+    [leads, filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, favoritesSet]
+  );
 
-  // Stats
-  const hotCount = leads.filter((l) => l.score === "HOT").length;
-  const warmCount = leads.filter((l) => l.score === "WARM").length;
-  const coldCount = leads.filter((l) => l.score === "COLD").length;
-  const ancientCount = leads.filter((l) => l.designScore === "ancient").length;
-  const noMobileCount = leads.filter((l) => l.website !== "N/A" && !l.isMobileFriendly).length;
-  const noSslCount = leads.filter((l) => l.website !== "N/A" && !l.hasSsl).length;
-  const noWebsiteCount = leads.filter((l) => !l.website || l.website === "N/A").length;
-
-  // Average price
-  const avgPrice = leads.length > 0
-    ? (() => {
-        const prices = leads.map((l) => estimatePrice(l));
-        const avgMin = Math.round(prices.reduce((s, p) => s + p.min, 0) / prices.length);
-        const avgMax = Math.round(prices.reduce((s, p) => s + p.max, 0) / prices.length);
-        return { min: avgMin, max: avgMax };
-      })()
-    : { min: 0, max: 0 };
+  // Stats — single pass over leads instead of 7 separate filter scans.
+  const { hotCount, warmCount, coldCount, ancientCount, noMobileCount, noSslCount, noWebsiteCount, avgPrice } =
+    useMemo(() => {
+      let hot = 0, warm = 0, cold = 0, ancient = 0, noMobile = 0, noSsl = 0, noWeb = 0;
+      let sumMin = 0, sumMax = 0;
+      for (const l of leads) {
+        if (l.score === "HOT") hot++;
+        else if (l.score === "WARM") warm++;
+        else if (l.score === "COLD") cold++;
+        if (l.designScore === "ancient") ancient++;
+        if (l.website !== "N/A" && !l.isMobileFriendly) noMobile++;
+        if (l.website !== "N/A" && !l.hasSsl) noSsl++;
+        if (!l.website || l.website === "N/A") noWeb++;
+        const p = estimatePrice(l);
+        sumMin += p.min;
+        sumMax += p.max;
+      }
+      const n = leads.length || 1;
+      return {
+        hotCount: hot, warmCount: warm, coldCount: cold, ancientCount: ancient,
+        noMobileCount: noMobile, noSslCount: noSsl, noWebsiteCount: noWeb,
+        avgPrice: leads.length > 0
+          ? { min: Math.round(sumMin / n), max: Math.round(sumMax / n) }
+          : { min: 0, max: 0 },
+      };
+    }, [leads]);
 
   const templates = getTemplates();
   const statusList = getStatusList();
