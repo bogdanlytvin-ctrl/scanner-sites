@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeWebsite } from "@/lib/website-analyzer";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs"; // ssrf.ts needs node:dns / node:net (not Edge)
 export const maxDuration = 30; // Website fetching can take time
 
 export async function POST(request: NextRequest) {
   try {
+    // High ceiling: one full search legitimately analyzes up to 200 sites in a
+    // burst. This still stops thousands-per-minute abuse.
+    const rl = rateLimit(`analyze:${clientIp(request)}`, 240, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `Забагато запитів. Спробуйте через ${rl.retryAfter}с.` },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
+    }
     const body = await request.json();
     const { url } = body;
 

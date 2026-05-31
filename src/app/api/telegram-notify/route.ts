@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const maxDuration = 15; // Telegram API is fast, 15s is enough
 
 export async function POST(req: NextRequest) {
   try {
+    const rl = rateLimit(`telegram:${clientIp(req)}`, 30, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `Забагато запитів. Спробуйте через ${rl.retryAfter}с.` },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
+    }
     const body = await req.json();
     const { botToken, chatId, message } = body;
 

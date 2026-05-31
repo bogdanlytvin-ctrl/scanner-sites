@@ -91,6 +91,14 @@ export async function safeFetch(
       throw new Error("Дозволені тільки http/https");
     }
 
+    // Port allowlist: a real website serves on 80/443. Blocking other ports
+    // stops the fetch being used to probe internal services (SSH 22, DBs,
+    // admin panels on :8080, etc.) even on a public host.
+    const port = parsed.port;
+    if (port && port !== "80" && port !== "443") {
+      throw new Error("Заблоковано: дозволені тільки порти 80/443");
+    }
+
     await assertPublicHost(parsed.hostname);
 
     const resp = await fetch(current, { ...init, redirect: "manual" });

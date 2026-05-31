@@ -93,7 +93,7 @@ async function generateExcel(leads: LeadBusiness[]) {
 
   leads.forEach((lead, idx) => {
     const score = lead.score;
-    let fill: ExcelJS.FillPattern;
+    let fill: import("exceljs").FillPattern;
 
     if (score === "HOT") {
       fill = {

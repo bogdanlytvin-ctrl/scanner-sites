@@ -421,12 +421,14 @@ export default function Home() {
       }
 
       setPhase("analyzing");
-      const analyzed: LeadBusiness[] = [];
+      // Results kept at their original index so the rendered order stays stable
+      // even though websites are analyzed concurrently (out of order).
+      const analyzed: LeadBusiness[] = new Array(allBusinesses.length);
+      let completed = 0;
+      const CONCURRENCY = 6; // analyze up to 6 sites at once (was strictly serial)
 
-      for (let i = 0; i < allBusinesses.length; i++) {
+      const analyzeOne = async (i: number) => {
         const b = allBusinesses[i];
-        setProgressLabel(`Аналіз: ${b.name} (${i + 1}/${allBusinesses.length})`);
-        setProgress(30 + Math.round(((i + 1) / allBusinesses.length) * 70));
 
         let copyrightYear: number | null = null, isMobileFriendly = false, hasSsl = false;
         let finalUrl = "", technologies: string[] = [], designScore: DesignScore = "unknown";
@@ -460,14 +462,27 @@ export default function Home() {
           score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl),
           status: "new", notes: "", contactDate: null,
         };
-        analyzed.push(lead);
+        analyzed[i] = lead;
+        completed++;
 
-        // Send Telegram notification for this lead
-        await sendTelegramNotification(lead);
+        setProgress(30 + Math.round((completed / allBusinesses.length) * 70));
+        setProgressLabel(`Аналіз: ${completed}/${allBusinesses.length}`);
+        setLeads(analyzed.filter(Boolean)); // progressive render, original order
+        sendTelegramNotification(lead).catch(() => {}); // don't block on Telegram
+      };
 
-        await new Promise((rr) => setTimeout(rr, 250));
-        setLeads([...analyzed]);
-      }
+      // Bounded worker pool: CONCURRENCY workers pull from a shared cursor.
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < allBusinesses.length) {
+          const idx = cursor++;
+          await analyzeOne(idx);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, allBusinesses.length) }, worker)
+      );
+      setLeads(analyzed.filter(Boolean));
 
       // Save to search history
       saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: analyzed.length });

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const maxDuration = 30;
 
@@ -115,6 +116,13 @@ function validateUrl(url: string): string | null {
 
 export async function POST(request: NextRequest) {
   try {
+    const rl = rateLimit(`pagespeed:${clientIp(request)}`, 30, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `Забагато запитів. Спробуйте через ${rl.retryAfter}с.` },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
+    }
     const body = await request.json();
     const { url, strategy = "mobile" } = body;
 

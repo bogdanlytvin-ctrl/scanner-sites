@@ -431,6 +431,59 @@ function setCachedOverpass(query: string, elements: any[]): void {
   overpassCache.set(query, { elements, timestamp: Date.now() });
 }
 
+// ─── Overpass edge cache (Cloudflare Cache API) ─────────────
+// The in-memory Map above only lives for one Worker isolate and rarely survives
+// between requests on Cloudflare. `caches.default` persists per data-center, so
+// the same city+keyword search reuses a prior result instead of re-hitting
+// Overpass. On Node/Vercel `caches.default` doesn't exist → these become no-ops
+// and the in-memory cache is the only layer (which is fine there).
+const EDGE_CACHE_TTL_S = 3600; // 1 hour
+
+function getEdgeCache(): any | null {
+  try {
+    const c: any = (globalThis as any).caches;
+    return c && c.default ? c.default : null;
+  } catch {
+    return null;
+  }
+}
+
+function edgeCacheKey(query: string): string {
+  // djb2 hash → short, stable key (the raw Overpass QL is too long for a URL)
+  let h = 5381;
+  for (let i = 0; i < query.length; i++) h = (((h << 5) + h) + query.charCodeAt(i)) | 0;
+  return `https://overpass-cache.local/q/${(h >>> 0).toString(36)}`;
+}
+
+async function getCachedEdge(query: string): Promise<any[] | null> {
+  const cache = getEdgeCache();
+  if (!cache) return null;
+  try {
+    const hit = await cache.match(new Request(edgeCacheKey(query)));
+    if (!hit) return null;
+    const data = await hit.json();
+    return Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedEdge(query: string, elements: any[]): Promise<void> {
+  const cache = getEdgeCache();
+  if (!cache) return;
+  try {
+    const resp = new Response(JSON.stringify(elements), {
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": `max-age=${EDGE_CACHE_TTL_S}`,
+      },
+    });
+    await cache.put(new Request(edgeCacheKey(query)), resp);
+  } catch {
+    // best-effort; never let caching break the request
+  }
+}
+
 // ─── Geocoding (Photon + Nominatim fallback) ────────────────
 
 export async function geocodeCity(city: string): Promise<GeoCoords> {
@@ -922,11 +975,19 @@ async function fetchFromEndpoint(
 }
 
 async function executeQuery(query: string): Promise<any[]> {
-  // Check cache first — return immediately without hitting Overpass
+  // 1) In-memory cache — fastest, but only within a warm isolate.
   const cached = getCachedOverpass(query);
   if (cached !== null) {
-    console.log(`[Overpass] Cache hit for query (length: ${query.length})`);
+    console.log(`[Overpass] Memory cache hit`);
     return cached;
+  }
+
+  // 2) Edge cache (Cloudflare) — survives across requests/isolates.
+  const edge = await getCachedEdge(query);
+  if (edge !== null) {
+    console.log(`[Overpass] Edge cache hit`);
+    setCachedOverpass(query, edge); // warm the in-memory layer too
+    return edge;
   }
 
   const deadline = Date.now() + OVERALL_TIMEOUT_MS;
@@ -945,6 +1006,7 @@ async function executeQuery(query: string): Promise<any[]> {
       );
       roundController.abort(); // cancel the slower in-flight mirrors
       setCachedOverpass(query, elements); // cache success (including empty)
+      await setCachedEdge(query, elements); // persist to edge cache too
       return elements;
     } catch (err) {
       // Promise.any rejects with an AggregateError only when every mirror failed.

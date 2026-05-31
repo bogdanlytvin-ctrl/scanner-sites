@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchOverpass, searchOverpassAt, geocodeCity } from "@/lib/osm-search";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
 
 export async function POST(request: NextRequest) {
   try {
+    const rl = rateLimit(`search:${clientIp(request)}`, 20, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `Забагато запитів. Спробуйте через ${rl.retryAfter}с.`, businesses: [], total: 0 },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+      );
+    }
     const body = await request.json();
     const { city, query, maxResults = 20, radius = 10, lat, lng, displayName } = body;
 

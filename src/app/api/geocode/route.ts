@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 // City autocomplete. Given a partial name + ISO country code, returns matching
 // settlements with exact coordinates. The client passes those coordinates
@@ -95,6 +96,14 @@ function dedupe(hits: CityHit[]): CityHit[] {
 }
 
 export async function GET(request: NextRequest) {
+  const rl = rateLimit(`geocode:${clientIp(request)}`, 60, 60_000);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { cities: [], error: `Забагато запитів. Спробуйте через ${rl.retryAfter}с.` },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } }
+    );
+  }
+
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") || "").trim();
   const country = (searchParams.get("country") || "").trim().toLowerCase();
