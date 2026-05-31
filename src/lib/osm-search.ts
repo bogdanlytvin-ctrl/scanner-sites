@@ -845,20 +845,78 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Random delay between min and max milliseconds */
-function randomDelay(minMs: number, maxMs: number): number {
-  return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+// ─── Query execution: parallel mirror racing ─────────────────
+
+const OVERALL_TIMEOUT_MS = 50000; // Hard deadline: 50s (Vercel limit is 60s)
+const PER_REQUEST_TIMEOUT_MS = 23000; // Each parallel fetch: 23s — two race rounds fit inside the 50s budget
+const MAX_RACE_ROUNDS = 2; // How many times to re-race all mirrors before giving up
+const RACE_ROUND_BACKOFF_MS = 1200; // Short pause between race rounds
+
+/** Thrown by fetchFromEndpoint so Promise.any treats a bad response as a rejection. */
+class EndpointError extends Error {
+  constructor(public endpoint: string, message: string) {
+    super(message);
+  }
 }
 
-/** HTTP status codes that are worth retrying */
-const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
+/**
+ * Query a single Overpass mirror. Resolves with the elements array (possibly
+ * empty — an empty result is still a valid answer) or throws an EndpointError.
+ * Since every mirror serves the same OSM data, the first valid response wins.
+ */
+async function fetchFromEndpoint(
+  endpoint: string,
+  query: string,
+  roundSignal: AbortSignal,
+): Promise<any[]> {
+  const reqController = new AbortController();
+  const reqTimeout = setTimeout(() => reqController.abort(), PER_REQUEST_TIMEOUT_MS);
+  // Abort this fetch if the round is aborted (another mirror already won).
+  const onRoundAbort = () => reqController.abort();
+  roundSignal.addEventListener("abort", onRoundAbort, { once: true });
 
-// ─── Query execution with fallback + retry ───────────────────
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
+      },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: reqController.signal,
+    });
 
-const MAX_RETRIES_PER_ENDPOINT = 1; // 2 attempts per endpoint (0, 1) — fail fast, move to next mirror
-const RETRY_DELAYS_MS = [1500]; // short backoff before the single retry
-const OVERALL_TIMEOUT_MS = 50000; // Hard deadline: 50s (Vercel limit is 60s)
-const PER_REQUEST_TIMEOUT_MS = 12000; // Each individual fetch: 12s — lets 3-4 mirrors be tried within budget
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new EndpointError(endpoint, extractOverpassError(text, resp.status));
+    }
+
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      const text = await resp.text().catch(() => "");
+      throw new EndpointError(endpoint, extractOverpassError(text, resp.status));
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      throw new EndpointError(
+        endpoint,
+        `JSON parse error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+      );
+    }
+
+    if (data.remark && String(data.remark).includes("error")) {
+      throw new EndpointError(endpoint, data.remark);
+    }
+
+    return Array.isArray(data.elements) ? data.elements : [];
+  } finally {
+    clearTimeout(reqTimeout);
+    roundSignal.removeEventListener("abort", onRoundAbort);
+  }
+}
 
 async function executeQuery(query: string): Promise<any[]> {
   // Check cache first — return immediately without hitting Overpass
@@ -868,173 +926,47 @@ async function executeQuery(query: string): Promise<any[]> {
     return cached;
   }
 
-  // Overall deadline to avoid exceeding Vercel's 60s function timeout
-  const overallController = new AbortController();
-  const overallTimeout = setTimeout(() => overallController.abort(), OVERALL_TIMEOUT_MS);
-
+  const deadline = Date.now() + OVERALL_TIMEOUT_MS;
   let lastError = "";
-  let attemptedEndpoints = 0;
 
-  try {
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    // Check if overall deadline exceeded
-    if (overallController.signal.aborted) break;
+  for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
+    if (Date.now() >= deadline) break;
 
-    attemptedEndpoints++;
-
-    // Add a small random delay before each request to avoid hitting rate limits
-    if (attemptedEndpoints > 1) {
-      const jitter = randomDelay(300, 800);
-      console.log(`[Overpass] Waiting ${jitter}ms before trying ${endpoint}...`);
-      await sleep(jitter);
-    }
-
-    for (let attempt = 0; attempt <= MAX_RETRIES_PER_ENDPOINT; attempt++) {
-      if (overallController.signal.aborted) break;
-
-      try {
-        // Per-request timeout
-        const reqController = new AbortController();
-        const reqTimeout = setTimeout(() => reqController.abort(), PER_REQUEST_TIMEOUT_MS);
-
-        let resp: Response;
-        try {
-          resp = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-              "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
-            },
-            body: `data=${encodeURIComponent(query)}`,
-            signal: reqController.signal,
-          });
-        } finally {
-          clearTimeout(reqTimeout);
-        }
-
-        if (!resp.ok) {
-          const text = await resp.text().catch(() => "");
-          lastError = extractOverpassError(text, resp.status);
-
-          // Only retry on retryable status codes (502, 503, 504, 429)
-          if (RETRYABLE_STATUS_CODES.has(resp.status) && attempt < MAX_RETRIES_PER_ENDPOINT) {
-            let delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000); // jitter
-
-            // For 429 (rate limit), try to respect Retry-After header
-            if (resp.status === 429) {
-              const retryAfter = resp.headers.get("retry-after");
-              if (retryAfter) {
-                const retryAfterSec = parseInt(retryAfter, 10);
-                if (!isNaN(retryAfterSec) && retryAfterSec > 0) {
-                  delay = Math.min(retryAfterSec * 1000, 10000); // cap at 10s
-                }
-              }
-            }
-
-            console.warn(
-              `[Overpass] ${endpoint} → ${resp.status} (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
-            );
-            await sleep(delay);
-            continue; // retry same endpoint
-          }
-
-          console.warn(`[Overpass] ${endpoint} → ${resp.status}, trying next endpoint...`);
-          break; // move to next endpoint
-        }
-
-        // Check if response is JSON (not HTML error page)
-        const contentType = resp.headers.get("content-type") || "";
-        if (!contentType.includes("json")) {
-          const text = await resp.text().catch(() => "");
-          lastError = extractOverpassError(text, resp.status);
-
-          // Retry if it looks like a server error (HTML error page often means 502)
-          if (attempt < MAX_RETRIES_PER_ENDPOINT && (
-            text.includes("502") || text.includes("Bad Gateway") ||
-            text.includes("503") || text.includes("Service Unavailable") ||
-            text.includes("504") || text.includes("Gateway Timeout")
-          )) {
-            const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
-            console.warn(
-              `[Overpass] ${endpoint} → non-JSON with server error HTML (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
-            );
-            await sleep(delay);
-            continue;
-          }
-
-          console.warn(`[Overpass] ${endpoint} → non-JSON response, trying next endpoint...`);
-          break;
-        }
-
-        let data: any;
-        try {
-          data = await resp.json();
-        } catch (parseErr) {
-          // JSON parse failed — treat as server error and retry
-          if (attempt < MAX_RETRIES_PER_ENDPOINT) {
-            const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
-            console.warn(
-              `[Overpass] ${endpoint} → JSON parse error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms...`
-            );
-            await sleep(delay);
-            continue;
-          }
-          lastError = `JSON parse error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`;
-          console.warn(`[Overpass] ${endpoint} → JSON parse failed after all retries, trying next endpoint...`);
-          break;
-        }
-
-        if (!data.elements || data.elements.length === 0) {
-          // Cache empty results too to avoid repeat lookups
-          setCachedOverpass(query, []);
-          return [];
-        }
-
-        // Check for Overpass runtime errors in response
-        if (data.remark && data.remark.includes("error")) {
-          lastError = data.remark;
-          console.warn(`[Overpass] ${endpoint} → runtime error: ${data.remark}`);
-          break; // move to next endpoint
-        }
-
-        // Cache successful results
-        setCachedOverpass(query, data.elements);
-        return data.elements;
-      } catch (err) {
+    // Fire all mirrors at once; first valid response wins, losers get aborted.
+    const roundController = new AbortController();
+    try {
+      const elements = await Promise.any(
+        OVERPASS_ENDPOINTS.map((endpoint) =>
+          fetchFromEndpoint(endpoint, query, roundController.signal),
+        ),
+      );
+      roundController.abort(); // cancel the slower in-flight mirrors
+      setCachedOverpass(query, elements); // cache success (including empty)
+      return elements;
+    } catch (err) {
+      // Promise.any rejects with an AggregateError only when every mirror failed.
+      roundController.abort();
+      if (err instanceof AggregateError && err.errors.length) {
+        const last = err.errors[err.errors.length - 1];
+        lastError = last instanceof Error ? last.message : String(last);
+      } else {
         lastError = err instanceof Error ? err.message : String(err);
+      }
+      console.warn(
+        `[Overpass] Race round ${round + 1}/${MAX_RACE_ROUNDS} — all mirrors failed: ${lastError}`,
+      );
 
-        // Retry on network errors
-        if (attempt < MAX_RETRIES_PER_ENDPOINT) {
-          const delay = RETRY_DELAYS_MS[attempt] + randomDelay(0, 1000);
-          console.warn(
-            `[Overpass] ${endpoint} → network error (attempt ${attempt + 1}/${MAX_RETRIES_PER_ENDPOINT + 1}), retrying in ${delay}ms: ${lastError}`
-          );
-          await sleep(delay);
-          continue;
-        }
-
-        console.warn(`[Overpass] ${endpoint} → ${lastError}, trying next endpoint...`);
-        break; // move to next endpoint
+      // Backoff before the next round, but only if there's budget left.
+      if (round < MAX_RACE_ROUNDS - 1 && Date.now() + RACE_ROUND_BACKOFF_MS < deadline) {
+        await sleep(RACE_ROUND_BACKOFF_MS);
       }
     }
   }
 
-  } finally {
-    clearTimeout(overallTimeout);
-  }
-
-  // Check if we hit overall deadline
-  if (overallController.signal.aborted) {
-    throw new Error(
-      `Час очікування Overpass API перевищено (${OVERALL_TIMEOUT_MS / 1000}с). ` +
-      `💡 Спробуйте зменшити радіус або кількість результатів і повторити запит.`
-    );
-  }
-
-  // All endpoints failed after all retries
+  // Every round failed (or we ran out of time).
   throw new Error(
-    `Усі сервери Overpass недоступні після ${attemptedEndpoints} спроб (${MAX_RETRIES_PER_ENDPOINT + 1} повторень кожна). ` +
-    `Остання помилка: ${lastError || "невідома"}.\n\n` +
+    `Усі сервери Overpass недоступні після ${MAX_RACE_ROUNDS} паралельних спроб. ` +
+    `Остання помилка: ${lastError || "перевищено час очікування"}.\n\n` +
     `💡 Поради:\n` +
     `• Спробуйте повторити запит через хвилину\n` +
     `• Зменште радіус пошуку (наприклад, до 5 км)\n` +
