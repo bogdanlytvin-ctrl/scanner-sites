@@ -409,7 +409,7 @@ export function getStatusList(): { value: string; label: string; emoji: string }
 // ─── Website Validity Check ─────────────────────────────────
 // Pure scoring of how worth-contacting a lead is. Lives here (not in
 // website-analyzer.ts) so the client bundle never pulls in the analyzer's
-// server-only deps (node:dns via ssrf.ts, cheerio).
+// server-only deps (ssrf.ts DoH fetch, cheerio).
 
 export interface WorthinessResult {
   worth: boolean;

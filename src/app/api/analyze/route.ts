@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { analyzeWebsite } from "@/lib/website-analyzer";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
-export const runtime = "nodejs"; // ssrf.ts needs node:dns / node:net (not Edge)
+export const runtime = "nodejs"; // cheerio + ssrf DoH resolution (not Edge)
 export const maxDuration = 30; // Website fetching can take time
 
 export async function POST(request: NextRequest) {
