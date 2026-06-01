@@ -600,27 +600,32 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
     return cached;
   }
 
-  // Try Photon first (no strict rate limits)
-  let coords = await geocodePhoton(city);
-
-  // For Cyrillic queries: verify Photon result is actually in UA
-  // If not, try Nominatim which supports country filter
   const isCyrillicQuery = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
-  if (coords && isCyrillicQuery) {
-    // Check if the Photon result is in Ukraine by trying Nominatim with UA filter
-    const nominatimResult = await geocodeNominatim(city);
-    if (nominatimResult) {
-      // If Photon returned non-UA result (e.g. Belarus), prefer Nominatim
-      // Simple heuristic: if Nominatim display name contains "Україн", prefer it
-      if (nominatimResult.displayName.includes("Україн") || nominatimResult.displayName.includes("Ukraine")) {
-        coords = nominatimResult;
-      }
-    }
-  }
 
-  // Fallback to Nominatim
-  if (!coords) {
-    coords = await geocodeNominatim(city);
+  let coords: GeoCoords | null;
+  if (isCyrillicQuery) {
+    // Cyrillic: prefer Ukraine. Photon first, then a UA-restricted Nominatim
+    // cross-check to override non-UA Photon hits (e.g. a same-name BY/RU town).
+    coords = await geocodePhoton(city);
+    const nominatimResult = await geocodeNominatim(city);
+    if (
+      nominatimResult &&
+      (nominatimResult.displayName.includes("Україн") ||
+        nominatimResult.displayName.includes("Ukraine"))
+    ) {
+      coords = nominatimResult;
+    }
+    if (!coords) coords = nominatimResult;
+  } else {
+    // Latin: Photon scores by settlement type only and ignores global
+    // importance, so omonyms resolve wrong (Warsaw → Warsaw, Indiana instead
+    // of Warszawa, Poland). Nominatim ranks by importance globally, so prefer
+    // its settlement; fall back to Photon if Nominatim is unavailable.
+    const [photon, nominatim] = await Promise.all([
+      geocodePhoton(city),
+      geocodeNominatim(city, false),
+    ]);
+    coords = nominatim || photon;
   }
 
   // Second attempt: append "місто" (Ukrainian for "city") to prioritize city results
