@@ -3,8 +3,9 @@
   "name": "scanner-sites",
   "main": ".open-next/worker.js",
   "compatibility_date": "2025-03-25",
-  // nodejs_compat is REQUIRED: src/app/api/analyze uses node:dns / node:net
-  // (the SSRF guard in src/lib/ssrf.ts). Without it the analyze route breaks.
+  // nodejs_compat is REQUIRED: the analyze route uses cheerio/slim (htmlparser2
+  // -> node:stream, node:string_decoder). The SSRF guard (src/lib/ssrf.ts) is
+  // pure-JS + DoH; it does NOT use node:dns / node:net (unsupported on workerd).
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": ".open-next/assets",
