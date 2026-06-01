@@ -1,7 +1,7 @@
 // Website analysis utilities using cheerio
 // Extracts: copyright year, mobile friendliness, technology, SSL, design score
 
-import * as cheerio from "cheerio";
+import * as cheerio from "cheerio/slim";
 import { safeFetch } from "./ssrf";
 
 const USER_AGENT =
