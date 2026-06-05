@@ -374,6 +374,7 @@ export default function Home() {
     try {
       const allBusinesses: Array<{ name: string; phone: string; website: string; address: string; email: string; facebook: string; instagram: string; telegram: string; openingHours: string; description: string; rating: number | null; reviews: number }> = [];
       const seenNames = new Set<string>();
+      let emptyNote = "";
 
       for (let ci = 0; ci < cities.length; ci++) {
         const currentCity = cities[ci];
@@ -394,6 +395,7 @@ export default function Home() {
         }, `Помилка пошуку у ${currentCity}`);
 
         const businesses = searchData.businesses || [];
+        if (searchData.note) emptyNote = searchData.note;
 
         // Save geocoded location for display
         if (searchData.geoLocation) {
@@ -413,7 +415,8 @@ export default function Home() {
       }
 
       if (allBusinesses.length === 0) {
-        setPhase("done"); setProgress(100); setProgressLabel("Нічого не знайдено.");
+        setPhase("done"); setProgress(100);
+        setProgressLabel(emptyNote || "Нічого не знайдено.");
         saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: 0 });
         setSearchHistory(getSearchHistory());
         return;

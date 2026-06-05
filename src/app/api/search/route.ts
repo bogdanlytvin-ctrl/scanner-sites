@@ -58,9 +58,20 @@ export async function POST(request: NextRequest) {
       type: r.type,
     }));
 
+    // Geocoding succeeded but the niche returned nothing — usually means this
+    // category is poorly mapped in OSM (trades like plumber/electrician), not a
+    // broken search. Surface a hint so the UI shows guidance, not a silent zero.
+    const note =
+      businesses.length === 0
+        ? `У OpenStreetMap немає об'єктів "${trimmedQuery}" у радіусі ${parsedRadius} км. ` +
+          `Деякі ніші (сантехніки, електрики, майстри) рідко мапляться в OSM. ` +
+          `Спробуйте споріднену ніш (наприклад «hardware» замість «plumber»), збільшіть радіус або інше місто.`
+        : undefined;
+
     return NextResponse.json({
       businesses,
       total: businesses.length,
+      note,
       query: `${trimmedQuery} in ${trimmedCity}`,
       source: "OpenStreetMap (Overpass)",
       geoLocation: {

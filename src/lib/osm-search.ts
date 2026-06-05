@@ -969,6 +969,12 @@ export async function searchOverpassAt(
 ): Promise<OSMResult[]> {
   const coords = { lat, lng };
 
+  // Over-fetch a larger candidate pool than the caller asked for, so ranking
+  // (no-site leads first) can promote the best prospects before we slice down.
+  // Without this, Overpass' arbitrary order could push every HOT no-site lead
+  // past the maxResults cutoff and the client would never see them.
+  const pool = Math.min(Math.max(maxResults * 3, 60), 200);
+
   // Step 2: Determine search strategy
   // resolveKeyword handles plural/case forms, apostrophe variants and typos,
   // so "ресторани", "аптек", "кавʼярні" all map to the right OSM tags.
@@ -986,30 +992,49 @@ export async function searchOverpassAt(
     // ── Known category: precise tag search (fast & reliable) ──
     // Search nodes and ways separately because output format differs
     const nodeElements = await executeQuery(
-      buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, maxResults, "node"),
+      buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, pool, "node"),
     );
     allElements.push(...nodeElements);
 
-    if (allElements.length < maxResults) {
+    if (allElements.length < pool) {
       const wayElements = await executeQuery(
-        buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, maxResults, "way"),
+        buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, pool, "way"),
       );
       allElements.push(...wayElements);
     }
   } else {
     // ── Unknown keyword: broad search with name filter ──
     const elements = await executeQuery(
-      buildBroadQuery(keyword, coords.lat, coords.lng, radiusKm, maxResults),
+      buildBroadQuery(keyword, coords.lat, coords.lng, radiusKm, pool),
     );
     allElements.push(...elements);
   }
 
-  // Step 4: Parse & deduplicate
+  // Step 4: Parse, deduplicate, rank, then trim to the requested count.
   if (allElements.length === 0) {
     return [];
   }
 
-  return parseOverpassResults(allElements, maxResults);
+  const parsed = parseOverpassResults(allElements, pool);
+  return rankLeads(parsed).slice(0, maxResults);
+}
+
+// Order leads by outreach value: businesses with no real website are the
+// product (HOT prospects for building one), and among those the reachable ones
+// (have a phone / email / social channel) come first. Sites are kept last —
+// the client analyzes them separately to grade redesign potential.
+function rankLeads(leads: OSMResult[]): OSMResult[] {
+  const hasSite = (l: OSMResult) => !!l.website && l.website !== "N/A";
+  const reachable = (l: OSMResult) =>
+    (!!l.phone && l.phone !== "N/A") ||
+    !!l.email ||
+    !!l.facebook ||
+    !!l.instagram ||
+    !!l.telegram;
+  const tier = (l: OSMResult) => (hasSite(l) ? 2 : reachable(l) ? 0 : 1);
+  // Stable sort (Array.prototype.sort is stable in modern JS) preserves the
+  // original Overpass order within each tier.
+  return [...leads].sort((a, b) => tier(a) - tier(b));
 }
 
 // ─── Query builders ─────────────────────────────────────────
