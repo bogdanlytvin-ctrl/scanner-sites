@@ -31,7 +31,7 @@ import {
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
 import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
-import { COUNTRIES, flagEmoji } from "@/lib/countries";
+import { COUNTRIES, flagEmoji, nichesForCountry } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
   calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting,
@@ -115,7 +115,6 @@ function hasIssues(lead: LeadBusiness): boolean {
   return false;
 }
 
-const QUICK_KEYWORDS = ["юрист", "ресторан", "dentist", "plumber", "кафе", "beauty", "готель", "gym", "аптека"];
 
 export default function Home() {
   const [city, setCity] = useState("");
@@ -931,10 +930,10 @@ export default function Home() {
               </div>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-              <span className="text-[10px] text-muted-foreground">{t.quickKeywords}</span>
-              {QUICK_KEYWORDS.map((kw) => (
+              <span className="text-[10px] text-muted-foreground">{flagEmoji(country)} {t.quickKeywords}</span>
+              {nichesForCountry(country).map((kw) => (
                 <button key={kw} onClick={() => setQuery(kw)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
-                  className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">{kw}</button>
+                  className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">{kw.replace(/_/g, " ")}</button>
               ))}
             </div>
             {errorMessage && (

@@ -15,6 +15,86 @@ export function flagEmoji(code: string): string {
   return String.fromCodePoint(A + (c.charCodeAt(0) - 65), A + (c.charCodeAt(1) - 65));
 }
 
+// ── Top niches per country ──────────────────────────────────────────────
+// When a country is picked, the search form offers these as one-click niche
+// chips (no manual typing). Each token MUST be a key in osm-search KEYWORD_MAP
+// so it resolves to real OSM tags and returns leads. Lists are curated per
+// market: Gulf = real-estate/tourism heavy, US/UK/AU = trades & pro-services,
+// Mediterranean = hospitality, etc. Unlisted countries fall back to DEFAULT.
+export const DEFAULT_NICHES = [
+  "restaurant", "cafe", "beauty", "dentist", "lawyer",
+  "car_repair", "gym", "hotel", "real_estate", "pharmacy",
+];
+
+export const COUNTRY_NICHES: Record<string, string[]> = {
+  // Gulf / MENA — luxury, real estate, tourism, personal services
+  ae: ["real_estate", "restaurant", "beauty", "dentist", "car_repair", "hotel", "gym", "clinic", "lawyer", "travel"],
+  sa: ["real_estate", "restaurant", "car_repair", "beauty", "dentist", "clinic", "gym", "hotel", "jewelry", "travel"],
+  qa: ["real_estate", "restaurant", "hotel", "beauty", "dentist", "car_repair", "gym", "clinic", "travel", "lawyer"],
+  kw: ["restaurant", "beauty", "real_estate", "car_repair", "dentist", "gym", "clinic", "hotel", "jewelry", "cafe"],
+  bh: ["restaurant", "beauty", "real_estate", "dentist", "car_repair", "gym", "hotel", "clinic", "cafe", "lawyer"],
+  om: ["hotel", "restaurant", "real_estate", "car_repair", "beauty", "dentist", "travel", "gym", "clinic", "cafe"],
+  eg: ["restaurant", "hotel", "travel", "beauty", "car_repair", "dentist", "real_estate", "gym", "cafe", "lawyer"],
+  tr: ["restaurant", "hotel", "beauty", "dentist", "car_repair", "real_estate", "gym", "cafe", "jewelry", "lawyer"],
+  ma: ["restaurant", "hotel", "cafe", "beauty", "car_repair", "real_estate", "dentist", "travel", "gym", "jewelry"],
+
+  // North America — trades & professional services
+  us: ["dentist", "lawyer", "plumber", "restaurant", "gym", "beauty", "car_repair", "real_estate", "accountant", "veterinary"],
+  ca: ["dentist", "restaurant", "plumber", "lawyer", "gym", "beauty", "car_repair", "real_estate", "accountant", "veterinary"],
+  mx: ["restaurant", "beauty", "dentist", "car_repair", "hotel", "real_estate", "gym", "lawyer", "cafe", "pharmacy"],
+
+  // Western Europe
+  gb: ["restaurant", "cafe", "dentist", "plumber", "beauty", "lawyer", "gym", "car_repair", "real_estate", "electrician"],
+  ie: ["restaurant", "cafe", "dentist", "plumber", "beauty", "lawyer", "gym", "car_repair", "real_estate", "electrician"],
+  de: ["restaurant", "bakery", "dentist", "lawyer", "car_repair", "beauty", "plumber", "real_estate", "gym", "accountant"],
+  fr: ["restaurant", "cafe", "bakery", "beauty", "dentist", "lawyer", "real_estate", "hotel", "gym", "car_repair"],
+  es: ["restaurant", "cafe", "hotel", "beauty", "dentist", "lawyer", "real_estate", "bakery", "gym", "car_repair"],
+  it: ["restaurant", "cafe", "hotel", "beauty", "dentist", "bakery", "lawyer", "real_estate", "gym", "car_repair"],
+  pt: ["restaurant", "cafe", "hotel", "beauty", "dentist", "real_estate", "lawyer", "bakery", "gym", "car_repair"],
+  nl: ["cafe", "restaurant", "dentist", "beauty", "lawyer", "real_estate", "gym", "bakery", "car_repair", "accountant"],
+  be: ["restaurant", "cafe", "bakery", "dentist", "beauty", "lawyer", "real_estate", "gym", "car_repair", "accountant"],
+  ch: ["restaurant", "dentist", "lawyer", "beauty", "real_estate", "gym", "car_repair", "accountant", "hotel", "architect"],
+  at: ["restaurant", "cafe", "bakery", "dentist", "beauty", "lawyer", "hotel", "gym", "car_repair", "real_estate"],
+
+  // Nordics
+  se: ["restaurant", "cafe", "dentist", "beauty", "gym", "car_repair", "real_estate", "lawyer", "hairdresser", "accountant"],
+  no: ["restaurant", "cafe", "dentist", "beauty", "gym", "car_repair", "real_estate", "hairdresser", "lawyer", "plumber"],
+  dk: ["restaurant", "cafe", "dentist", "beauty", "gym", "car_repair", "real_estate", "hairdresser", "bakery", "lawyer"],
+  fi: ["restaurant", "cafe", "dentist", "beauty", "gym", "car_repair", "real_estate", "hairdresser", "lawyer", "hotel"],
+
+  // Central & Eastern Europe
+  pl: ["restaurant", "beauty", "dentist", "lawyer", "car_repair", "gym", "bakery", "real_estate", "plumber", "pharmacy"],
+  cz: ["restaurant", "cafe", "beauty", "dentist", "car_repair", "gym", "real_estate", "lawyer", "hotel", "pharmacy"],
+  ua: ["кафе", "ресторан", "салон", "стоматолог", "сто", "юрист", "готель", "спортзал", "пекарня", "аптека"],
+  ro: ["restaurant", "beauty", "dentist", "car_repair", "gym", "real_estate", "lawyer", "cafe", "hotel", "pharmacy"],
+  gr: ["restaurant", "cafe", "hotel", "beauty", "dentist", "car_repair", "real_estate", "gym", "travel", "lawyer"],
+  hr: ["restaurant", "cafe", "hotel", "beauty", "dentist", "car_repair", "real_estate", "travel", "gym", "bakery"],
+
+  // Asia-Pacific
+  au: ["restaurant", "cafe", "dentist", "plumber", "beauty", "gym", "car_repair", "real_estate", "lawyer", "electrician"],
+  nz: ["restaurant", "cafe", "dentist", "plumber", "beauty", "gym", "car_repair", "real_estate", "lawyer", "hotel"],
+  sg: ["restaurant", "beauty", "dentist", "gym", "real_estate", "car_repair", "cafe", "lawyer", "clinic", "hotel"],
+  in: ["restaurant", "beauty", "dentist", "gym", "real_estate", "car_repair", "hotel", "jewelry", "clinic", "lawyer"],
+  jp: ["restaurant", "cafe", "beauty", "dentist", "hairdresser", "gym", "hotel", "car_repair", "real_estate", "bakery"],
+  th: ["restaurant", "hotel", "beauty", "massage", "cafe", "car_repair", "real_estate", "dentist", "gym", "travel"],
+  my: ["restaurant", "cafe", "beauty", "dentist", "car_repair", "real_estate", "gym", "hotel", "clinic", "travel"],
+  id: ["restaurant", "cafe", "beauty", "hotel", "car_repair", "real_estate", "dentist", "gym", "travel", "clinic"],
+  ph: ["restaurant", "cafe", "beauty", "dentist", "car_repair", "real_estate", "gym", "hotel", "clinic", "travel"],
+
+  // Latin America
+  br: ["restaurant", "beauty", "dentist", "car_repair", "gym", "real_estate", "cafe", "lawyer", "hotel", "pharmacy"],
+  ar: ["restaurant", "cafe", "beauty", "dentist", "car_repair", "gym", "real_estate", "lawyer", "hotel", "bakery"],
+
+  // Africa
+  za: ["restaurant", "cafe", "dentist", "beauty", "car_repair", "gym", "real_estate", "lawyer", "hotel", "plumber"],
+  ng: ["restaurant", "beauty", "hotel", "car_repair", "real_estate", "dentist", "gym", "lawyer", "cafe", "travel"],
+};
+
+// Top niches for a country code, falling back to a sensible default list.
+export function nichesForCountry(code: string): string[] {
+  return COUNTRY_NICHES[code?.toLowerCase()] ?? DEFAULT_NICHES;
+}
+
 // Sorted (UA alphabet) at module load so the dropdown is alphabetical.
 export const COUNTRIES: Country[] = [
   { code: "au", name: "Австралія" },
