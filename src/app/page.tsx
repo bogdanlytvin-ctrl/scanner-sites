@@ -119,6 +119,11 @@ function hasIssues(lead: LeadBusiness): boolean {
 export default function Home() {
   const [city, setCity] = useState("");
   const [query, setQuery] = useState("");
+  // When a chip is picked, the input shows the local/English word but the search
+  // uses this canonical token (KEYWORD_MAP only resolves English + Ukrainian).
+  const [nicheToken, setNicheToken] = useState("");
+  // Chip display language: "local" = country's language, "en" = English.
+  const [chipLang, setChipLang] = useState<"local" | "en">("local");
   const [maxResults, setMaxResults] = useState("20");
   const [radius, setRadius] = useState("10");
 
@@ -371,7 +376,9 @@ export default function Home() {
   // ─── Search ───────────────────────────────────────────────
   const handleSearch = useCallback(async (searchCity?: string, searchQuery?: string, searchMax?: string, searchRadius?: string) => {
     const c = searchCity || city;
-    const q = searchQuery || query;
+    // Prefer the canonical token from a picked chip so the search resolves
+    // reliably even when the input shows a non-English/Ukrainian word.
+    const q = searchQuery || (nicheToken || query);
     const mr = searchMax || maxResults;
     const r = searchRadius || radius;
 
@@ -509,7 +516,7 @@ export default function Home() {
     } catch (err) {
       setPhase("error"); setErrorMessage(err instanceof Error ? err.message : "Помилка");
     }
-  }, [city, query, maxResults, radius, sendTelegramNotification]);
+  }, [city, query, nicheToken, maxResults, radius, sendTelegramNotification]);
 
   // Filtering — memoized so it only recomputes when leads/filters change,
   // not on every unrelated re-render (toasts, expand toggles, field edits).
@@ -612,7 +619,7 @@ export default function Home() {
 
   const handleRunHistorySearch = useCallback((entry: SearchHistoryEntry) => {
     setCity(entry.city);
-    setQuery(entry.query);
+    setQuery(entry.query); setNicheToken(entry.query);
     setMaxResults(String(entry.maxResults));
     setRadius(String(entry.radius));
     handleSearch(entry.city, entry.query, String(entry.maxResults), String(entry.radius));
@@ -639,7 +646,7 @@ export default function Home() {
     const parsed = parseQuery(trimmed);
     setParsedQuery(parsed);
     if (parsed.city) setCity(parsed.city);
-    if (parsed.query) setQuery(parsed.query);
+    if (parsed.query) { setQuery(parsed.query); setNicheToken(""); }
     // Auto-switch locale based on detected language
     if (parsed.language === "en") setLocale("en");
     else if (parsed.language === "ru") setLocale("ru");
@@ -936,7 +943,7 @@ export default function Home() {
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">{t.nicheLabel}</label>
-                <Input placeholder={t.nichePlaceholder} value={query} onChange={(e) => setQuery(e.target.value)}
+                <Input placeholder={t.nichePlaceholder} value={query} onChange={(e) => { setQuery(e.target.value); setNicheToken(""); }}
                   disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
               <div className="space-y-1">
@@ -963,16 +970,39 @@ export default function Home() {
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5 items-center">
               <span className="text-[10px] text-muted-foreground">{flagEmoji(country)} {t.quickKeywords}</span>
-              {nicheChipsForCountry(country, locale).map((chip) => {
-                const showTr = chip.label.toLowerCase() !== chip.local.toLowerCase();
+              {(() => {
+                const chips = nicheChipsForCountry(country, locale);
+                const hasLocalLang = chips.some((c) => c.local.toLowerCase() !== c.en.toLowerCase());
                 return (
-                  <button key={chip.token} onClick={() => setQuery(chip.token)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
-                    title={chip.label}
-                    className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">
-                    {chip.local}{showTr && <span className="text-muted-foreground"> · {chip.label}</span>}
-                  </button>
+                  <>
+                    {hasLocalLang && (
+                      <div className="inline-flex rounded-full border overflow-hidden text-[10px] mr-1">
+                        <button type="button" onClick={() => setChipLang("local")}
+                          className={`px-1.5 py-0.5 ${chipLang === "local" ? "bg-accent font-medium" : "hover:bg-accent/50"}`}>
+                          {flagEmoji(country)}
+                        </button>
+                        <button type="button" onClick={() => setChipLang("en")}
+                          className={`px-1.5 py-0.5 border-l ${chipLang === "en" ? "bg-accent font-medium" : "hover:bg-accent/50"}`}>
+                          EN
+                        </button>
+                      </div>
+                    )}
+                    {chips.map((chip) => {
+                      const display = chipLang === "en" ? chip.en : chip.local;
+                      const showTr = chipLang === "local" && chip.label.toLowerCase() !== chip.local.toLowerCase();
+                      return (
+                        <button key={chip.token}
+                          onClick={() => { setQuery(display); setNicheToken(chip.token); }}
+                          disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
+                          title={chip.en}
+                          className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">
+                          {display}{showTr && <span className="text-muted-foreground"> · {chip.label}</span>}
+                        </button>
+                      );
+                    })}
+                  </>
                 );
-              })}
+              })()}
             </div>
             {errorMessage && (
               <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 rounded-lg p-2.5">

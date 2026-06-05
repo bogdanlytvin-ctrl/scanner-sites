@@ -175,6 +175,7 @@ export interface NicheChip {
   token: string; // canonical KEYWORD_MAP key sent to search
   local: string; // label in the country's language
   label: string; // translation in the active UI locale
+  en: string; // English label (for the native ⇄ English toggle)
 }
 
 // Build the niche chips for a country: local-language name + UI-locale
@@ -190,6 +191,7 @@ export function nicheChipsForCountry(code: string, locale: "ua" | "en" | "ru"): 
       token,
       local: localMap[token] ?? tr?.en ?? fallback,
       label: tr?.[locale] ?? fallback,
+      en: tr?.en ?? fallback,
     };
   });
 }
