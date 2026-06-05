@@ -393,7 +393,9 @@ function scoreDesign(opts: {
   // 6. Visual style heuristics from CSS/HTML
   const hasInlineStyles = /style="[^"]{100,}"/.test(opts.html);
   const hasModernCSS = /flexbox|grid|rem|var\(--/.test(opts.html);
-  const hasOldPatterns = /<table[^>]*>\s*(?:<tbody[^>]*>\s*)?<tr[^>]*>\s*<td/i.test(opts.html) && !opts.technologies.includes("WordPress");
+  // A stray <table> on an otherwise modern site (flexbox/grid/CSS vars) is a data
+  // table, not a table-based layout — don't flag it as outdated structure.
+  const hasOldPatterns = /<table[^>]*>\s*(?:<tbody[^>]*>\s*)?<tr[^>]*>\s*<td/i.test(opts.html) && !opts.technologies.includes("WordPress") && !hasModernCSS;
 
   if (hasModernCSS) points += 1;
   if (hasInlineStyles && !hasModernCSS) {
