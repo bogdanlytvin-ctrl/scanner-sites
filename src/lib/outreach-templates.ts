@@ -173,7 +173,22 @@ export function getProblemLibrary(): ProblemType[] {
 export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
   const matched: ProblemType[] = [];
 
+  // When the page was JS-rendered/blocked we only saw an empty shell, so any
+  // verdict derived from the page DOM is unreliable. Don't claim these problems —
+  // it produced false "outdated site / no feedback form" outreach lines.
+  const domDependent = new Set([
+    "old-design",
+    "not-mobile-friendly",
+    "no-contact-form",
+    "table-layout",
+    "missing-seo",
+    "old-technology",
+    "slow-inline-styles",
+  ]);
+
   for (const prob of problemLibrary) {
+    if (lead.analysisLimited && domDependent.has(prob.id)) continue;
+
     let matches = false;
 
     switch (prob.id) {

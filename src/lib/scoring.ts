@@ -29,6 +29,9 @@ export interface LeadBusiness {
   securityIssues: string[];
   pageTitle: string;
   hasContactForm: boolean;
+  // True when the page is JS-rendered/blocked and we only saw an empty shell —
+  // DOM-derived verdicts (old design, no form, not mobile) are unreliable here.
+  analysisLimited?: boolean;
   // Overall score
   score: LeadScore;
   // Lead management

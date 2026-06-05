@@ -48,6 +48,7 @@ export async function POST(request: NextRequest) {
       pageTitle: result.pageTitle,
       hasContactForm: result.hasContactForm,
       securityIssues: result.securityIssues,
+      analysisLimited: result.analysisLimited,
     });
   } catch (error) {
     console.error("Analyze API error:", error);

@@ -19,6 +19,11 @@ export interface WebsiteAnalysis {
   pageTitle: string;
   hasContactForm: boolean;
   securityIssues: string[]; // real, header-derived security findings (no guesses)
+  // True when we could NOT fully read the rendered page (site unreachable, or a
+  // JS/SPA shell whose content is rendered client-side). In that case the DOM we
+  // see is incomplete, so the negative signals (no form, not mobile, old layout)
+  // are unreliable and downstream must NOT report them as real problems.
+  analysisLimited: boolean;
 }
 
 export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
@@ -33,6 +38,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     pageTitle: "",
     hasContactForm: false,
     securityIssues: [],
+    analysisLimited: true, // until we successfully read a real HTML body
   };
 
   if (!url || url === "N/A") return empty;
@@ -90,6 +96,15 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
 
   const $ = cheerio.load(html);
 
+  // ─── JS/SPA shell detection ──────────────────────────────
+  // We fetch raw HTML and do NOT execute JavaScript. A client-side-rendered app
+  // (or a blocked/redirect/consent page) returns an almost-empty body — its real
+  // content, forms and footer are injected by JS in the browser. Detect that so
+  // we don't fabricate "no form / not mobile / old design" problems for a site
+  // that actually has all of them when viewed normally.
+  const bodyText = $("body").text().replace(/\s+/g, " ").trim();
+  const analysisLimited = bodyText.length < 400;
+
   // ─── Page title ──────────────────────────────────────────
   const pageTitle = $("title").text().trim();
 
@@ -119,6 +134,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     technologies,
     html,
     $,
+    limited: analysisLimited,
   });
 
   // Surface security findings in notes too, so they show in the existing UI.
@@ -137,6 +153,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     pageTitle,
     hasContactForm,
     securityIssues,
+    analysisLimited,
   };
 }
 
@@ -252,7 +269,10 @@ function detectSecurityIssues(
 // ─── Contact form detection ────────────────────────────────
 
 function detectContactForm($: cheerio.CheerioAPI): boolean {
-  return (
+  // A real "way to get in touch" is broader than a <form> — a mailto:/tel: link
+  // or a dedicated contact page counts. Only treat a site as having NO feedback
+  // channel when none of these are present.
+  if (
     $('form[action*="contact"]').length > 0 ||
     $('form[action*="send"]').length > 0 ||
     $('form[action*="submit"]').length > 0 ||
@@ -266,7 +286,29 @@ function detectContactForm($: cheerio.CheerioAPI): boolean {
       return text.includes("send") || text.includes("відправ") ||
              text.includes("submit") || text.includes("надісл");
     }).length > 0
-  );
+  ) {
+    return true;
+  }
+
+  // mailto: / tel: links — a direct contact channel.
+  if ($('a[href^="mailto:"], a[href^="tel:"]').length > 0) return true;
+
+  // Link or button to a dedicated contact page (multilingual).
+  const contactHref = $(
+    'a[href*="contact"], a[href*="kontakt"], a[href*="kontakty"], a[href*="contacts"], a[href*="zwrotny"], a[href*="feedback"]'
+  ).length > 0;
+  if (contactHref) return true;
+
+  const contactLinkText = $("a, button").filter((_, el) => {
+    const text = $(el).text().toLowerCase();
+    return (
+      text.includes("контакт") || text.includes("contact") || text.includes("kontakt") ||
+      text.includes("зворотн") || text.includes("звʼязатися") || text.includes("звязатися") ||
+      text.includes("напиши") || text.includes("зв'язок")
+    );
+  }).length > 0;
+
+  return contactLinkText;
 }
 
 // ─── Design scoring ────────────────────────────────────────
@@ -278,10 +320,21 @@ function scoreDesign(opts: {
   technologies: string[];
   html: string;
   $: cheerio.CheerioAPI;
+  limited: boolean;
 }): { score: "ancient" | "outdated" | "modern" | "unknown"; notes: string[] } {
   const notes: string[] = [];
   let points = 0; // 0 = worst, 10 = best
   const now = new Date().getFullYear();
+
+  // The page body was rendered by JS (or blocked/redirected) and we only saw an
+  // empty shell. Any "old design / table layout / no content" verdict here would
+  // be wrong — bail out with an honest "unknown" instead of fabricating problems.
+  if (opts.limited) {
+    return {
+      score: "unknown",
+      notes: ["⚠️ Контент рендериться через JS або сайт недоступний — повний аналіз потребує браузера"],
+    };
+  }
 
   // 1. Copyright year (0-3 points)
   if (opts.copyrightYear) {
@@ -375,37 +428,36 @@ function extractCopyrightYear(
   $: cheerio.CheerioAPI,
   html: string
 ): number | null {
+  // A plausible copyright year only: not before the modern web, not in the future.
+  // This rejects junk like phone numbers, prices or "© 1994" boilerplate that a
+  // big company never updates — values that produced false "very old site" verdicts.
+  const minYear = 2005;
+  const maxYear = new Date().getFullYear() + 1;
+  const plausible = (y: number) => y >= minYear && y <= maxYear;
+
   // 1. Meta copyright tag
   const metaCopyright = $('meta[name="copyright"], meta[name="Copyright"]');
   if (metaCopyright.length) {
     const content = metaCopyright.attr("content") || "";
-    const years = content.match(/\b(19|20)\d{2}\b/g);
-    if (years && years.length) return parseInt(years[years.length - 1], 10);
+    const years = (content.match(/\b(?:19|20)\d{2}\b/g) || []).map(Number).filter(plausible);
+    if (years.length) return Math.max(...years);
   }
 
-  // 2. Footer first
+  // 2. Explicit ©/copyright marker immediately next to a year — the only reliable
+  // signal. Take the max (covers "© 2018–2025" ranges).
   const footerText = $("footer").text() || "";
   const searchText = footerText || html;
 
   const explicit = searchText.match(
-    /(?:©|&copy;|\(c\)|™)\s*(?:\d{4}\s*[-–]\s*)?(\d{4})/g
+    /(?:©|&copy;|\(c\)|™|copyright)\s*(?:\d{4}\s*[-–—]\s*)?(\d{4})/gi
   );
   if (explicit) {
     const years = explicit
-      .map((m) => { const match = m.match(/(\d{4})/g); return match ? match.map(Number) : []; })
-      .flat();
+      .flatMap((m) => (m.match(/\d{4}/g) || []).map(Number))
+      .filter(plausible);
     if (years.length) return Math.max(...years);
   }
 
-  // 3. "copyright" near year
-  const broad = searchText.match(/(?:copyright|©|&copy;)[^0-9]*((?:19|20)\d{2})/i);
-  if (broad) return parseInt(broad[1], 10);
-
-  // 4. Any year in footer
-  if (footerText) {
-    const footerYears = footerText.match(/\b(19|20)\d{2}\b/g);
-    if (footerYears) return parseInt(footerYears[0], 10);
-  }
-
+  // No trustworthy copyright marker → unknown (do NOT guess from a bare footer year).
   return null;
 }

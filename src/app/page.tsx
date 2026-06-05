@@ -457,7 +457,7 @@ export default function Home() {
         let copyrightYear: number | null = null, isMobileFriendly = false, hasSsl = false;
         let finalUrl = "", technologies: string[] = [], designScore: DesignScore = "unknown";
         let designNotes: string[] = [], pageTitle = "", hasContactForm = false;
-        let securityIssues: string[] = [];
+        let securityIssues: string[] = [], analysisLimited = false;
 
         if (b.website && b.website !== "N/A") {
           try {
@@ -473,6 +473,7 @@ export default function Home() {
             designNotes = d.designNotes || []; pageTitle = d.pageTitle || "";
             hasContactForm = d.hasContactForm || false;
             securityIssues = d.securityIssues || [];
+            analysisLimited = d.analysisLimited || false;
           } catch { /* skip failed analysis */ }
         }
 
@@ -483,6 +484,7 @@ export default function Home() {
           rating: b.rating, reviews: b.reviews,
           copyrightYear, isMobileFriendly, hasSsl, finalUrl, technologies,
           designScore, designNotes, securityIssues, pageTitle, hasContactForm,
+          analysisLimited,
           score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl),
           status: "new", notes: "", contactDate: null,
         };
