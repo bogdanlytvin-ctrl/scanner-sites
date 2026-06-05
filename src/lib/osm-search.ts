@@ -650,18 +650,30 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
 
   let coords: GeoCoords | null;
   if (isCyrillicQuery) {
-    // Cyrillic: prefer Ukraine. Photon first, then a UA-restricted Nominatim
-    // cross-check to override non-UA Photon hits (e.g. a same-name BY/RU town).
+    // Cyrillic: prefer Ukraine. Photon first; its settlement scoring (UA bonus +
+    // major-oblast bonus) resolves major Ukrainian cities to the real centre.
     coords = await geocodePhoton(geoQuery);
-    const nominatimResult = await geocodeNominatim(geoQuery);
-    if (
-      nominatimResult &&
-      (nominatimResult.displayName.includes("Україн") ||
-        nominatimResult.displayName.includes("Ukraine"))
-    ) {
-      coords = nominatimResult;
+    const photonIsUA =
+      !!coords &&
+      (coords.displayName.includes("Україн") ||
+        coords.displayName.includes("Ukraine"));
+    // Only cross-check with Nominatim when Photon did NOT already find a Ukrainian
+    // place (e.g. it resolved to a same-name BY/RU town). If Photon already has a
+    // UA hit, trust it — Nominatim ranks the real city as a low-priority
+    // `administrative` boundary and lets same-name villages outrank it, which
+    // would drag the search centre out to a random hamlet (e.g. Львів → a village
+    // near Кривий Ріг instead of the city of Lviv).
+    if (!photonIsUA) {
+      const nominatimResult = await geocodeNominatim(geoQuery);
+      if (
+        nominatimResult &&
+        (nominatimResult.displayName.includes("Україн") ||
+          nominatimResult.displayName.includes("Ukraine"))
+      ) {
+        coords = nominatimResult;
+      }
+      if (!coords) coords = nominatimResult;
     }
-    if (!coords) coords = nominatimResult;
   } else {
     // Latin: Photon scores by settlement type only and ignores global
     // importance, so omonyms resolve wrong (Warsaw → Warsaw, Indiana instead
