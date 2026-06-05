@@ -31,7 +31,7 @@ import {
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
 import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
-import { COUNTRIES, flagEmoji, nicheChipsForCountry } from "@/lib/countries";
+import { COUNTRIES, flagEmoji, nicheChipsForCountry, citiesForCountry } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
   calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting,
@@ -150,6 +150,21 @@ export default function Home() {
     setCity(hit.name);
     selectedGeoRef.current = { name: hit.name, lat: hit.lat, lng: hit.lng, displayName: hit.displayName };
     setCityHits([]); setCityOpen(false);
+  }, []);
+
+  // Curated city picked from the dropdown — resolve exact coords via geocode API
+  // (country-scoped). If resolution fails, the search route geocodes by name.
+  const pickCuratedCity = useCallback(async (name: string, cc: string) => {
+    setCity(name);
+    setCityOpen(false);
+    setCityHits([]);
+    selectedGeoRef.current = null;
+    try {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(name)}&country=${encodeURIComponent(cc)}`);
+      const data = await res.json();
+      const hit = (data.cities || [])[0];
+      if (hit) selectedGeoRef.current = { name: hit.name, lat: hit.lat, lng: hit.lng, displayName: hit.displayName };
+    } catch { /* fall back to name-based geocoding in the search route */ }
   }, []);
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -886,11 +901,13 @@ export default function Home() {
                 <label className="text-xs font-medium text-muted-foreground">{t.cityLabel}</label>
                 <Input placeholder={t.cityPlaceholder} value={city} autoComplete="off"
                   onChange={(e) => { setCity(e.target.value); selectedGeoRef.current = null; fetchCities(e.target.value, country); }}
-                  onFocus={() => { if (cityHits.length > 0) setCityOpen(true); }}
+                  onFocus={() => setCityOpen(true)}
                   onBlur={() => setTimeout(() => setCityOpen(false), 150)}
                   disabled={phase === "searching" || phase === "analyzing"}
                   onKeyDown={(e) => { if (e.key === "Enter") { setCityOpen(false); handleSearch(); } }} />
-                {cityLoading && <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[30px] text-muted-foreground" />}
+                {cityLoading
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[30px] text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-[30px] text-muted-foreground pointer-events-none" />}
                 {cityOpen && cityHits.length > 0 && (
                   <div className="absolute z-50 left-0 right-0 top-[58px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
                     {cityHits.map((hit, i) => (
@@ -900,6 +917,18 @@ export default function Home() {
                         <MapPin className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
                         <span><span className="font-medium">{hit.name}</span>
                           <span className="text-[11px] text-muted-foreground block leading-tight">{hit.displayName}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {cityOpen && cityHits.length === 0 && city.trim().length < 2 && citiesForCountry(country).length > 0 && (
+                  <div className="absolute z-50 left-0 right-0 top-[58px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
+                    {citiesForCountry(country).map((name) => (
+                      <button key={name} type="button"
+                        onMouseDown={(e) => { e.preventDefault(); pickCuratedCity(name, country); }}
+                        className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-center gap-1.5">
+                        <MapPin className="w-3 h-3 shrink-0 text-muted-foreground" />
+                        <span className="font-medium">{name}</span>
                       </button>
                     ))}
                   </div>
