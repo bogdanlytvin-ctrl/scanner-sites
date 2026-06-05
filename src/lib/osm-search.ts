@@ -1019,7 +1019,32 @@ export async function searchOverpassAt(
   }
 
   const parsed = parseOverpassResults(allElements, pool);
-  return rankLeads(parsed).slice(0, maxResults);
+  return pageLeads(rankLeads(parsed), maxResults);
+}
+
+// Build the final page from ranked leads. No-site HOT leads stay on top, but a
+// slice of the page is reserved for businesses that DO have a site so the user
+// always sees them too (otherwise a big no-site pool would bury every site past
+// the cutoff and the results would look broken).
+function pageLeads(ranked: OSMResult[], maxResults: number): OSMResult[] {
+  const hasSite = (l: OSMResult) => !!l.website && l.website !== "N/A";
+  const noSite = ranked.filter((l) => !hasSite(l)); // tiers 0–2, order preserved
+  const sites = ranked.filter(hasSite); // tier 3, order preserved
+  if (sites.length === 0 || noSite.length === 0) return ranked.slice(0, maxResults);
+
+  const siteQuota = Math.min(sites.length, Math.max(3, Math.floor(maxResults * 0.25)));
+  const noSiteSlots = Math.max(0, maxResults - siteQuota);
+  const page = [...noSite.slice(0, noSiteSlots), ...sites.slice(0, siteQuota)];
+
+  // Backfill from the remaining ranked pool if either bucket was short.
+  if (page.length < maxResults) {
+    const used = new Set(page);
+    for (const l of ranked) {
+      if (page.length >= maxResults) break;
+      if (!used.has(l)) page.push(l);
+    }
+  }
+  return page.slice(0, maxResults);
 }
 
 // Order leads by outreach value: businesses with no real website are the
