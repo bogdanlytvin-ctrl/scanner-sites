@@ -886,6 +886,12 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
     const regionTypes = new Set([
       "state", "region", "province", "county", "country", "continent", "archipelago",
     ]);
+    // Sub-city subdivisions: a same-named suburb/neighbourhood must not outrank
+    // the actual city (e.g. a "São Paulo" suburb in Pará vs. the megacity, which
+    // OSM tags as an administrative boundary with no place-bonus).
+    const subCityTypes = new Set([
+      "suburb", "neighbourhood", "quarter", "locality", "city_block", "allotments",
+    ]);
     const qCore = geoCore(city);
 
     const scored = data.map((r: any) => {
@@ -907,6 +913,9 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
 
       // Demote region centroids so the city/settlement wins.
       if (regionTypes.has(type)) score -= 8;
+
+      // Demote sub-city subdivisions so a same-named city wins over a suburb.
+      if (subCityTypes.has(type)) score -= 7;
 
       // Strong reward for an exact name match so a high-importance *different*
       // place can't outrank the real city (e.g. "Amsterdam" → New York).
