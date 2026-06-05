@@ -23,6 +23,9 @@ export interface OSMResult {
   lat: number;
   lng: number;
   type: string;
+  // True when the business has a social presence (FB/IG/Telegram) but no real
+  // website — the warmest prospect: already online, just needs a proper site.
+  socialOnly: boolean;
 }
 
 // ─── Overpass endpoints (fallback chain) ────────────────────
@@ -1031,7 +1034,10 @@ function rankLeads(leads: OSMResult[]): OSMResult[] {
     !!l.facebook ||
     !!l.instagram ||
     !!l.telegram;
-  const tier = (l: OSMResult) => (hasSite(l) ? 2 : reachable(l) ? 0 : 1);
+  // 0 = social-only (online, no site — warmest), 1 = no-site & reachable,
+  // 2 = no-site no contact, 3 = has a real site (needs redesign analysis).
+  const tier = (l: OSMResult) =>
+    l.socialOnly ? 0 : hasSite(l) ? 3 : reachable(l) ? 1 : 2;
   // Stable sort (Array.prototype.sort is stable in modern JS) preserves the
   // original Overpass order within each tier.
   return [...leads].sort((a, b) => tier(a) - tier(b));
@@ -1293,15 +1299,18 @@ function parseOverpassResults(elements: any[], maxResults: number): OSMResult[] 
     if (seen.has(dedupKey)) continue;
     seen.add(dedupKey);
 
+    const contacts = extractContacts(el.tags);
+
     results.push({
       name,
       phone: extractPhone(el.tags),
-      website: extractWebsite(el.tags),
+      website: contacts.website,
       address: buildAddress(el.tags),
       email: extractEmail(el.tags),
-      facebook: el.tags?.["contact:facebook"] || "",
-      instagram: el.tags?.["contact:instagram"] || "",
-      telegram: el.tags?.["contact:telegram"] || "",
+      facebook: contacts.facebook,
+      instagram: contacts.instagram,
+      telegram: contacts.telegram,
+      socialOnly: contacts.socialOnly,
       openingHours: el.tags?.["opening_hours"] || "",
       description: el.tags?.["description"] || "",
       lat,
@@ -1331,6 +1340,59 @@ function extractPhone(tags: Record<string, string> | undefined): string {
 function extractWebsite(tags: Record<string, string> | undefined): string {
   if (!tags) return "N/A";
   return tags["website"] || tags["contact:website"] || "N/A";
+}
+
+// Social platforms that businesses often put in the `website` tag instead of a
+// real site. Detecting these lets us reclassify such leads as "social-only".
+const SOCIAL_HOSTS: Array<{ re: RegExp; kind: "facebook" | "instagram" | "telegram" | "other" }> = [
+  { re: /(?:^|\.)facebook\.com|(?:^|\.)fb\.(?:com|me)|(?:^|\.)m\.facebook\.com/i, kind: "facebook" },
+  { re: /(?:^|\.)instagram\.com|(?:^|\.)instagr\.am/i, kind: "instagram" },
+  { re: /(?:^|\.)t\.me|(?:^|\.)telegram\.(?:me|org)/i, kind: "telegram" },
+  { re: /(?:^|\.)(?:tiktok\.com|twitter\.com|x\.com|vk\.com|wa\.me|api\.whatsapp\.com|linktr\.ee|taplink\.[a-z]+|youtube\.com|youtu\.be|linkedin\.com)/i, kind: "other" },
+];
+
+function classifySocialUrl(url: string): "facebook" | "instagram" | "telegram" | "other" | null {
+  if (!url || url === "N/A") return null;
+  let host = url;
+  try {
+    host = new URL(url.startsWith("http") ? url : `https://${url}`).hostname;
+  } catch {
+    /* not a parseable URL — fall back to matching the raw string */
+  }
+  for (const { re, kind } of SOCIAL_HOSTS) {
+    if (re.test(host)) return kind;
+  }
+  return null;
+}
+
+interface Contacts {
+  website: string;
+  facebook: string;
+  instagram: string;
+  telegram: string;
+  socialOnly: boolean;
+}
+
+// Resolve a business's contact channels, correcting the common case where the
+// `website` tag actually points to a social profile. Such a lead has no real
+// website → we move the link to the right social field and flag it socialOnly,
+// so ranking/scoring treats it as a HOT prospect instead of "has a site".
+function extractContacts(tags: Record<string, string> | undefined): Contacts {
+  let website = extractWebsite(tags);
+  let facebook = tags?.["contact:facebook"] || "";
+  let instagram = tags?.["contact:instagram"] || "";
+  let telegram = tags?.["contact:telegram"] || "";
+
+  const kind = classifySocialUrl(website);
+  if (kind) {
+    if (kind === "facebook") facebook = facebook || website;
+    else if (kind === "instagram") instagram = instagram || website;
+    else if (kind === "telegram") telegram = telegram || website;
+    website = "N/A"; // it was a social link, not a real website
+  }
+
+  const socialOnly = website === "N/A" && !!(facebook || instagram || telegram);
+  return { website, facebook, instagram, telegram, socialOnly };
 }
 
 function buildAddress(tags: Record<string, string> | undefined): string {

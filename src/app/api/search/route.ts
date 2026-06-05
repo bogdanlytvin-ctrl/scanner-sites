@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
       facebook: r.facebook,
       instagram: r.instagram,
       telegram: r.telegram,
+      socialOnly: r.socialOnly,
       openingHours: r.openingHours,
       description: r.description,
       rating: null,

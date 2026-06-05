@@ -1125,6 +1125,8 @@ export default function Home() {
             const isFav = favoritesSet.has(lead.name);
             const worthiness = isWorthContacting(lead);
             const problems = getProblemsForLead(lead);
+            // Social presence but no real website — warmest prospect.
+            const socialOnly = lead.website === "N/A" && !!(lead.facebook || lead.instagram || lead.telegram);
 
             return (
               <Card key={`${lead.name}-${realIdx}`} className={`border-l-4 shadow-sm overflow-hidden transition-all ${sc.border} hover:shadow-md`}>
@@ -1149,6 +1151,11 @@ export default function Home() {
                         {worthiness.worth ? <ThumbsUp className="w-2.5 h-2.5 mr-0.5" /> : <ThumbsDown className="w-2.5 h-2.5 mr-0.5" />}
                         {worthiness.score}/100
                       </Badge>
+                      {socialOnly && (
+                        <Badge className="bg-pink-100 dark:bg-pink-950/40 text-pink-700 dark:text-pink-400 border border-pink-200 dark:border-pink-800 text-[10px] px-1.5">
+                          📱 Лише соцмережі
+                        </Badge>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs sm:text-sm text-muted-foreground">
                       {lead.phone !== "N/A" && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{lead.phone}</span>}
