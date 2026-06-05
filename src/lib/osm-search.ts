@@ -809,6 +809,17 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
   }
 }
 
+// Normalize a place name to its bare core (first comma-segment, lowercased,
+// diacritics stripped) so "Amsterdam, North Holland, NL" → "amsterdam".
+function geoCore(s: string): string {
+  return (s.split(",")[0] || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9Ѐ-ӿ ]+/g, "")
+    .trim();
+}
+
 async function geocodeNominatim(city: string, restrictToUA: boolean = true): Promise<GeoCoords | null> {
   try {
     // Detect Cyrillic for language/country preference
@@ -869,6 +880,14 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
       administrative: 2,
     };
 
+    // Region-level admin areas (state/emirate/province/country): their point is
+    // the region centroid, often in sparse/desert land far from the actual city
+    // (e.g. "Sharjah" the emirate vs. Sharjah the city). Demote them.
+    const regionTypes = new Set([
+      "state", "region", "province", "county", "country", "continent", "archipelago",
+    ]);
+    const qCore = geoCore(city);
+
     const scored = data.map((r: any) => {
       const type = (r.type || "").toLowerCase();
       const cls = String(r.class || "");
@@ -885,6 +904,14 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
 
       // Bonus for importance
       score += (r.importance || 0) * 10;
+
+      // Demote region centroids so the city/settlement wins.
+      if (regionTypes.has(type)) score -= 8;
+
+      // Strong reward for an exact name match so a high-importance *different*
+      // place can't outrank the real city (e.g. "Amsterdam" → New York).
+      const rCore = geoCore(r.display_name || r.name || "");
+      if (qCore && rCore === qCore) score += 12;
 
       return { result: r, score };
     });
