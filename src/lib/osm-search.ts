@@ -384,6 +384,94 @@ const KEYWORD_MAP: Record<string, string[]> = {
   accounting: ["office=accountant"],
   dental: ["amenity=dentist"],
   florist: ["shop=florist"],
+
+  // ── Polish synonyms (PL is a supported country; native niche words) ──
+  // Food & Drink
+  restauracja: ["amenity=restaurant"],
+  pizzeria: ["amenity=restaurant", "cuisine=pizza"],
+  kawiarnia: ["amenity=cafe"],
+  piekarnia: ["shop=bakery"],
+  cukiernia: ["shop=confectionery", "shop=pastry"],
+  winiarnia: ["shop=wine", "amenity=bar"],
+  // Health & Beauty
+  dentysta: ["amenity=dentist"],
+  lekarz: ["amenity=doctors"],
+  przychodnia: ["amenity=clinic"],
+  apteka: ["amenity=pharmacy"],
+  szpital: ["amenity=hospital"],
+  weterynarz: ["amenity=veterinary"],
+  fryzjer: ["shop=hairdresser"],
+  barber: ["shop=hairdresser"],
+  "salon piękności": ["shop=beauty"],
+  kosmetyczka: ["shop=beauty"],
+  kosmetyka: ["shop=beauty"],
+  paznokcie: ["shop=beauty"],
+  siłownia: ["leisure=fitness_centre"],
+  fitness: ["leisure=fitness_centre"],
+  // Auto
+  warsztat: ["craft=car_repair", "shop=car_repair"],
+  mechanik: ["craft=car_repair", "shop=car_repair"],
+  myjnia: ["amenity=car_wash"],
+  "stacja paliw": ["amenity=fuel"],
+  "części samochodowe": ["shop=car_parts"],
+  opony: ["shop=tyres"],
+  // Home & Trades
+  hydraulik: ["craft=plumber"],
+  elektryk: ["craft=electrician"],
+  stolarz: ["craft=carpenter"],
+  malarz: ["craft=painter"],
+  dekarz: ["craft=roofer"],
+  ślusarz: ["craft=locksmith"],
+  meble: ["shop=furniture"],
+  budowlaniec: ["craft=builder"],
+  krawiec: ["craft=tailor"],
+  pralnia: ["shop=laundry"],
+  "pralnia chemiczna": ["shop=dry_cleaning", "shop=laundry"],
+  // Professional / Creative
+  prawnik: ["office=lawyer"],
+  "radca prawny": ["office=lawyer"],
+  księgowy: ["office=accountant"],
+  "biuro rachunkowe": ["office=accountant"],
+  nieruchomości: ["office=estate_agent"],
+  ubezpieczenia: ["office=insurance"],
+  notariusz: ["office=notary"],
+  architekt: ["office=architect"],
+  fotograf: ["craft=photographer", "shop=photo"],
+  drukarnia: ["shop=copyshop", "craft=printer"],
+  marketing: ["office=advertising_agency"],
+  // Shopping
+  sklep: ["shop"],
+  odzież: ["shop=clothes"],
+  ubrania: ["shop=clothes"],
+  obuwie: ["shop=shoes"],
+  buty: ["shop=shoes"],
+  elektronika: ["shop=electronics"],
+  kwiaciarnia: ["shop=florist"],
+  kwiaty: ["shop=florist"],
+  księgarnia: ["shop=books"],
+  jubiler: ["shop=jewelry"],
+  optyk: ["shop=optician"],
+  zabawki: ["shop=toys"],
+  kosmetyki: ["shop=cosmetics", "shop=chemist"],
+  perfumy: ["shop=perfumery"],
+  sport: ["shop=sports"],
+  rowery: ["shop=bicycle"],
+  telefony: ["shop=mobile_phone"],
+  komputery: ["shop=computer"],
+  // Education
+  szkoła: ["amenity=school"],
+  uniwersytet: ["amenity=university"],
+  przedszkole: ["amenity=kindergarten"],
+  kursy: ["amenity=school", "school=language"],
+  // Hotels & Tourism
+  pensjonat: ["tourism=guest_house"],
+  "biuro podróży": ["office=travel_agent"],
+  // Leisure & Culture
+  basen: ["leisure=swimming_pool"],
+  kino: ["amenity=cinema"],
+  teatr: ["amenity=theatre"],
+  muzeum: ["tourism=museum"],
+  kościół: ["amenity=place_of_worship"],
 };
 
 // Broad tags for unknown keywords — combined with name search to avoid timeout
@@ -407,6 +495,20 @@ function normalizeKeyword(s: string): string {
   return s
     .toLowerCase()
     .replace(/[ʼʹ'`´’‘]/g, "'")
+    // Fold Latin (Polish/German/etc.) diacritics to their ASCII base so native
+    // spellings resolve — the class-strip below would otherwise turn them into
+    // spaces and split the word. Cyrillic is left intact (NFD would mangle й/ї).
+    .replace(/ł/g, "l")
+    .replace(/[ąàáâãä]/g, "a")
+    .replace(/[ęèéêë]/g, "e")
+    .replace(/[óòôõö]/g, "o")
+    .replace(/[żź]/g, "z")
+    .replace(/[ćç]/g, "c")
+    .replace(/ś/g, "s")
+    .replace(/ń/g, "n")
+    .replace(/[üùúû]/g, "u")
+    .replace(/[íìî]/g, "i")
+    .replace(/ß/g, "ss")
     .replace(/[^a-zа-яіїєґ0-9'\s-]/giu, " ")
     .replace(/\s+/g, " ")
     .trim();
