@@ -593,6 +593,46 @@ async function setCachedEdge(query: string, elements: any[]): Promise<void> {
 
 // ─── Geocoding (Photon + Nominatim fallback) ────────────────
 
+// Well-known Dubai districts/communities that collide with a more globally
+// "important" same-name place (Al Quoz → Saudi Arabia, Marina → Croatia).
+// Bare Latin geocoding ranks by global importance and picks the wrong one,
+// so we pin these to Dubai by appending the country context before geocoding.
+// Key = normalized user input; value = canonical district name for the query.
+const DUBAI_DISTRICTS: Record<string, string> = {
+  "al quoz": "Al Quoz",
+  "business bay": "Business Bay",
+  "downtown dubai": "Downtown Dubai",
+  "jlt": "Jumeirah Lakes Towers",
+  "jumeirah lakes towers": "Jumeirah Lakes Towers",
+  "marina": "Dubai Marina",
+  "dubai marina": "Dubai Marina",
+  "deira": "Deira",
+  "bur dubai": "Bur Dubai",
+  "al barsha": "Al Barsha",
+  "jumeirah": "Jumeirah",
+  "palm jumeirah": "Palm Jumeirah",
+  "jvc": "Jumeirah Village Circle",
+  "jumeirah village circle": "Jumeirah Village Circle",
+  "dubai silicon oasis": "Dubai Silicon Oasis",
+  "international city": "International City",
+  "karama": "Al Karama",
+  "al karama": "Al Karama",
+  "satwa": "Al Satwa",
+  "discovery gardens": "Discovery Gardens",
+  "mirdif": "Mirdif",
+  "the greens": "The Greens",
+  "motor city": "Motor City",
+  "sports city": "Dubai Sports City",
+};
+
+// Returns a country-qualified geocode query for a known Dubai district, or
+// null when the input is not a bare district (already qualified, or unknown).
+function dubaiDistrictQuery(city: string): string | null {
+  if (/dubai|emirat|uae|united arab/i.test(city)) return null;
+  const canonical = DUBAI_DISTRICTS[city.toLowerCase().trim()];
+  return canonical ? `${canonical}, Dubai, United Arab Emirates` : null;
+}
+
 export async function geocodeCity(city: string): Promise<GeoCoords> {
   const cacheKey = city.toLowerCase().trim();
   const cached = geoCache.get(cacheKey);
@@ -600,14 +640,17 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
     return cached;
   }
 
+  // Pin bare Dubai districts to the UAE so omonyms abroad don't win.
+  const geoQuery = dubaiDistrictQuery(city) ?? city;
+
   const isCyrillicQuery = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
 
   let coords: GeoCoords | null;
   if (isCyrillicQuery) {
     // Cyrillic: prefer Ukraine. Photon first, then a UA-restricted Nominatim
     // cross-check to override non-UA Photon hits (e.g. a same-name BY/RU town).
-    coords = await geocodePhoton(city);
-    const nominatimResult = await geocodeNominatim(city);
+    coords = await geocodePhoton(geoQuery);
+    const nominatimResult = await geocodeNominatim(geoQuery);
     if (
       nominatimResult &&
       (nominatimResult.displayName.includes("Україн") ||
@@ -622,24 +665,24 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
     // of Warszawa, Poland). Nominatim ranks by importance globally, so prefer
     // its settlement; fall back to Photon if Nominatim is unavailable.
     const [photon, nominatim] = await Promise.all([
-      geocodePhoton(city),
-      geocodeNominatim(city, false),
+      geocodePhoton(geoQuery),
+      geocodeNominatim(geoQuery, false),
     ]);
     coords = nominatim || photon;
   }
 
   // Second attempt: append "місто" (Ukrainian for "city") to prioritize city results
   if (!coords) {
-    coords = await geocodePhoton(`${city} місто`);
+    coords = await geocodePhoton(`${geoQuery} місто`);
     if (!coords) {
-      coords = await geocodeNominatim(`${city} місто`);
+      coords = await geocodeNominatim(`${geoQuery} місто`);
     }
   }
 
   // Final pass: global Nominatim with no country restriction so a Cyrillic-named
   // city outside Ukraine (Алматы, София, Белград…) still resolves.
   if (!coords) {
-    coords = await geocodeNominatim(city, false);
+    coords = await geocodeNominatim(geoQuery, false);
   }
 
   if (!coords) {
