@@ -65,7 +65,7 @@ export const COUNTRY_NICHES: Record<string, string[]> = {
   // Central & Eastern Europe
   pl: ["restaurant", "beauty", "dentist", "lawyer", "car_repair", "gym", "bakery", "real_estate", "plumber", "pharmacy"],
   cz: ["restaurant", "cafe", "beauty", "dentist", "car_repair", "gym", "real_estate", "lawyer", "hotel", "pharmacy"],
-  ua: ["кафе", "ресторан", "салон", "стоматолог", "сто", "юрист", "готель", "спортзал", "пекарня", "аптека"],
+  ua: ["cafe", "restaurant", "beauty", "dentist", "car_repair", "lawyer", "hotel", "gym", "bakery", "pharmacy"],
   ro: ["restaurant", "beauty", "dentist", "car_repair", "gym", "real_estate", "lawyer", "cafe", "hotel", "pharmacy"],
   gr: ["restaurant", "cafe", "hotel", "beauty", "dentist", "car_repair", "real_estate", "gym", "travel", "lawyer"],
   hr: ["restaurant", "cafe", "hotel", "beauty", "dentist", "car_repair", "real_estate", "travel", "gym", "bakery"],
@@ -93,6 +93,105 @@ export const COUNTRY_NICHES: Record<string, string[]> = {
 // Top niches for a country code, falling back to a sensible default list.
 export function nichesForCountry(code: string): string[] {
   return COUNTRY_NICHES[code?.toLowerCase()] ?? DEFAULT_NICHES;
+}
+
+// ── Localized niche chips ───────────────────────────────────────────────
+// Niche chips are shown in the *country's* language with a translation in the
+// active UI locale next to them, e.g. PL → "restauracja · ресторан". The value
+// actually sent to search stays the canonical English token (a KEYWORD_MAP key
+// that reliably resolves to OSM tags everywhere), so display ≠ search.
+
+// Country → primary business language used for chip labels.
+export const COUNTRY_LANG: Record<string, string> = {
+  ae: "ar", sa: "ar", qa: "ar", kw: "ar", bh: "ar", om: "ar", eg: "ar", ma: "ar",
+  tr: "tr",
+  us: "en", ca: "en", gb: "en", ie: "en", au: "en", nz: "en", sg: "en", in: "en", za: "en", ng: "en",
+  mx: "es", es: "es", ar: "es",
+  de: "de", at: "de", ch: "de",
+  fr: "fr", be: "fr",
+  it: "it",
+  pt: "pt", br: "pt",
+  nl: "nl",
+  se: "sv", no: "no", dk: "da", fi: "fi",
+  pl: "pl", cz: "cs", ua: "uk", ro: "ro", gr: "el", hr: "hr",
+  jp: "ja", th: "th", my: "ms", id: "id", ph: "tl",
+};
+
+// Canonical token → translation in each UI locale (the "переклад поряд").
+export const NICHE_TRANSLATIONS: Record<string, { ua: string; en: string; ru: string }> = {
+  restaurant:   { ua: "ресторан",     en: "restaurant",     ru: "ресторан" },
+  cafe:         { ua: "кафе",         en: "cafe",           ru: "кафе" },
+  beauty:       { ua: "салон краси",  en: "beauty salon",   ru: "салон красоты" },
+  dentist:      { ua: "стоматолог",   en: "dentist",        ru: "стоматолог" },
+  lawyer:       { ua: "юрист",        en: "lawyer",         ru: "юрист" },
+  car_repair:   { ua: "автосервіс",   en: "car repair",     ru: "автосервис" },
+  gym:          { ua: "спортзал",     en: "gym",            ru: "спортзал" },
+  hotel:        { ua: "готель",       en: "hotel",          ru: "отель" },
+  real_estate:  { ua: "нерухомість",  en: "real estate",    ru: "недвижимость" },
+  pharmacy:     { ua: "аптека",       en: "pharmacy",       ru: "аптека" },
+  clinic:       { ua: "клініка",      en: "clinic",         ru: "клиника" },
+  travel:       { ua: "турагентство", en: "travel agency",  ru: "турагентство" },
+  jewelry:      { ua: "ювелірний",    en: "jewelry",        ru: "ювелирный" },
+  bakery:       { ua: "пекарня",      en: "bakery",         ru: "пекарня" },
+  accountant:   { ua: "бухгалтер",    en: "accountant",     ru: "бухгалтер" },
+  veterinary:   { ua: "ветеринар",    en: "veterinary",     ru: "ветеринар" },
+  plumber:      { ua: "сантехнік",    en: "plumber",        ru: "сантехник" },
+  electrician:  { ua: "електрик",     en: "electrician",    ru: "электрик" },
+  architect:    { ua: "архітектор",   en: "architect",      ru: "архитектор" },
+  hairdresser:  { ua: "перукарня",    en: "hairdresser",    ru: "парикмахерская" },
+  massage:      { ua: "масаж",        en: "massage",        ru: "массаж" },
+};
+
+// Local-language label per language code. Order of tokens mirrors the keys in
+// NICHE_TRANSLATIONS. A missing entry falls back to the English translation.
+export const NICHE_LOCAL: Record<string, Record<string, string>> = {
+  en: { restaurant: "restaurant", cafe: "cafe", beauty: "beauty salon", dentist: "dentist", lawyer: "lawyer", car_repair: "car repair", gym: "gym", hotel: "hotel", real_estate: "real estate", pharmacy: "pharmacy", clinic: "clinic", travel: "travel agency", jewelry: "jewelry", bakery: "bakery", accountant: "accountant", veterinary: "veterinary", plumber: "plumber", electrician: "electrician", architect: "architect", hairdresser: "hairdresser", massage: "massage" },
+  uk: { restaurant: "ресторан", cafe: "кафе", beauty: "салон краси", dentist: "стоматолог", lawyer: "юрист", car_repair: "автосервіс", gym: "спортзал", hotel: "готель", real_estate: "нерухомість", pharmacy: "аптека", clinic: "клініка", travel: "турагентство", jewelry: "ювелірний", bakery: "пекарня", accountant: "бухгалтер", veterinary: "ветеринар", plumber: "сантехнік", electrician: "електрик", architect: "архітектор", hairdresser: "перукарня", massage: "масаж" },
+  de: { restaurant: "Restaurant", cafe: "Café", beauty: "Kosmetiksalon", dentist: "Zahnarzt", lawyer: "Anwalt", car_repair: "Autowerkstatt", gym: "Fitnessstudio", hotel: "Hotel", real_estate: "Immobilien", pharmacy: "Apotheke", clinic: "Klinik", travel: "Reisebüro", jewelry: "Juwelier", bakery: "Bäckerei", accountant: "Buchhalter", veterinary: "Tierarzt", plumber: "Klempner", electrician: "Elektriker", architect: "Architekt", hairdresser: "Friseur", massage: "Massage" },
+  fr: { restaurant: "Restaurant", cafe: "Café", beauty: "Salon de beauté", dentist: "Dentiste", lawyer: "Avocat", car_repair: "Garage auto", gym: "Salle de sport", hotel: "Hôtel", real_estate: "Immobilier", pharmacy: "Pharmacie", clinic: "Clinique", travel: "Agence de voyage", jewelry: "Bijouterie", bakery: "Boulangerie", accountant: "Comptable", veterinary: "Vétérinaire", plumber: "Plombier", electrician: "Électricien", architect: "Architecte", hairdresser: "Coiffeur", massage: "Massage" },
+  es: { restaurant: "Restaurante", cafe: "Cafetería", beauty: "Salón de belleza", dentist: "Dentista", lawyer: "Abogado", car_repair: "Taller mecánico", gym: "Gimnasio", hotel: "Hotel", real_estate: "Inmobiliaria", pharmacy: "Farmacia", clinic: "Clínica", travel: "Agencia de viajes", jewelry: "Joyería", bakery: "Panadería", accountant: "Contador", veterinary: "Veterinario", plumber: "Fontanero", electrician: "Electricista", architect: "Arquitecto", hairdresser: "Peluquería", massage: "Masaje" },
+  it: { restaurant: "Ristorante", cafe: "Caffè", beauty: "Salone di bellezza", dentist: "Dentista", lawyer: "Avvocato", car_repair: "Officina auto", gym: "Palestra", hotel: "Hotel", real_estate: "Immobiliare", pharmacy: "Farmacia", clinic: "Clinica", travel: "Agenzia viaggi", jewelry: "Gioielleria", bakery: "Panificio", accountant: "Commercialista", veterinary: "Veterinario", plumber: "Idraulico", electrician: "Elettricista", architect: "Architetto", hairdresser: "Parrucchiere", massage: "Massaggio" },
+  pt: { restaurant: "Restaurante", cafe: "Café", beauty: "Salão de beleza", dentist: "Dentista", lawyer: "Advogado", car_repair: "Oficina mecânica", gym: "Academia", hotel: "Hotel", real_estate: "Imobiliária", pharmacy: "Farmácia", clinic: "Clínica", travel: "Agência de viagens", jewelry: "Joalheria", bakery: "Padaria", accountant: "Contador", veterinary: "Veterinário", plumber: "Encanador", electrician: "Eletricista", architect: "Arquiteto", hairdresser: "Cabeleireiro", massage: "Massagem" },
+  nl: { restaurant: "Restaurant", cafe: "Café", beauty: "Schoonheidssalon", dentist: "Tandarts", lawyer: "Advocaat", car_repair: "Autogarage", gym: "Sportschool", hotel: "Hotel", real_estate: "Vastgoed", pharmacy: "Apotheek", clinic: "Kliniek", travel: "Reisbureau", jewelry: "Juwelier", bakery: "Bakkerij", accountant: "Boekhouder", veterinary: "Dierenarts", plumber: "Loodgieter", electrician: "Elektricien", architect: "Architect", hairdresser: "Kapper", massage: "Massage" },
+  pl: { restaurant: "Restauracja", cafe: "Kawiarnia", beauty: "Salon piękności", dentist: "Dentysta", lawyer: "Prawnik", car_repair: "Warsztat samochodowy", gym: "Siłownia", hotel: "Hotel", real_estate: "Nieruchomości", pharmacy: "Apteka", clinic: "Klinika", travel: "Biuro podróży", jewelry: "Jubiler", bakery: "Piekarnia", accountant: "Księgowy", veterinary: "Weterynarz", plumber: "Hydraulik", electrician: "Elektryk", architect: "Architekt", hairdresser: "Fryzjer", massage: "Masaż" },
+  cs: { restaurant: "Restaurace", cafe: "Kavárna", beauty: "Kosmetický salon", dentist: "Zubař", lawyer: "Advokát", car_repair: "Autoservis", gym: "Posilovna", hotel: "Hotel", real_estate: "Reality", pharmacy: "Lékárna", clinic: "Klinika", travel: "Cestovní kancelář", jewelry: "Klenotnictví", bakery: "Pekárna", accountant: "Účetní", veterinary: "Veterinář", plumber: "Instalatér", electrician: "Elektrikář", architect: "Architekt", hairdresser: "Kadeřnictví", massage: "Masáž" },
+  ro: { restaurant: "Restaurant", cafe: "Cafenea", beauty: "Salon de înfrumusețare", dentist: "Dentist", lawyer: "Avocat", car_repair: "Service auto", gym: "Sală de fitness", hotel: "Hotel", real_estate: "Imobiliare", pharmacy: "Farmacie", clinic: "Clinică", travel: "Agenție de turism", jewelry: "Bijuterie", bakery: "Brutărie", accountant: "Contabil", veterinary: "Veterinar", plumber: "Instalator", electrician: "Electrician", architect: "Arhitect", hairdresser: "Coafor", massage: "Masaj" },
+  hr: { restaurant: "Restoran", cafe: "Kafić", beauty: "Kozmetički salon", dentist: "Zubar", lawyer: "Odvjetnik", car_repair: "Autoservis", gym: "Teretana", hotel: "Hotel", real_estate: "Nekretnine", pharmacy: "Ljekarna", clinic: "Klinika", travel: "Putnička agencija", jewelry: "Zlatarna", bakery: "Pekarnica", accountant: "Računovođa", veterinary: "Veterinar", plumber: "Vodoinstalater", electrician: "Električar", architect: "Arhitekt", hairdresser: "Frizer", massage: "Masaža" },
+  sv: { restaurant: "Restaurang", cafe: "Café", beauty: "Skönhetssalong", dentist: "Tandläkare", lawyer: "Advokat", car_repair: "Bilverkstad", gym: "Gym", hotel: "Hotell", real_estate: "Fastigheter", pharmacy: "Apotek", clinic: "Klinik", travel: "Resebyrå", jewelry: "Juvelerare", bakery: "Bageri", accountant: "Revisor", veterinary: "Veterinär", plumber: "Rörmokare", electrician: "Elektriker", architect: "Arkitekt", hairdresser: "Frisör", massage: "Massage" },
+  no: { restaurant: "Restaurant", cafe: "Kafé", beauty: "Skjønnhetssalong", dentist: "Tannlege", lawyer: "Advokat", car_repair: "Bilverksted", gym: "Treningssenter", hotel: "Hotell", real_estate: "Eiendom", pharmacy: "Apotek", clinic: "Klinikk", travel: "Reisebyrå", jewelry: "Gullsmed", bakery: "Bakeri", accountant: "Regnskapsfører", veterinary: "Veterinær", plumber: "Rørlegger", electrician: "Elektriker", architect: "Arkitekt", hairdresser: "Frisør", massage: "Massasje" },
+  da: { restaurant: "Restaurant", cafe: "Café", beauty: "Skønhedssalon", dentist: "Tandlæge", lawyer: "Advokat", car_repair: "Autoværksted", gym: "Fitnesscenter", hotel: "Hotel", real_estate: "Ejendomsmægler", pharmacy: "Apotek", clinic: "Klinik", travel: "Rejsebureau", jewelry: "Juveler", bakery: "Bageri", accountant: "Revisor", veterinary: "Dyrlæge", plumber: "VVS", electrician: "Elektriker", architect: "Arkitekt", hairdresser: "Frisør", massage: "Massage" },
+  fi: { restaurant: "Ravintola", cafe: "Kahvila", beauty: "Kauneushoitola", dentist: "Hammaslääkäri", lawyer: "Lakimies", car_repair: "Autokorjaamo", gym: "Kuntosali", hotel: "Hotelli", real_estate: "Kiinteistöt", pharmacy: "Apteekki", clinic: "Klinikka", travel: "Matkatoimisto", jewelry: "Korusliike", bakery: "Leipomo", accountant: "Kirjanpitäjä", veterinary: "Eläinlääkäri", plumber: "Putkimies", electrician: "Sähköasentaja", architect: "Arkkitehti", hairdresser: "Parturi-kampaamo", massage: "Hieronta" },
+  el: { restaurant: "Εστιατόριο", cafe: "Καφετέρια", beauty: "Σαλόνι ομορφιάς", dentist: "Οδοντίατρος", lawyer: "Δικηγόρος", car_repair: "Συνεργείο αυτοκινήτων", gym: "Γυμναστήριο", hotel: "Ξενοδοχείο", real_estate: "Ακίνητα", pharmacy: "Φαρμακείο", clinic: "Κλινική", travel: "Ταξιδιωτικό γραφείο", jewelry: "Κοσμηματοπωλείο", bakery: "Αρτοποιείο", accountant: "Λογιστής", veterinary: "Κτηνίατρος", plumber: "Υδραυλικός", electrician: "Ηλεκτρολόγος", architect: "Αρχιτέκτονας", hairdresser: "Κομμωτήριο", massage: "Μασάζ" },
+  tr: { restaurant: "Restoran", cafe: "Kafe", beauty: "Güzellik salonu", dentist: "Diş hekimi", lawyer: "Avukat", car_repair: "Oto tamir", gym: "Spor salonu", hotel: "Otel", real_estate: "Emlak", pharmacy: "Eczane", clinic: "Klinik", travel: "Seyahat acentesi", jewelry: "Kuyumcu", bakery: "Fırın", accountant: "Muhasebeci", veterinary: "Veteriner", plumber: "Tesisatçı", electrician: "Elektrikçi", architect: "Mimar", hairdresser: "Kuaför", massage: "Masaj" },
+  ar: { restaurant: "مطعم", cafe: "مقهى", beauty: "صالون تجميل", dentist: "طبيب أسنان", lawyer: "محامٍ", car_repair: "تصليح سيارات", gym: "صالة رياضية", hotel: "فندق", real_estate: "عقارات", pharmacy: "صيدلية", clinic: "عيادة", travel: "وكالة سفر", jewelry: "مجوهرات", bakery: "مخبز", accountant: "محاسب", veterinary: "طبيب بيطري", plumber: "سباك", electrician: "كهربائي", architect: "مهندس معماري", hairdresser: "حلاق", massage: "مساج" },
+  ja: { restaurant: "レストラン", cafe: "カフェ", beauty: "エステサロン", dentist: "歯医者", lawyer: "弁護士", car_repair: "自動車修理", gym: "ジム", hotel: "ホテル", real_estate: "不動産", pharmacy: "薬局", clinic: "クリニック", travel: "旅行代理店", jewelry: "宝石店", bakery: "ベーカリー", accountant: "会計士", veterinary: "動物病院", plumber: "配管工", electrician: "電気工事", architect: "建築家", hairdresser: "美容院", massage: "マッサージ" },
+  th: { restaurant: "ร้านอาหาร", cafe: "คาเฟ่", beauty: "ร้านเสริมสวย", dentist: "ทันตแพทย์", lawyer: "ทนายความ", car_repair: "อู่ซ่อมรถ", gym: "ฟิตเนส", hotel: "โรงแรม", real_estate: "อสังหาริมทรัพย์", pharmacy: "ร้านขายยา", clinic: "คลินิก", travel: "บริษัททัวร์", jewelry: "ร้านเครื่องประดับ", bakery: "เบเกอรี่", accountant: "นักบัญชี", veterinary: "สัตวแพทย์", plumber: "ช่างประปา", electrician: "ช่างไฟฟ้า", architect: "สถาปนิก", hairdresser: "ร้านทำผม", massage: "นวด" },
+  ms: { restaurant: "Restoran", cafe: "Kafe", beauty: "Salun kecantikan", dentist: "Doktor gigi", lawyer: "Peguam", car_repair: "Bengkel kereta", gym: "Gimnasium", hotel: "Hotel", real_estate: "Hartanah", pharmacy: "Farmasi", clinic: "Klinik", travel: "Agensi pelancongan", jewelry: "Kedai emas", bakery: "Kedai roti", accountant: "Akauntan", veterinary: "Veterinar", plumber: "Tukang paip", electrician: "Juruelektrik", architect: "Arkitek", hairdresser: "Pendandan rambut", massage: "Urut" },
+  id: { restaurant: "Restoran", cafe: "Kafe", beauty: "Salon kecantikan", dentist: "Dokter gigi", lawyer: "Pengacara", car_repair: "Bengkel mobil", gym: "Gym", hotel: "Hotel", real_estate: "Properti", pharmacy: "Apotek", clinic: "Klinik", travel: "Agen perjalanan", jewelry: "Toko perhiasan", bakery: "Toko roti", accountant: "Akuntan", veterinary: "Dokter hewan", plumber: "Tukang ledeng", electrician: "Tukang listrik", architect: "Arsitek", hairdresser: "Penata rambut", massage: "Pijat" },
+  tl: { restaurant: "Restawran", cafe: "Cafe", beauty: "Beauty salon", dentist: "Dentista", lawyer: "Abogado", car_repair: "Talyer ng sasakyan", gym: "Gym", hotel: "Hotel", real_estate: "Real estate", pharmacy: "Botika", clinic: "Klinika", travel: "Travel agency", jewelry: "Alahas", bakery: "Panaderya", accountant: "Accountant", veterinary: "Beterinaryo", plumber: "Tubero", electrician: "Elektrisyan", architect: "Arkitekto", hairdresser: "Parlor", massage: "Masahe" },
+};
+
+export interface NicheChip {
+  token: string; // canonical KEYWORD_MAP key sent to search
+  local: string; // label in the country's language
+  label: string; // translation in the active UI locale
+}
+
+// Build the niche chips for a country: local-language name + UI-locale
+// translation, while the search token stays canonical so leads still resolve.
+export function nicheChipsForCountry(code: string, locale: "ua" | "en" | "ru"): NicheChip[] {
+  const tokens = nichesForCountry(code);
+  const lang = COUNTRY_LANG[code?.toLowerCase()] ?? "en";
+  const localMap = NICHE_LOCAL[lang] ?? NICHE_LOCAL.en;
+  return tokens.map((token) => {
+    const tr = NICHE_TRANSLATIONS[token];
+    const fallback = token.replace(/_/g, " ");
+    return {
+      token,
+      local: localMap[token] ?? tr?.en ?? fallback,
+      label: tr?.[locale] ?? fallback,
+    };
+  });
 }
 
 // Sorted (UA alphabet) at module load so the dropdown is alphabetical.

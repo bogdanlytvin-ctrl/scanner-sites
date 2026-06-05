@@ -31,7 +31,7 @@ import {
 import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
 import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
 import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
-import { COUNTRIES, flagEmoji, nichesForCountry } from "@/lib/countries";
+import { COUNTRIES, flagEmoji, nicheChipsForCountry } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
   calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting,
@@ -934,10 +934,16 @@ export default function Home() {
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5 items-center">
               <span className="text-[10px] text-muted-foreground">{flagEmoji(country)} {t.quickKeywords}</span>
-              {nichesForCountry(country).map((kw) => (
-                <button key={kw} onClick={() => setQuery(kw)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
-                  className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">{kw.replace(/_/g, " ")}</button>
-              ))}
+              {nicheChipsForCountry(country, locale).map((chip) => {
+                const showTr = chip.label.toLowerCase() !== chip.local.toLowerCase();
+                return (
+                  <button key={chip.token} onClick={() => setQuery(chip.token)} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
+                    title={chip.label}
+                    className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">
+                    {chip.local}{showTr && <span className="text-muted-foreground"> · {chip.label}</span>}
+                  </button>
+                );
+              })}
             </div>
             {errorMessage && (
               <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 rounded-lg p-2.5">
