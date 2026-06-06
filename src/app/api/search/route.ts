@@ -14,10 +14,11 @@ export async function POST(request: NextRequest) {
       );
     }
     const body = await request.json();
-    const { city, query, maxResults = 20, radius = 10, lat, lng, displayName } = body;
+    const { city, query, maxResults = 20, radius = 10, lat, lng, displayName, country } = body;
 
     const trimmedCity = String(city || "").trim();
     const trimmedQuery = String(query || "").trim();
+    const trimmedCountry = String(country || "").trim().toLowerCase();
 
     if (!trimmedCity || !trimmedQuery) {
       return NextResponse.json(
@@ -36,11 +37,11 @@ export async function POST(request: NextRequest) {
 
     const geo = hasCoords
       ? { lat: numLat, lng: numLng, displayName: String(displayName || trimmedCity) }
-      : await geocodeCity(trimmedCity);
+      : await geocodeCity(trimmedCity, trimmedCountry);
 
     const results = hasCoords
       ? await searchOverpassAt(numLat, numLng, trimmedQuery, parsedMax, parsedRadius)
-      : await searchOverpass(trimmedCity, trimmedQuery, parsedMax, parsedRadius);
+      : await searchOverpass(trimmedCity, trimmedQuery, parsedMax, parsedRadius, trimmedCountry);
 
     const businesses = results.slice(0, parsedMax).map((r) => ({
       name: r.name,

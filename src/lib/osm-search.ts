@@ -820,8 +820,9 @@ function dubaiDistrictQuery(city: string): string | null {
   return canonical ? `${canonical}, Dubai, United Arab Emirates` : null;
 }
 
-export async function geocodeCity(city: string): Promise<GeoCoords> {
-  const cacheKey = city.toLowerCase().trim();
+export async function geocodeCity(city: string, countryCode?: string): Promise<GeoCoords> {
+  const cc = (countryCode || "").toLowerCase().trim();
+  const cacheKey = `${cc}|${city.toLowerCase().trim()}`;
   const cached = geoCache.get(cacheKey);
   if (cached && Date.now() - (cached as any)._ts < GEO_CACHE_TTL) {
     return cached;
@@ -833,7 +834,10 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
   const isCyrillicQuery = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
 
   let coords: GeoCoords | null;
-  if (isCyrillicQuery) {
+  // The UA-preferring Cyrillic heuristic only applies when no explicit country
+  // is selected (or it's Ukraine). With any other country picked, fall through
+  // to the country-scoped path so e.g. Cyrillic "Москва"+RU resolves correctly.
+  if (isCyrillicQuery && (!cc || cc === "ua")) {
     // Cyrillic: prefer Ukraine. Photon first; its settlement scoring (UA bonus +
     // major-oblast bonus) resolves major Ukrainian cities to the real centre.
     coords = await geocodePhoton(geoQuery);
@@ -864,24 +868,24 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
     // of Warszawa, Poland). Nominatim ranks by importance globally, so prefer
     // its settlement; fall back to Photon if Nominatim is unavailable.
     const [photon, nominatim] = await Promise.all([
-      geocodePhoton(geoQuery),
-      geocodeNominatim(geoQuery, false),
+      geocodePhoton(geoQuery, cc),
+      geocodeNominatim(geoQuery, false, cc),
     ]);
     coords = nominatim || photon;
   }
 
   // Second attempt: append "місто" (Ukrainian for "city") to prioritize city results
   if (!coords) {
-    coords = await geocodePhoton(`${geoQuery} місто`);
+    coords = await geocodePhoton(`${geoQuery} місто`, cc);
     if (!coords) {
-      coords = await geocodeNominatim(`${geoQuery} місто`);
+      coords = await geocodeNominatim(`${geoQuery} місто`, true, cc);
     }
   }
 
   // Final pass: global Nominatim with no country restriction so a Cyrillic-named
   // city outside Ukraine (Алматы, София, Белград…) still resolves.
   if (!coords) {
-    coords = await geocodeNominatim(geoQuery, false);
+    coords = await geocodeNominatim(geoQuery, false, cc);
   }
 
   if (!coords) {
@@ -899,7 +903,7 @@ export async function geocodeCity(city: string): Promise<GeoCoords> {
   return coords;
 }
 
-async function geocodePhoton(city: string): Promise<GeoCoords | null> {
+async function geocodePhoton(city: string, countryCode?: string): Promise<GeoCoords | null> {
   try {
     // Request multiple results so we can filter for city/settlement types
     const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=10`;
@@ -952,6 +956,7 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
 
     // Detect if query is in Cyrillic → prefer Ukrainian results
     const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
+    const wantCC = (countryCode || "").toUpperCase();
 
     // Score and sort results
     const scored = features.map((f: any) => {
@@ -964,6 +969,10 @@ async function geocodePhoton(city: string): Promise<GeoCoords | null> {
       if (excludedTypes.has(osmType)) return { feature: f, score: -999 };
 
       let score = typePriority[osmType] || 0;
+
+      // When the UI passed the selected country, strongly prefer that country so
+      // omonyms abroad never win (e.g. London → London, Ontario when country=GB).
+      if (wantCC) score += country === wantCC ? 50 : -50;
 
       // Bonus for Cyrillic query → prefer UA results
       if (isCyrillic && country === "UA") score += 20;
@@ -1019,7 +1028,7 @@ function geoCore(s: string): string {
     .trim();
 }
 
-async function geocodeNominatim(city: string, restrictToUA: boolean = true): Promise<GeoCoords | null> {
+async function geocodeNominatim(city: string, restrictToUA: boolean = true, countryCode?: string): Promise<GeoCoords | null> {
   try {
     // Detect Cyrillic for language/country preference
     const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
@@ -1028,9 +1037,14 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true): Pro
     // Request more results for better filtering
     let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=10&accept-language=${lang}`;
 
-    // For Cyrillic queries, prefer Ukraine — but only when restrictToUA is set.
-    // The final geocode pass clears this so cities in any country still resolve.
-    if (isCyrillic && restrictToUA) {
+    // Explicit country (from the UI selector) wins: scope to it so the right
+    // country's city is returned. Otherwise, for Cyrillic queries, prefer Ukraine
+    // when restrictToUA is set (the final geocode pass clears this so cities in
+    // any country still resolve).
+    const cc = (countryCode || "").toLowerCase().trim();
+    if (cc) {
+      url += `&countrycodes=${encodeURIComponent(cc)}`;
+    } else if (isCyrillic && restrictToUA) {
       url += `&countrycodes=ua`;
     }
 
@@ -1150,10 +1164,11 @@ export async function searchOverpass(
   city: string,
   keyword: string,
   maxResults: number = 20,
-  radiusKm: number = 10
+  radiusKm: number = 10,
+  countryCode?: string
 ): Promise<OSMResult[]> {
   // Step 1: Geocode city, then delegate to the coordinate-based search.
-  const coords = await geocodeCity(city);
+  const coords = await geocodeCity(city, countryCode);
   return searchOverpassAt(coords.lat, coords.lng, keyword, maxResults, radiusKm);
 }
 

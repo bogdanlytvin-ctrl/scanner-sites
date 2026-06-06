@@ -409,7 +409,7 @@ export default function Home() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            city: currentCity, query: q,
+            city: currentCity, query: q, country,
             maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10,
             ...(useCoords ? { lat: sel!.lat, lng: sel!.lng, displayName: sel!.displayName } : {}),
           }),
