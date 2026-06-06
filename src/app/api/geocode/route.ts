@@ -14,11 +14,36 @@ interface CityHit {
   lat: number;
   lng: number;
   country: string;
+  type: string;
+  importance: number;
 }
 
 const PLACE_TYPES = new Set([
   "city", "town", "village", "municipality", "borough", "hamlet", "suburb",
 ]);
+
+// Lower = more important settlement. Used so a big city always ranks above a
+// same-named village/hamlet in the autocomplete (e.g. Львів-the-city must beat
+// the village "Львів" in Dnipro oblast).
+const TYPE_RANK: Record<string, number> = {
+  city: 0, municipality: 1, town: 2, borough: 3, suburb: 4, village: 5, hamlet: 6,
+};
+
+function rankHits(hits: CityHit[], q: string): CityHit[] {
+  const nq = q.toLowerCase().trim();
+  return hits.slice().sort((a, b) => {
+    // Exact name matches first (a typed full city name should surface its match).
+    const ax = a.name.toLowerCase() === nq ? 0 : 1;
+    const bx = b.name.toLowerCase() === nq ? 0 : 1;
+    if (ax !== bx) return ax - bx;
+    // Then by settlement weight: city > town > … > hamlet.
+    const at = TYPE_RANK[a.type] ?? 9;
+    const bt = TYPE_RANK[b.type] ?? 9;
+    if (at !== bt) return at - bt;
+    // Finally by provider importance (Nominatim) — bigger place wins ties.
+    return b.importance - a.importance;
+  });
+}
 
 async function fromPhoton(q: string, country: string): Promise<CityHit[]> {
   const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=15&osm_tag=place`;
@@ -47,6 +72,8 @@ async function fromPhoton(q: string, country: string): Promise<CityHit[]> {
       lat: coords[1],
       lng: coords[0],
       country: cc,
+      type,
+      importance: 0,
     });
   }
   return hits;
@@ -78,6 +105,8 @@ async function fromNominatim(q: string, country: string): Promise<CityHit[]> {
       lat,
       lng,
       country: (r.address?.country_code || country || "").toLowerCase(),
+      type: type === "administrative" ? "city" : type,
+      importance: typeof r.importance === "number" ? r.importance : 0,
     });
   }
   return hits;
@@ -117,7 +146,7 @@ export async function GET(request: NextRequest) {
     if (hits.length === 0) {
       hits = await fromNominatim(q, country);
     }
-    return NextResponse.json({ cities: dedupe(hits) });
+    return NextResponse.json({ cities: dedupe(rankHits(hits, q)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "geocode error";
     console.error("[Geocode API] Error:", message);
