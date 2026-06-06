@@ -188,7 +188,7 @@ function detectTechnologies(
   if (server.includes("apache")) techs.push("Apache");
   if (server.includes("litespeed")) techs.push("LiteSpeed");
   if (server.includes("microsoft-iis") || server.includes("iis")) techs.push("IIS");
-  if (server.includes("cloudflare") || headers["cf-ray"]) techs.push("Cloudflare");
+  if (server.includes("cloudflare")) techs.push("Cloudflare");
   if (poweredBy.includes("php") || /php/i.test(server)) techs.push("PHP");
   if (poweredBy.includes("asp.net")) techs.push("ASP.NET");
   if (poweredBy.includes("express")) techs.push("Express");
@@ -231,7 +231,7 @@ function detectTechnologies(
   if (/sites\/(?:all|default)\/(?:themes|modules|files)|drupal\.settings|data-drupal|drupal\.js/i.test(html)) techs.push("Drupal");
   if (/webflow\.com|wf-/i.test(html) && /webflow/i.test(html)) techs.push("Webflow");
   if (/static\d?\.squarespace\.com|squarespace\.com\/(?:universal|static)/i.test(html)) techs.push("Squarespace");
-  if (/\/assets\/components\/|modx/i.test(html) && /modx/i.test(html)) techs.push("MODX");
+  if (/\/assets\/(?:components|snippets)\/|MODX\.config|class="modx-/i.test(html)) techs.push("MODX");
   // JS frameworks — anchored markers, not bare framework names
   if (/__next|\/_next\/static/i.test(html)) techs.push("Next.js");
   if (/__nuxt|\/_nuxt\//i.test(html)) techs.push("Nuxt");
