@@ -30,6 +30,8 @@ export async function POST(request: NextRequest) {
         designNotes: [],
         pageTitle: "",
         hasContactForm: false,
+        hasMetaDescription: false,
+        hasOpenGraph: false,
         securityIssues: [],
         skipped: true,
       });
@@ -47,6 +49,8 @@ export async function POST(request: NextRequest) {
       designNotes: result.designNotes,
       pageTitle: result.pageTitle,
       hasContactForm: result.hasContactForm,
+      hasMetaDescription: result.hasMetaDescription,
+      hasOpenGraph: result.hasOpenGraph,
       securityIssues: result.securityIssues,
       analysisLimited: result.analysisLimited,
     });

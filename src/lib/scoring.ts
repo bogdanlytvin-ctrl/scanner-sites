@@ -29,6 +29,10 @@ export interface LeadBusiness {
   securityIssues: string[];
   pageTitle: string;
   hasContactForm: boolean;
+  // Real DOM-derived SEO facts (non-empty meta description / any og:* tags).
+  // Optional so older saved leads without these fields still type-check.
+  hasMetaDescription?: boolean;
+  hasOpenGraph?: boolean;
   // True when the page is JS-rendered/blocked and we only saw an empty shell —
   // DOM-derived verdicts (old design, no form, not mobile) are unreliable here.
   analysisLimited?: boolean;
@@ -82,12 +86,16 @@ function hasManyInlineStyles(designNotes: string[]): boolean {
   );
 }
 
-function hasSeoMetaTags(pageTitle: string, designNotes: string[]): boolean {
-  // If there's a meaningful page title, likely has meta tags
-  if (pageTitle && pageTitle.length > 3) return true;
-  // Check design notes for SEO-related notes
-  const seoNote = designNotes.find((n) => /meta|seo|description|keywords/i.test(n));
-  if (seoNote) return true;
+function hasSeoMetaTags(lead: LeadBusiness): boolean {
+  // Real SEO presence = an actual meta description OR Open Graph tags. A <title>
+  // alone is NOT SEO (almost every page has one), so we no longer infer SEO from
+  // the title length — that made the "no SEO" finding fire essentially never.
+  // Fallback for older leads analysed before these fields existed: trust a
+  // non-empty title only when we have no real SEO signal recorded at all.
+  if (lead.hasMetaDescription || lead.hasOpenGraph) return true;
+  if (lead.hasMetaDescription === undefined && lead.hasOpenGraph === undefined) {
+    return !!(lead.pageTitle && lead.pageTitle.trim().length > 3);
+  }
   return false;
 }
 
@@ -112,8 +120,14 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     });
     totalPoints += 60;
   } else {
+    // When we only saw a JS/blocked shell, DOM-derived signals (copyright, mobile
+    // viewport, contact form, table layout, SEO tags, inline styles, detected tech)
+    // are unreliable — skip those factors so we don't fabricate penalties. SSL and
+    // social links come from headers/OSM data, so they stay reliable.
+    const domReliable = !lead.analysisLimited;
+
     // 2. Copyright year checks (align with HOT_YEAR_THRESHOLD / WARM_YEAR_UPPER)
-    if (lead.copyrightYear !== null) {
+    if (domReliable && lead.copyrightYear !== null) {
       if (lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
         factors.push({
           name: `Застарілий копірайт (${lead.copyrightYear})`,
@@ -134,7 +148,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 3. No mobile viewport
-    if (!lead.isMobileFriendly) {
+    if (domReliable && !lead.isMobileFriendly) {
       factors.push({
         name: "Не мобільний",
         icon: "📱",
@@ -156,7 +170,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 5. Old technology
-    if (hasOldTechnology(lead.technologies)) {
+    if (domReliable && hasOldTechnology(lead.technologies)) {
       const oldTech = lead.technologies.filter((t) =>
         OLD_TECH_PATTERNS.some((p) => t.toLowerCase().includes(p.toLowerCase()))
       );
@@ -170,7 +184,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 6. No contact form
-    if (!lead.hasContactForm) {
+    if (domReliable && !lead.hasContactForm) {
       factors.push({
         name: "Немає форми контакту",
         icon: "📋",
@@ -181,7 +195,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 7. Table-based layout
-    if (hasTableLayout(lead.designNotes)) {
+    if (domReliable && hasTableLayout(lead.designNotes)) {
       factors.push({
         name: "Таблична верстка",
         icon: "📐",
@@ -192,7 +206,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 8. No SEO meta tags
-    if (!hasSeoMetaTags(lead.pageTitle, lead.designNotes)) {
+    if (domReliable && !hasSeoMetaTags(lead)) {
       factors.push({
         name: "Немає SEO мета-тегів",
         icon: "🔍",
@@ -214,7 +228,7 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     }
 
     // 10. Many inline styles
-    if (hasManyInlineStyles(lead.designNotes)) {
+    if (domReliable && hasManyInlineStyles(lead.designNotes)) {
       factors.push({
         name: "Багато вбудованих стилів",
         icon: "🎨",

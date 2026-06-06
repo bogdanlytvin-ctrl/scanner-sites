@@ -219,9 +219,18 @@ export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
           n.toLowerCase().includes("table")
         ));
         break;
-      case "missing-seo":
-        matches = lead.website !== "N/A" && !lead.pageTitle;
+      case "missing-seo": {
+        // Real SEO = a meta description or Open Graph tags (a <title> alone is
+        // not SEO). Fall back to title only for older leads saved before these
+        // fields existed. Mirrors hasSeoMetaTags() in scoring.ts.
+        const seoKnown =
+          lead.hasMetaDescription !== undefined || lead.hasOpenGraph !== undefined;
+        const hasSeo = seoKnown
+          ? !!(lead.hasMetaDescription || lead.hasOpenGraph)
+          : !!lead.pageTitle;
+        matches = lead.website !== "N/A" && !hasSeo;
         break;
+      }
       case "no-social-links":
         matches = !lead.facebook && !lead.instagram && !lead.telegram;
         break;

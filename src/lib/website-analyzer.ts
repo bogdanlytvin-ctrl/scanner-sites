@@ -18,6 +18,10 @@ export interface WebsiteAnalysis {
   designNotes: string[];
   pageTitle: string;
   hasContactForm: boolean;
+  // Real, DOM-derived SEO facts (not guessed from the title): a non-empty
+  // <meta name="description"> and any Open Graph (og:*) tags.
+  hasMetaDescription: boolean;
+  hasOpenGraph: boolean;
   securityIssues: string[]; // real, header-derived security findings (no guesses)
   // True when we could NOT fully read the rendered page (site unreachable, or a
   // JS/SPA shell whose content is rendered client-side). In that case the DOM we
@@ -37,6 +41,8 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     designNotes: [],
     pageTitle: "",
     hasContactForm: false,
+    hasMetaDescription: false,
+    hasOpenGraph: false,
     securityIssues: [],
     analysisLimited: true, // until we successfully read a real HTML body
   };
@@ -126,6 +132,10 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
   // ─── Contact form detection ──────────────────────────────
   const hasContactForm = detectContactForm($);
 
+  // ─── SEO meta facts (real DOM, not guessed from the title) ──
+  const hasMetaDescription = !!($('meta[name="description"]').attr("content") || "").trim();
+  const hasOpenGraph = $('meta[property^="og:"]').length > 0;
+
   // ─── Design scoring ──────────────────────────────────────
   const { score, notes } = scoreDesign({
     copyrightYear,
@@ -152,6 +162,8 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     designNotes,
     pageTitle,
     hasContactForm,
+    hasMetaDescription,
+    hasOpenGraph,
     securityIssues,
     analysisLimited,
   };
