@@ -6,7 +6,39 @@ import { safeFetch } from "./ssrf";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-const TIMEOUT = 10000;
+// Per-attempt timeout, kept tight so retries + the http fallback stay within the
+// route's 30s maxDuration even in the worst case (3 attempts × 8s = 24s).
+const TIMEOUT = 8000;
+const RETRY_BACKOFF_MS = 300;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// safeFetch wrapped with bounded retries. The Worker→origin egress path is
+// occasionally flaky (a datacenter IP can get a transient connection reset /
+// timeout, or a Cloudflare-fronted origin can 5xx one attempt and serve the
+// next), which otherwise turns a perfectly good site into a failed/limited
+// analysis. Retrying on a thrown error OR a transient 5xx recovers those cases.
+async function fetchWithRetry(targetUrl: string, attempts: number): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const resp = await safeFetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT },
+        signal: AbortSignal.timeout(TIMEOUT),
+      });
+      if (resp.status >= 500 && resp.status < 600 && attempt < attempts) {
+        lastErr = new Error(`upstream ${resp.status}`);
+        await sleep(RETRY_BACKOFF_MS);
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) await sleep(RETRY_BACKOFF_MS);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("fetch failed");
+}
 
 export interface WebsiteAnalysis {
   copyrightYear: number | null;
@@ -65,10 +97,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
   };
 
   try {
-    const resp = await safeFetch(url, {
-      headers: { "User-Agent": USER_AGENT },
-      signal: AbortSignal.timeout(TIMEOUT),
-    });
+    const resp = await fetchWithRetry(url, 2);
 
     finalUrl = resp.url || url;
     hasSsl = finalUrl.startsWith("https://");
@@ -84,10 +113,7 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
     // Try HTTP fallback
     try {
       const httpUrl = url.replace("https://", "http://");
-      const resp = await safeFetch(httpUrl, {
-        headers: { "User-Agent": USER_AGENT },
-        signal: AbortSignal.timeout(TIMEOUT),
-      });
+      const resp = await fetchWithRetry(httpUrl, 1);
       finalUrl = resp.url || httpUrl;
       hasSsl = finalUrl.startsWith("https://");
       respHeaders = collectHeaders(resp.headers);
