@@ -10,5 +10,14 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
+  },
+  // Non-secret runtime vars only. Secrets must NOT live here (this file is
+  // committed) — set them out-of-band:
+  //   bunx wrangler secret put GOOGLE_PAGESPEED_API_KEY   (optional: raises PSI
+  //   quota 25 -> 25 000 req/day; the /api/pagespeed route works without it)
+  // DATABASE_URL is intentionally absent: no route imports the Prisma client
+  // (src/lib/db.ts is unused) and a file: SQLite URL cannot run on workerd.
+  "vars": {
+    "NODE_ENV": "production"
   }
 }
