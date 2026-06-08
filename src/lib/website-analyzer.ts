@@ -217,7 +217,11 @@ function detectTechnologies(
     else if (g.includes("elementor")) techs.push("Elementor");
     else if (g.includes("divi")) techs.push("Divi");
     else if (g.includes("wpbakery") || g.includes("visual composer")) techs.push("WPBakery");
-    else if (g) techs.push(generator.split(/[;,\s]/)[0].trim());
+    else if (g.includes("all in one seo") || g.includes("aioseo") || g.includes("yoast") || g.includes("rank math")) techs.push("WordPress");
+    else if (g) {
+      const token = generator.split(/[;,(]/)[0].trim();
+      if (token.length >= 3 && !/^(all|the|and|web|new|site|page|cms|seo)\b/i.test(token)) techs.push(token);
+    }
   }
 
   // ── HTML patterns (anchored to avoid false positives) ──
