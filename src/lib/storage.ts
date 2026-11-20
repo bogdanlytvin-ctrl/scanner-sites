@@ -11,6 +11,8 @@ export interface SearchHistoryEntry {
   query: string;
   maxResults: number;
   radius: number;
+  country?: string;
+  singleCity?: boolean;
   timestamp: number;
   totalResults: number;
 }
@@ -89,25 +91,27 @@ export function getFavorites(): LeadBusiness[] {
   return getFavoritesRaw();
 }
 
-export function toggleFavorite(lead: LeadBusiness): boolean {
-  const favorites = getFavoritesRaw();
-  const existingIdx = favorites.findIndex((f) => f.name === lead.name);
-  if (existingIdx >= 0) {
-    // Remove from favorites
-    favorites.splice(existingIdx, 1);
-    setFavoritesRaw(favorites);
-    return false;
-  } else {
-    // Add to favorites
-    favorites.push(lead);
-    setFavoritesRaw(favorites);
-    return true;
-  }
+type LeadIdentity = Pick<LeadBusiness, "name" | "address" | "phone"> & { osmId?: string };
+
+function addressKey(lead: LeadIdentity): string {
+  return [lead.name, lead.address, lead.phone].map((value) => value?.trim().toLowerCase() ?? "").join("|");
 }
 
-export function isFavorite(leadName: string): boolean {
+export function leadKey(lead: LeadIdentity): string {
+  return lead.osmId || addressKey(lead);
+}
+
+export function matchesFavorite(favorite: LeadIdentity, lead: LeadIdentity): boolean {
+  if (favorite.osmId && lead.osmId) return favorite.osmId === lead.osmId;
+  return addressKey(favorite) === addressKey(lead);
+}
+
+export function toggleFavorite(lead: LeadBusiness): boolean {
   const favorites = getFavoritesRaw();
-  return favorites.some((f) => f.name === leadName);
+  const remaining = favorites.filter((favorite) => !matchesFavorite(favorite, lead));
+  const added = remaining.length === favorites.length;
+  setFavoritesRaw(added ? [...favorites, lead] : remaining);
+  return added;
 }
 
 // ─── Telegram Settings ──────────────────────────────────────

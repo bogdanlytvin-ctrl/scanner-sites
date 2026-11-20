@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getWebsiteEvidence } from "@/lib/scoring";
 import type { LeadBusiness } from "@/lib/scoring";
 import { getIssuesText, estimatePrice } from "@/lib/outreach-templates";
 
@@ -20,10 +21,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (format === "csv") {
-      return generateCSV(leads);
+      return await generateCSV(leads);
     }
 
-    return generateExcel(leads);
+    return await generateExcel(leads);
   } catch (error) {
     console.error("Export API error:", error);
     const message =
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function generateExcel(leads: LeadBusiness[]) {
-  const ExcelJS = await import("exceljs");
+  const { default: ExcelJS } = await import("exceljs");
 
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet("Leads");
@@ -117,6 +118,7 @@ async function generateExcel(leads: LeadBusiness[]) {
 
     const issuesText = getIssuesText(lead);
     const price = estimatePrice(lead);
+    const siteChecked = getWebsiteEvidence(lead) === "checked";
 
     const row = worksheet.addRow([
       idx + 1,
@@ -130,15 +132,15 @@ async function generateExcel(leads: LeadBusiness[]) {
       safe(lead.address),
       safe(lead.openingHours || ""),
       lead.copyrightYear ?? "N/A",
-      lead.isMobileFriendly ? "Yes" : "No",
-      lead.hasSsl ? "Yes" : "No",
+      siteChecked ? (lead.isMobileFriendly ? "Yes" : "No") : "",
+      siteChecked ? (lead.hasSsl ? "Yes" : "No") : "",
       lead.score,
       lead.designScore,
       safe(lead.technologies.join("; ")),
       safe(issuesText.replace(/\n/g, " | ")),
       lead.status || "new",
       safe(lead.notes || ""),
-      `$${price.min}-$${price.max}`,
+      price.max ? `$${price.min}-$${price.max}` : "",
       price.note,
       safe(lead.contactDate || ""),
     ]);
@@ -207,19 +209,20 @@ async function generateCSV(leads: LeadBusiness[]) {
   const rows = leads.map((lead) => {
     const issuesText = getIssuesText(lead);
     const price = estimatePrice(lead);
+    const siteChecked = getWebsiteEvidence(lead) === "checked";
     return [
       lead.name, lead.phone, lead.email || "", lead.website,
       lead.facebook || "", lead.instagram || "", lead.telegram || "",
       lead.address, lead.openingHours || "",
       lead.copyrightYear ?? "",
-      lead.isMobileFriendly ? "Yes" : "No",
-      lead.hasSsl ? "Yes" : "No",
+      siteChecked ? (lead.isMobileFriendly ? "Yes" : "No") : "",
+      siteChecked ? (lead.hasSsl ? "Yes" : "No") : "",
       lead.score, lead.designScore,
       lead.technologies.join("; "),
       issuesText.replace(/\n/g, " | "),
       lead.status || "new",
       lead.notes || "",
-      `$${price.min}-$${price.max}`,
+      price.max ? `$${price.min}-$${price.max}` : "",
       price.note,
       lead.contactDate || "",
     ];

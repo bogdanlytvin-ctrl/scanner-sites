@@ -1,3 +1,4 @@
+import { describeWebsiteEvidence, getWebsiteEvidence, HOT_YEAR_THRESHOLD } from "./scoring";
 import type { LeadBusiness } from "./scoring";
 
 // ─── Problem Library ────────────────────────────────────────
@@ -15,25 +16,10 @@ export interface ProblemType {
 
 const problemLibrary: ProblemType[] = [
   {
-    id: "no-website",
-    icon: "🚫",
-    problem: "Немає вебсайту взагалі",
-    description: "Бізнес не має власного сайту. Клієнти не можуть знайти компанію в інтернеті, що призводить до втрати значної частини потенційних клієнтів.",
-    solution: "Створення сучасного адаптивного сайту з нуля з контактною формою, SEO-оптимізацією та підключенням карт.",
-    benefits: [
-      "Залучення нових клієнтів з Google",
-      "Професійний імідж компанії",
-      "Цілодобова інформація про послуги",
-      "Збільшення довіри клієнтів",
-    ],
-    priceRange: { min: 500, max: 1500 },
-    detectCondition: "website === 'N/A' || !website",
-  },
-  {
     id: "old-design",
     icon: "📅",
-    problem: "Дуже старий дизайн сайту",
-    description: "Сайт має копірайт 2020 року або старіший, що вказує на те, що він не оновлювався понад 5 років. Дизайн виглядає застарілим і непривабливим для сучасних користувачів.",
+    problem: "Давня дата копірайту",
+    description: "На сторінці виявлено копірайт 2020 року або старіший. Фактичний стан дизайну потребує візуальної перевірки.",
     solution: "Повний редизайн сайту з використанням сучасних трендів UI/UX, адаптивної верстки та свіжої палітри кольорів.",
     benefits: [
       "Сучасний та привабливий вигляд",
@@ -47,8 +33,8 @@ const problemLibrary: ProblemType[] = [
   {
     id: "not-mobile-friendly",
     icon: "📱",
-    problem: "Не адаптивний для мобільних",
-    description: "Сайт не має мобільної версії або viewport meta-тегу. Близько 60% користувачів заходять з мобільних пристроїв, і такий сайт їм незручний.",
+    problem: "Мобільна адаптація потребує перевірки",
+    description: "На перевіреній сторінці не виявлено стандартного налаштування ширини екрана для мобільних пристроїв.",
     solution: "Створення повністю адаптивної версії сайту, яка коректно відображається на смартфонах, планшетах та десктопах.",
     benefits: [
       "Комфорт для 60%+ мобільних користувачів",
@@ -62,8 +48,8 @@ const problemLibrary: ProblemType[] = [
   {
     id: "no-ssl",
     icon: "🔒",
-    problem: "Немає SSL сертифікату",
-    description: "Сайт працює по HTTP без SSL. Браузери відображають попередження «Не безпечно», що відлякує відвідувачів та знижує довіру до бізнесу.",
+    problem: "Отримано сторінку через HTTP",
+    description: "Під час перевірки сторінка відкрилась за незашифрованим протоколом HTTP.",
     solution: "Встановлення безкоштовного SSL сертифікату (Let's Encrypt) та налаштування переадресації з HTTP на HTTPS.",
     benefits: [
       "Безпека даних відвідувачів",
@@ -75,25 +61,10 @@ const problemLibrary: ProblemType[] = [
     detectCondition: "!hasSsl && website !== 'N/A'",
   },
   {
-    id: "old-technology",
-    icon: "🔧",
-    problem: "Застаріла технологія (CMS)",
-    description: "Сайт побудований на застарілій платформі: Joomla, Drupal, uCoz або 1C-Bitrix. Ці системи складні в обслуговуванні та мають обмежені можливості.",
-    solution: "Міграція на сучасну платформу (Next.js, Tilda, WordPress або кастомний сайт) зі збереженням контенту та покращеним функціоналом.",
-    benefits: [
-      "Швидша робота сайту",
-      "Простіше обслуговування",
-      "Більше можливостей для розширення",
-      "Краща безпека",
-    ],
-    priceRange: { min: 600, max: 1800 },
-    detectCondition: "technologies includes Joomla|Drupal|uCoz|1C-Bitrix|Bitrix",
-  },
-  {
     id: "no-contact-form",
     icon: "📋",
-    problem: "Немає контактної форми",
-    description: "На сайті відсутня форма для зв'язку. Клієнти не можуть швидко залишити заявку, що знижує конверсію та призводить до втрати лідів.",
+    problem: "Не виявлено форми чи посилання для зв’язку",
+    description: "На перевіреній сторінці не виявлено контактної форми або посилання на розділ зв’язку.",
     solution: "Додавання сучасної контактної форми з валідацією, захистом від спаму та відправкою на email/Telegram.",
     benefits: [
       "Отримання заявок 24/7",
@@ -123,7 +94,7 @@ const problemLibrary: ProblemType[] = [
     id: "missing-seo",
     icon: "🔍",
     problem: "Відсутні SEO meta-теги",
-    description: "Сайт не має мета-опису, Open Graph тегів або інших SEO-елементів. Це суттєво знижує позиції в пошукових системах.",
+    description: "На перевіреній сторінці не знайдено метаопису й тегів Open Graph.",
     solution: "Повний SEO-аудит та впровадження мета-тегів, структурованих даних, Open Graph,sitemap.xml та robots.txt.",
     benefits: [
       "Кращі позиції в Google",
@@ -135,25 +106,10 @@ const problemLibrary: ProblemType[] = [
     detectCondition: "no pageTitle || no meta description",
   },
   {
-    id: "no-social-links",
-    icon: "🔗",
-    problem: "Немає посилань на соцмережі",
-    description: "На сайті відсутні посилання на Facebook, Instagram або Telegram. Це ускладнює клієнтам зв'язок з бізнесом та зменшує аудиторію.",
-    solution: "Додавання блоку з посиланнями на всі соцмережі бізнесу з іконками, розміщеними у футері та контактній секції.",
-    benefits: [
-      "Зручний зв'язок з клієнтами",
-      "Збільшення аудиторії в соцмережах",
-      "Краща довіра до бізнесу",
-      "Додатковий канал залучення клієнтів",
-    ],
-    priceRange: { min: 50, max: 150 },
-    detectCondition: "!facebook && !instagram && !telegram",
-  },
-  {
     id: "slow-inline-styles",
     icon: "🎨",
-    problem: "Повільне завантаження / Inline стилі",
-    description: "Сайт має велику кількість inline-стилів або не використовує сучасні CSS-технології, що призводить до повільного завантаження.",
+    problem: "Ознаки вбудованих стилів",
+    description: "На сторінці є ознаки вбудованих стилів. Швидкість варто виміряти окремо.",
     solution: "Оптимізація CSS, видалення inline-стилів, впровадження lazy loading, стиснення зображень та кешування.",
     benefits: [
       "Швидке завантаження сторінок",
@@ -171,48 +127,24 @@ export function getProblemLibrary(): ProblemType[] {
 }
 
 export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
+  if (getWebsiteEvidence(lead) !== "checked") return [];
   const matched: ProblemType[] = [];
 
-  // When the page was JS-rendered/blocked we only saw an empty shell, so any
-  // verdict derived from the page DOM is unreliable. Don't claim these problems —
-  // it produced false "outdated site / no feedback form" outreach lines.
-  const domDependent = new Set([
-    "old-design",
-    "not-mobile-friendly",
-    "no-contact-form",
-    "table-layout",
-    "missing-seo",
-    "old-technology",
-    "slow-inline-styles",
-  ]);
-
   for (const prob of problemLibrary) {
-    if (lead.analysisLimited && domDependent.has(prob.id)) continue;
-
     let matches = false;
 
     switch (prob.id) {
-      case "no-website":
-        matches = !lead.website || lead.website === "N/A";
-        break;
       case "old-design":
-        matches = !!(lead.copyrightYear && lead.copyrightYear <= 2020);
+        matches = !!(lead.copyrightYear && lead.copyrightYear <= HOT_YEAR_THRESHOLD);
         break;
       case "not-mobile-friendly":
-        matches = lead.website !== "N/A" && !lead.isMobileFriendly;
+        matches = !lead.isMobileFriendly;
         break;
       case "no-ssl":
-        matches = lead.website !== "N/A" && !lead.hasSsl;
+        matches = !lead.hasSsl;
         break;
-      case "old-technology": {
-        const oldTechs = ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"];
-        matches = lead.technologies.some((t) =>
-          oldTechs.some((ot) => t.toLowerCase().includes(ot.toLowerCase()))
-        );
-        break;
-      }
       case "no-contact-form":
-        matches = lead.website !== "N/A" && !lead.hasContactForm;
+        matches = !lead.hasContactForm;
         break;
       case "table-layout":
         matches = !!(lead.designNotes && lead.designNotes.some((n) =>
@@ -228,12 +160,9 @@ export function getProblemsForLead(lead: LeadBusiness): ProblemType[] {
         const hasSeo = seoKnown
           ? !!(lead.hasMetaDescription || lead.hasOpenGraph)
           : !!lead.pageTitle;
-        matches = lead.website !== "N/A" && !hasSeo;
+        matches = !hasSeo;
         break;
       }
-      case "no-social-links":
-        matches = !lead.facebook && !lead.instagram && !lead.telegram;
-        break;
       case "slow-inline-styles":
         matches = !!(lead.designNotes && lead.designNotes.some((n) =>
           n.toLowerCase().includes("inline")
@@ -271,7 +200,7 @@ const templates: OutreachTemplate[] = [
 
 Мене звати Олександр, я веб-розробник та дизайнер з понад 8-річним досвідом створення сучасних сайтів для бізнесу.
 
-Під час аналізу бізнесів у місті {CITY}, я звернув увагу на ваш сайт та виявив кілька аспектів, які можуть впливати на привернення нових клієнтів:
+Я звернув увагу на вашу компанію в місті {CITY}. Можу допомогти з діагностикою та розвитком сайту.
 
 {ISSUES}
 
@@ -298,7 +227,7 @@ Web Design Studio
     tone: "friendly",
     body: `Привіт, команда {BIZ_NAME}! 👋
 
-Я — веб-дизайнер і нещодавно натрапив на ваш сайт. По-перше — ви робите класну справу! Але як фахівець, я помітив кілька речей, які можна покращити:
+Я вебдизайнер і хочу запропонувати коротку консультацію щодо вашої присутності онлайн.
 
 {ISSUES}
 
@@ -327,7 +256,7 @@ Web Design Studio
 
 Я веб-розробник, звернув увагу на {BIZ_NAME} у {CITY}.
 
-Зайшов на ваш сайт і помітив кілька проблем:
+Можу допомогти перевірити, як ваш бізнес представлений онлайн.
 {ISSUES}
 
 Можу допомогти зробити сучасний сайт, який приноситиме нових клієнтів. Безкоштовно зроблю попередній аналіз та покажу ескіз нового дизайну.
@@ -340,7 +269,7 @@ Web Design Studio
     subject: "",
     channel: "messenger",
     tone: "friendly",
-    body: `Привіт! 👋 Я веб-дизайнер, помітив ваш сайт {BIZ_NAME} — є кілька речей для покращення:
+    body: `Привіт! 👋 Я вебдизайнер. Можу запропонувати {BIZ_NAME} консультацію щодо сайту.
 
 {ISSUES}
 
@@ -356,7 +285,7 @@ Web Design Studio
 
 Кілька днів тому я надсилав вам пропозицію щодо оновлення вашого вебсайту. Розумію, що у вас багато справ, тому дозвольте коротко нагадати.
 
-Я виявив наступні проблеми на вашому сайті:
+Ось короткий підсумок попередньої перевірки.
 {ISSUES}
 
 Кожен день із застарілим сайтом — це втрачені клієнти. За даними досліджень, 94% людей формують перше враження про бізнес саме за сайтом.
@@ -372,18 +301,13 @@ Web Design Studio
   },
   {
     id: "urgency-email",
-    name: "Терміновий (немає сайту)",
-    subject: "⚠️ {BIZ_NAME} — ви втрачаєте клієнтів без сайту!",
+    name: "Пропозиція створення сайту",
+    subject: "Пропозиція щодо сайту для {BIZ_NAME}",
     channel: "email",
     tone: "direct",
     body: `Шановне керівництво {BIZ_NAME},
 
-Я шукав послуги у сфері вашого бізнесу в {CITY} і не зміг знайти ваш сайт. Це означає, що ви втрачаєте потенційних клієнтів щодня!
-
-Факти:
-📊 Близько 97% людей шукають бізнес онлайн
-📱 60% пошуків здійснюються з мобільних
-💰 Компанії з сайтом отримують на 67% більше запитів
+Я знайшов інформацію про вашу компанію в {CITY}. Якщо створення або оновлення сайту для вас актуальне, буду радий обговорити завдання.
 
 Я спеціалізуюсь на створенні сайтів для малого та середнього бізнесу. Можу розробити для вас:
 ✅ Сучасний адаптивний сайт
@@ -410,7 +334,7 @@ Web Design Studio`,
 
 Я веб-розробник з {CITY}. Працюю з місцевим бізнесом, допомагаю залучати клієнтів через інтернет.
 
-Проаналізував ваш онлайн-присутність і знайшов точки для росту:
+Маю пропозицію щодо вашої присутності онлайн.
 {ISSUES}
 
 Запропоную конкретні рішення без зайвих слів. Перша консультація — безкоштовна.
@@ -428,7 +352,7 @@ Web Design Studio`,
 
 Бачив {BIZ_NAME} в {CITY} — крутий бізнес!
 
-Зайшов на сайт і подумав, що він заслуговує на краще:
+Можу запропонувати коротку консультацію щодо вашого сайту.
 {ISSUES}
 
 Я веб-розробник — можу допомогти зробити так, щоб сайт працював на вас і приносив нових клієнтів. Показати що може вийти? 🎨`,
@@ -456,19 +380,13 @@ export function fillTemplate(
 }
 
 export function getIssuesText(lead: LeadBusiness): string {
+  const evidence = getWebsiteEvidence(lead);
+  if (evidence !== "checked") return describeWebsiteEvidence(evidence);
+
   const problems = getProblemsForLead(lead);
-  const issues: string[] = [];
+  if (!problems.length) return "На перевіреній сторінці не виявлено типових ознак для покращення.";
 
-  if (problems.length === 0) {
-    issues.push("✅ Сайт виглядає сучасним, але є можливості для покращення SEO та конверсії");
-    return issues.join("\n");
-  }
-
-  for (const prob of problems) {
-    issues.push(`${prob.icon} ${prob.problem} — ${prob.description.split(".")[0]}.`);
-  }
-
-  return issues.join("\n");
+  return problems.map((prob) => `${prob.icon} ${prob.problem} — ${prob.description}`).join("\n");
 }
 
 export function estimatePrice(lead: LeadBusiness): {
@@ -477,23 +395,13 @@ export function estimatePrice(lead: LeadBusiness): {
   currency: string;
   note: string;
 } {
-  // No website at all
-  if (!lead.website || lead.website === "N/A") {
-    return {
-      min: 500,
-      max: 1500,
-      currency: "$",
-      note: "Створення сайту з нуля",
-    };
+  const evidence = getWebsiteEvidence(lead);
+  if (evidence !== "checked") {
+    return { min: 0, max: 0, currency: "$", note: "Потрібна перевірка перед оцінкою" };
   }
 
   const hasAncientDesign = lead.designScore === "ancient";
   const hasNoMobile = !lead.isMobileFriendly;
-  const hasOldTech = lead.technologies.some((t) =>
-    ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"].some((ot) =>
-      t.toLowerCase().includes(ot.toLowerCase())
-    )
-  );
   const hasOutdatedDesign = lead.designScore === "outdated";
 
   // Ancient + no mobile = full redesign
@@ -506,13 +414,13 @@ export function estimatePrice(lead: LeadBusiness): {
     };
   }
 
-  // Ancient design or old tech
-  if (hasAncientDesign || hasOldTech) {
+  // Ancient design
+  if (hasAncientDesign) {
     return {
       min: 600,
       max: 1800,
       currency: "$",
-      note: "Повний редизайн + міграція технологій",
+      note: "Редизайн сайту",
     };
   }
 

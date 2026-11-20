@@ -3,6 +3,16 @@ export type Locale = "ua" | "en" | "ru";
 export interface Translations {
   // Header
   appTitle: string;
+  workspaceTitle: string;
+  workspaceHint: string;
+  quickSearch: string;
+  clearQuery: string;
+  resultsTitle: string;
+  businessColumn: string;
+  websiteColumn: string;
+  priorityColumn: string;
+  analysisLimitedLabel: string;
+  countryLabel: string;
   appSubtitle: string;
   // Search form
   cityLabel: string;
@@ -50,8 +60,6 @@ export interface Translations {
   email: string;
   address: string;
   website: string;
-  noSiteTopProspect: string;
-  noSiteBestProspect: string;
   // Outreach
   writeToOwner: string;
   copyEmail: string;
@@ -161,14 +169,24 @@ export interface Translations {
 
 const ua: Translations = {
   appTitle: "Lead Finder",
+  workspaceTitle: "Пошук клієнтів",
+  workspaceHint: "Знайдіть бізнеси за містом і нішею та перевірте їхні сайти.",
+  quickSearch: "Пошук одним рядком",
+  clearQuery: "Очистити запит",
+  resultsTitle: "Результати",
+  businessColumn: "Компанія",
+  websiteColumn: "Сайт",
+  priorityColumn: "Пріоритет",
+  analysisLimitedLabel: "Аналіз обмежено",
+  countryLabel: "Країна",
   appSubtitle: "Платформа лідогенерації • Глобальний пошук • Скріншоти • Розсилка",
-  cityLabel: "🏙️ Місто (можна декілька)",
+  cityLabel: "Місто (можна декілька)",
   cityPlaceholder: "Дніпро, Kyiv, Львів, London...",
-  nicheLabel: "🎯 Ніша",
+  nicheLabel: "Ніша",
   nichePlaceholder: "юрист, dentist...",
-  countLabel: "📊 Кількість",
-  radiusLabel: "📍 Радіус",
-  searchButton: "Знайти ліди",
+  countLabel: "Кількість",
+  radiusLabel: "Радіус",
+  searchButton: "Знайти бізнеси",
   searching: "Пошук...",
   analyzing: "Аналіз сайтів...",
   quickKeywords: "Швидко:",
@@ -184,11 +202,11 @@ const ua: Translations = {
   cold: "COLD",
   new: "NEW",
   totalLeads: "Всього лідів",
-  veryOldSites: "🏚️ Дуже старі сайти",
-  notMobile: "📱 Не мобільні",
-  noSsl: "🔒 Без SSL",
-  noWebsite: "🚫 Немає сайту",
-  avgEstimate: "💰 Сер. оцінка",
+  veryOldSites: "Дуже старі сайти",
+  notMobile: "Не мобільні",
+  noSsl: "Без SSL",
+  noWebsite: "Сайт не вказано",
+  avgEstimate: "Сер. оцінка",
   filteredLeads: "лідів відфільтровано",
   readyToContact: "Готові до контакту",
   desktop: "Десктоп",
@@ -203,8 +221,6 @@ const ua: Translations = {
   email: "Email",
   address: "Адреса",
   website: "Сайт",
-  noSiteTopProspect: "⚠️ Немає сайту — топ prospect!",
-  noSiteBestProspect: "🚫 Немає сайту — найкращий prospect!",
   writeToOwner: "Написати власнику",
   copyEmail: "Скопіювати Email",
   openTelegram: "Відкрити Telegram",
@@ -267,8 +283,8 @@ const ua: Translations = {
   exportError: "Помилка експорту",
   historyCleared: "Історію очищено",
   footer: "Lead Finder • Безкоштовна лідогенерація • OpenStreetMap + thum.io",
-  emptyTitle: "Знайдіть та перегляньте сайти конкурентів",
-  emptyDescription: "Скріншоти сайтів, аналіз дизайну, контакти, соцмережі. Все що потрібно для пошуку клієнтів. Підтримка пошуку в декількох містах.",
+  emptyTitle: "Тут з’являться результати",
+  emptyDescription: "Виберіть місто й нішу або введіть запит «стоматології у Львові».",
   advanced: "Розширений",
   foundLocations: "Знайдені локації",
   notAvailable: "Немає",
@@ -303,13 +319,23 @@ const ua: Translations = {
 
 const en: Translations = {
   appTitle: "Lead Finder",
+  workspaceTitle: "Find clients",
+  workspaceHint: "Find businesses by city and category and review their websites.",
+  quickSearch: "Quick search",
+  clearQuery: "Clear query",
+  resultsTitle: "Results",
+  businessColumn: "Business",
+  websiteColumn: "Website",
+  priorityColumn: "Priority",
+  analysisLimitedLabel: "Limited analysis",
+  countryLabel: "Country",
   appSubtitle: "Lead Generation Platform • Global Search • Screenshots • Outreach",
-  cityLabel: "🏙️ City (multiple allowed)",
+  cityLabel: "City (multiple allowed)",
   cityPlaceholder: "Dnipro, Kyiv, London, NYC...",
-  nicheLabel: "🎯 Niche",
+  nicheLabel: "Category",
   nichePlaceholder: "lawyer, dentist...",
-  countLabel: "📊 Count",
-  radiusLabel: "📍 Radius",
+  countLabel: "Count",
+  radiusLabel: "Radius",
   searchButton: "Find Leads",
   searching: "Searching...",
   analyzing: "Analyzing sites...",
@@ -326,10 +352,10 @@ const en: Translations = {
   cold: "COLD",
   new: "NEW",
   totalLeads: "Total leads",
-  veryOldSites: "🏚️ Very old sites",
-  notMobile: "📱 Not mobile",
-  noSsl: "🔒 No SSL",
-  noWebsite: "🚫 No website",
+  veryOldSites: "Very old sites",
+  notMobile: "Not mobile",
+  noSsl: "No SSL",
+  noWebsite: "Website not listed",
   avgEstimate: "💰 Avg. estimate",
   filteredLeads: "leads filtered",
   readyToContact: "Ready to contact",
@@ -345,8 +371,6 @@ const en: Translations = {
   email: "Email",
   address: "Address",
   website: "Website",
-  noSiteTopProspect: "⚠️ No website — top prospect!",
-  noSiteBestProspect: "🚫 No website — best prospect!",
   writeToOwner: "Write to owner",
   copyEmail: "Copy Email",
   openTelegram: "Open Telegram",
@@ -409,8 +433,8 @@ const en: Translations = {
   exportError: "Export error",
   historyCleared: "History cleared",
   footer: "Lead Finder • Free Lead Generation • OpenStreetMap + thum.io",
-  emptyTitle: "Find and review competitor sites",
-  emptyDescription: "Site screenshots, design analysis, contacts, social media. Everything you need for lead generation. Multi-city search support.",
+  emptyTitle: "Results appear here",
+  emptyDescription: "Choose a city and category or enter a search like “dentists in Kyiv”.",
   advanced: "Advanced",
   foundLocations: "Found locations",
   notAvailable: "N/A",
@@ -445,13 +469,23 @@ const en: Translations = {
 
 const ru: Translations = {
   appTitle: "Lead Finder",
+  workspaceTitle: "Поиск клиентов",
+  workspaceHint: "Найдите компании по городу и нише и проверьте их сайты.",
+  quickSearch: "Поиск одной строкой",
+  clearQuery: "Очистить запрос",
+  resultsTitle: "Результаты",
+  businessColumn: "Компания",
+  websiteColumn: "Сайт",
+  priorityColumn: "Приоритет",
+  analysisLimitedLabel: "Анализ ограничен",
+  countryLabel: "Страна",
   appSubtitle: "Платформа лидогенерации • Глобальный поиск • Скриншоты • Рассылка",
-  cityLabel: "🏙️ Город (можно несколько)",
+  cityLabel: "Город (можно несколько)",
   cityPlaceholder: "Днепр, Kyiv, London, NYC...",
-  nicheLabel: "🎯 Ниша",
+  nicheLabel: "Ниша",
   nichePlaceholder: "юрист, dentist...",
-  countLabel: "📊 Количество",
-  radiusLabel: "📍 Радиус",
+  countLabel: "Количество",
+  radiusLabel: "Радиус",
   searchButton: "Найти лиды",
   searching: "Поиск...",
   analyzing: "Анализ сайтов...",
@@ -468,11 +502,11 @@ const ru: Translations = {
   cold: "COLD",
   new: "NEW",
   totalLeads: "Всего лидов",
-  veryOldSites: "🏚️ Очень старые сайты",
-  notMobile: "📱 Не мобильные",
-  noSsl: "🔒 Без SSL",
-  noWebsite: "🚫 Нет сайта",
-  avgEstimate: "💰 Ср. оценка",
+  veryOldSites: "Очень старые сайты",
+  notMobile: "Не мобильные",
+  noSsl: "Без SSL",
+  noWebsite: "Сайт не указан",
+  avgEstimate: "Ср. оценка",
   filteredLeads: "лидов отфильтровано",
   readyToContact: "Готовы к контакту",
   desktop: "Десктоп",
@@ -487,8 +521,6 @@ const ru: Translations = {
   email: "Email",
   address: "Адрес",
   website: "Сайт",
-  noSiteTopProspect: "⚠️ Нет сайта — топ перспектив!",
-  noSiteBestProspect: "🚫 Нет сайта — лучшая перспектива!",
   writeToOwner: "Написать владельцу",
   copyEmail: "Скопировать Email",
   openTelegram: "Открыть Telegram",
@@ -551,8 +583,8 @@ const ru: Translations = {
   exportError: "Ошибка экспорта",
   historyCleared: "История очищена",
   footer: "Lead Finder • Бесплатная лидогенерация • OpenStreetMap + thum.io",
-  emptyTitle: "Найдите и просмотрите сайты конкурентов",
-  emptyDescription: "Скриншоты сайтов, анализ дизайна, контакты, соцсети. Всё что нужно для поиска клиентов. Поддержка поиска в нескольких городах.",
+  emptyTitle: "Здесь появятся результаты",
+  emptyDescription: "Выберите город и нишу или введите запрос «стоматологии в Киеве».",
   advanced: "Расширенный",
   foundLocations: "Найденные локации",
   notAvailable: "Нет",

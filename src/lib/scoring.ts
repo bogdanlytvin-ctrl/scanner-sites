@@ -6,6 +6,7 @@ export const HOT_YEAR_THRESHOLD = 2020;
 export const WARM_YEAR_UPPER = 2023;
 
 export interface LeadBusiness {
+  osmId?: string;
   name: string;
   phone: string;
   website: string;
@@ -44,6 +45,19 @@ export interface LeadBusiness {
   contactDate: string | null;
 }
 
+export function getWebsiteEvidence(
+  lead: Pick<LeadBusiness, "website" | "analysisLimited">
+): "not-listed" | "limited" | "checked" {
+  if (!lead.website || lead.website === "N/A") return "not-listed";
+  return lead.analysisLimited ? "limited" : "checked";
+}
+
+export function describeWebsiteEvidence(evidence: "not-listed" | "limited"): string {
+  return evidence === "not-listed"
+    ? "Сайт не вказано в даних карти. Перевірте, чи компанія має власний сайт."
+    : "Не вдалося повністю перевірити сайт. Ознаки сайту потребують ручної перевірки.";
+}
+
 // ─── Detailed scoring types ──────────────────────────────────
 
 export interface ScoreFactor {
@@ -59,19 +73,6 @@ export interface ScoreBreakdown {
   factors: ScoreFactor[];
   totalEstimatedValue: { min: number; max: number; currency: string };
   opportunityText: string; // Ukrainian text explaining opportunity
-}
-
-// ─── Helper: detect old technologies ─────────────────────────
-
-const OLD_TECH_PATTERNS = [
-  "joomla", "drupal", "ucoz", "uCoz", "1c-bitrix", "bitrix",
-  "modx", "wordpress", "phpnuke", "joomla!",
-];
-
-function hasOldTechnology(technologies: string[]): boolean {
-  return technologies.some((t) =>
-    OLD_TECH_PATTERNS.some((pattern) => t.toLowerCase().includes(pattern.toLowerCase()))
-  );
 }
 
 function hasTableLayout(designNotes: string[]): boolean {
@@ -99,144 +100,108 @@ function hasSeoMetaTags(lead: LeadBusiness): boolean {
   return false;
 }
 
-function hasSocialLinks(lead: LeadBusiness): boolean {
-  return !!(lead.facebook || lead.instagram || lead.telegram);
-}
-
 // ─── Calculate detailed lead score ──────────────────────────
 
 export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
+  const evidence = getWebsiteEvidence(lead);
+  if (evidence !== "checked") {
+    return {
+      score: 0,
+      rating: "WARM",
+      factors: [],
+      totalEstimatedValue: { min: 0, max: 0, currency: "$" },
+      opportunityText: describeWebsiteEvidence(evidence),
+    };
+  }
+
   const factors: ScoreFactor[] = [];
   let totalPoints = 0;
 
-  // 1. No website at all
-  const noWebsite = !lead.website || lead.website === "N/A";
-  if (noWebsite) {
-    factors.push({
-      name: "Немає вебсайту",
-      icon: "🚫",
-      points: 60,
-      severity: "critical",
-    });
-    totalPoints += 60;
-  } else {
-    // When we only saw a JS/blocked shell, DOM-derived signals (copyright, mobile
-    // viewport, contact form, table layout, SEO tags, inline styles, detected tech)
-    // are unreliable — skip those factors so we don't fabricate penalties. SSL and
-    // social links come from headers/OSM data, so they stay reliable.
-    const domReliable = !lead.analysisLimited;
-
-    // 2. Copyright year checks (align with HOT_YEAR_THRESHOLD / WARM_YEAR_UPPER)
-    if (domReliable && lead.copyrightYear !== null) {
-      if (lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
-        factors.push({
-          name: `Застарілий копірайт (${lead.copyrightYear})`,
-          icon: "📅",
-          points: 25,
-          severity: "critical",
-        });
-        totalPoints += 25;
-      } else if (lead.copyrightYear > HOT_YEAR_THRESHOLD && lead.copyrightYear <= WARM_YEAR_UPPER) {
-        factors.push({
-          name: `Старий копірайт (${lead.copyrightYear})`,
-          icon: "📅",
-          points: 15,
-          severity: "warning",
-        });
-        totalPoints += 15;
-      }
-    }
-
-    // 3. No mobile viewport
-    if (domReliable && !lead.isMobileFriendly) {
+  // Copyright year checks (align with HOT_YEAR_THRESHOLD / WARM_YEAR_UPPER)
+  if (lead.copyrightYear !== null) {
+    if (lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
       factors.push({
-        name: "Не мобільний",
-        icon: "📱",
-        points: 20,
+        name: `Застарілий копірайт (${lead.copyrightYear})`,
+        icon: "📅",
+        points: 25,
         severity: "critical",
       });
-      totalPoints += 20;
-    }
-
-    // 4. No SSL
-    if (!lead.hasSsl) {
+      totalPoints += 25;
+    } else if (lead.copyrightYear > HOT_YEAR_THRESHOLD && lead.copyrightYear <= WARM_YEAR_UPPER) {
       factors.push({
-        name: "Немає SSL сертифікату",
-        icon: "🔒",
+        name: `Старий копірайт (${lead.copyrightYear})`,
+        icon: "📅",
         points: 15,
-        severity: "critical",
+        severity: "warning",
       });
       totalPoints += 15;
     }
+  }
 
-    // 5. Old technology
-    if (domReliable && hasOldTechnology(lead.technologies)) {
-      const oldTech = lead.technologies.filter((t) =>
-        OLD_TECH_PATTERNS.some((p) => t.toLowerCase().includes(p.toLowerCase()))
-      );
-      factors.push({
-        name: `Застарілі технології: ${oldTech.join(", ")}`,
-        icon: "🔧",
-        points: 20,
-        severity: "critical",
-      });
-      totalPoints += 20;
-    }
+  // No mobile viewport
+  if (!lead.isMobileFriendly) {
+    factors.push({
+      name: "Не виявлено мобільного viewport",
+      icon: "📱",
+      points: 20,
+      severity: "critical",
+    });
+    totalPoints += 20;
+  }
 
-    // 6. No contact form
-    if (domReliable && !lead.hasContactForm) {
-      factors.push({
-        name: "Немає форми контакту",
-        icon: "📋",
-        points: 10,
-        severity: "warning",
-      });
-      totalPoints += 10;
-    }
+  // No SSL
+  if (!lead.hasSsl) {
+    factors.push({
+      name: "Сторінка відкрилась через HTTP",
+      icon: "🔒",
+      points: 15,
+      severity: "critical",
+    });
+    totalPoints += 15;
+  }
 
-    // 7. Table-based layout
-    if (domReliable && hasTableLayout(lead.designNotes)) {
-      factors.push({
-        name: "Таблична верстка",
-        icon: "📐",
-        points: 10,
-        severity: "warning",
-      });
-      totalPoints += 10;
-    }
+  // No contact form
+  if (!lead.hasContactForm) {
+    factors.push({
+      name: "Не виявлено форми чи посилання для зв’язку",
+      icon: "📋",
+      points: 10,
+      severity: "warning",
+    });
+    totalPoints += 10;
+  }
 
-    // 8. No SEO meta tags
-    if (domReliable && !hasSeoMetaTags(lead)) {
-      factors.push({
-        name: "Немає SEO мета-тегів",
-        icon: "🔍",
-        points: 5,
-        severity: "info",
-      });
-      totalPoints += 5;
-    }
+  // Table-based layout
+  if (hasTableLayout(lead.designNotes)) {
+    factors.push({
+      name: "Таблична верстка",
+      icon: "📐",
+      points: 10,
+      severity: "warning",
+    });
+    totalPoints += 10;
+  }
 
-    // 9. No social links
-    if (!hasSocialLinks(lead)) {
-      factors.push({
-        name: "Немає посилань на соцмережі",
-        icon: "🔗",
-        points: 5,
-        severity: "info",
-      });
-      totalPoints += 5;
-    }
+  // No SEO meta tags
+  if (!hasSeoMetaTags(lead)) {
+    factors.push({
+      name: "Немає SEO мета-тегів",
+      icon: "🔍",
+      points: 5,
+      severity: "info",
+    });
+    totalPoints += 5;
+  }
 
-    // 10. Many inline styles
-    if (domReliable && hasManyInlineStyles(lead.designNotes)) {
-      factors.push({
-        name: "Багато вбудованих стилів",
-        icon: "🎨",
-        points: 5,
-        severity: "info",
-      });
-      totalPoints += 5;
-    }
+  // Many inline styles
+  if (hasManyInlineStyles(lead.designNotes)) {
+    factors.push({
+      name: "Багато вбудованих стилів",
+      icon: "🎨",
+      points: 5,
+      severity: "info",
+    });
+    totalPoints += 5;
   }
 
   // Clamp score 0-100
@@ -292,7 +257,7 @@ function generateOpportunityText(
   const priceRange = `$${estMin}-$${estMax}`;
 
   if (rating === "HOT") {
-    return `Власник потребує повний редизайн або створення сайту з нуля. Оцінена вартість: ${priceRange}. Високий пріоритет контакту.`;
+    return `Знайдені ознаки вказують, що варто обговорити оновлення сайту. Оцінена вартість: ${priceRange}. Високий пріоритет контакту.`;
   }
 
   if (rating === "WARM") {
@@ -303,22 +268,23 @@ function generateOpportunityText(
   }
 
   if (rating === "COLD") {
-    return `Сучасний сайт з мінімальними покращеннями. Можна запропонувати дрібні покращення або підтримку. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
+    return `Перевірка показала небагато ознак для покращення. Можна запропонувати дрібні покращення або підтримку. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
   }
 
   // NEW
-  return `Сучасний сайт в хорошому стані. Можна запропонувати технічну підтримку або розширення. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
+  return `Перевірка не виявила значних ознак для покращення. Можна запропонувати технічну підтримку або розширення. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
 }
 
-// ─── Existing scoring functions (unchanged) ──────────────────
+// ─── Lead priority ──────────────────
 
 export function scoreLead(
   website: string,
   copyrightYear: number | null,
   isMobileFriendly: boolean,
-  hasSsl: boolean = true
+  hasSsl: boolean = true,
+  analysisLimited: boolean = false
 ): LeadScore {
-  if (!website || website === "N/A") return "HOT";
+  if (getWebsiteEvidence({ website, analysisLimited }) !== "checked") return "WARM";
 
   // Count critical issues
   let hotSignals = 0;
@@ -327,8 +293,6 @@ export function scoreLead(
   if (copyrightYear !== null) {
     if (copyrightYear <= HOT_YEAR_THRESHOLD) hotSignals++;
     else if (copyrightYear <= WARM_YEAR_UPPER) warmSignals++;
-  } else {
-    warmSignals++; // unknown copyright year = uncertain quality
   }
 
   if (!isMobileFriendly) hotSignals++;
@@ -435,19 +399,13 @@ export interface WorthinessResult {
 }
 
 export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
+  const evidence = getWebsiteEvidence(lead);
+  if (evidence !== "checked") {
+    return { worth: false, reason: describeWebsiteEvidence(evidence), score: 0 };
+  }
+
   let score = 0;
   const reasons: string[] = [];
-
-  // No website: best prospect
-  if (!lead.website || lead.website === "N/A") {
-    score = 95;
-    reasons.push("Немає сайту — найкращий prospect для створення нового сайту");
-    return {
-      worth: true,
-      reason: reasons.join("; "),
-      score,
-    };
-  }
 
   // Ancient design — "very old" means >= 6 years stale, relative to today so the
   // threshold doesn't drift out of date (and doesn't contradict scoreDesign,
@@ -455,7 +413,7 @@ export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
   const veryOldCutoff = new Date().getFullYear() - 6;
   if (lead.copyrightYear && lead.copyrightYear <= veryOldCutoff) {
     score += 30;
-    reasons.push(`Дуже старий дизайн (© ${lead.copyrightYear})`);
+    reasons.push(`Давня дата копірайту (© ${lead.copyrightYear})`);
   } else if (lead.designScore === "ancient") {
     score += 25;
     reasons.push("Дуже старий дизайн сайту");
@@ -464,26 +422,19 @@ export function isWorthContacting(lead: LeadBusiness): WorthinessResult {
   // No mobile
   if (!lead.isMobileFriendly) {
     score += 20;
-    reasons.push("Не адаптивний для мобільних");
+    reasons.push("Не виявлено мобільного viewport");
   }
 
   // No SSL
   if (!lead.hasSsl) {
     score += 10;
-    reasons.push("Немає SSL сертифікату");
-  }
-
-  // Old technology
-  const oldTechs = ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"];
-  if (lead.technologies.some((t) => oldTechs.some((ot) => t.toLowerCase().includes(ot.toLowerCase())))) {
-    score += 15;
-    reasons.push(`Застаріла технологія: ${lead.technologies.join(", ")}`);
+    reasons.push("Сторінка відкрилась через HTTP");
   }
 
   // No contact form
   if (!lead.hasContactForm) {
     score += 10;
-    reasons.push("Немає контактної форми");
+    reasons.push("Не виявлено форми чи посилання для зв’язку");
   }
 
   // Table-based layout

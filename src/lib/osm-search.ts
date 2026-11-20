@@ -1,7 +1,5 @@
-// OpenStreetMap integration — completely free, no API key needed
-// Uses Nominatim for geocoding + Overpass API for business search
-//
-// Tested endpoints & queries — all verified working
+// OpenStreetMap data via Overpass, with Photon city lookup and Nominatim
+// as a fallback for explicit city searches.
 
 export interface GeoCoords {
   lat: number;
@@ -9,7 +7,13 @@ export interface GeoCoords {
   displayName: string;
 }
 
+export function validCoordinates(lat: unknown, lng: unknown): boolean {
+  return typeof lat === "number" && Number.isFinite(lat) && Math.abs(lat) <= 90
+    && typeof lng === "number" && Number.isFinite(lng) && Math.abs(lng) <= 180;
+}
+
 export interface OSMResult {
+  osmId: string;
   name: string;
   phone: string;
   website: string;
@@ -31,7 +35,7 @@ export interface OSMResult {
 // ─── Overpass endpoints (fallback chain) ────────────────────
 
 const OVERPASS_ENDPOINTS = [
-  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.openstreetmap.ru/api/interpreter",
   "https://overpass.tru.vn.ua/api/interpreter",
@@ -40,12 +44,18 @@ const OVERPASS_ENDPOINTS = [
 
 // ─── Keyword → OSM tag mapping ───────────────────────────────
 
+const PIZZERIAS = ["amenity=restaurant&cuisine=pizza", "amenity=fast_food&cuisine=pizza"];
+const SUSHI_RESTAURANTS = ["amenity=restaurant&cuisine=sushi", "amenity=fast_food&cuisine=sushi"];
+const BURGER_RESTAURANTS = ["amenity=restaurant&cuisine=burger", "amenity=fast_food&cuisine=burger"];
+const DENTISTS = ["amenity=dentist", "healthcare=dentist"];
+
 const KEYWORD_MAP: Record<string, string[]> = {
   // Food & Drink
   restaurant: ["amenity=restaurant"],
   ресторан: ["amenity=restaurant"],
-  pizza: ["amenity=restaurant", "cuisine=pizza"],
-  піцерія: ["amenity=restaurant", "cuisine=pizza"],
+  pizza: PIZZERIAS,
+  піцерія: PIZZERIAS,
+  піца: PIZZERIAS,
   cafe: ["amenity=cafe"],
   café: ["amenity=cafe"],
   кафе: ["amenity=cafe"],
@@ -55,7 +65,8 @@ const KEYWORD_MAP: Record<string, string[]> = {
   пекарня: ["shop=bakery"],
   bar: ["amenity=bar"],
   бар: ["amenity=bar"],
-  sushi: ["amenity=restaurant", "cuisine=sushi"],
+  sushi: SUSHI_RESTAURANTS,
+  суші: SUSHI_RESTAURANTS,
   фастфуд: ["amenity=fast_food"],
   fast_food: ["amenity=fast_food"],
   food: ["amenity=restaurant", "amenity=fast_food", "amenity=cafe"],
@@ -64,8 +75,11 @@ const KEYWORD_MAP: Record<string, string[]> = {
   beer: ["amenity=bar", "microbrewery=yes"],
 
   // Health
-  dentist: ["amenity=dentist"],
-  стоматолог: ["amenity=dentist"],
+  dentist: DENTISTS,
+  стоматолог: DENTISTS,
+  стоматологія: DENTISTS,
+  "стоматологічна клініка": DENTISTS,
+  "стоматологічні клініки": DENTISTS,
   doctor: ["amenity=doctors"],
   лікар: ["amenity=doctors"],
   pharmacy: ["amenity=pharmacy"],
@@ -183,8 +197,8 @@ const KEYWORD_MAP: Record<string, string[]> = {
   їдальня: ["amenity=restaurant"],
   бістро: ["amenity=fast_food"],
   bistro: ["amenity=fast_food"],
-  бургерна: ["amenity=fast_food", "cuisine=burger"],
-  burger: ["amenity=fast_food", "cuisine=burger"],
+  бургерна: BURGER_RESTAURANTS,
+  burger: BURGER_RESTAURANTS,
   шаурма: ["amenity=fast_food"],
   шаверма: ["amenity=fast_food"],
   кондитерська: ["shop=confectionery", "shop=pastry"],
@@ -294,8 +308,8 @@ const KEYWORD_MAP: Record<string, string[]> = {
   врач: ["amenity=doctors"],
   больница: ["amenity=hospital"],
   поликлиника: ["amenity=clinic"],
-  стоматология: ["amenity=dentist"],
-  зубной: ["amenity=dentist"],
+  стоматология: DENTISTS,
+  зубной: DENTISTS,
   ветеринар: ["amenity=veterinary"],
   ветклиника: ["amenity=veterinary"],
   массаж: ["shop=massage"],
@@ -307,8 +321,8 @@ const KEYWORD_MAP: Record<string, string[]> = {
   ногти: ["shop=beauty"],
   // Food
   столовая: ["amenity=restaurant"],
-  пиццерия: ["amenity=restaurant", "cuisine=pizza"],
-  суши: ["amenity=restaurant", "cuisine=sushi"],
+  пиццерия: PIZZERIAS,
+  суши: SUSHI_RESTAURANTS,
   кофейня: ["amenity=cafe", "cuisine=coffee_shop"],
   пивная: ["amenity=pub", "amenity=bar"],
   кондитерская: ["shop=confectionery", "shop=pastry"],
@@ -382,19 +396,19 @@ const KEYWORD_MAP: Record<string, string[]> = {
   store: ["shop"],
   realtor: ["office=estate_agent"],
   accounting: ["office=accountant"],
-  dental: ["amenity=dentist"],
+  dental: DENTISTS,
   florist: ["shop=florist"],
 
   // ── Polish synonyms (PL is a supported country; native niche words) ──
   // Food & Drink
   restauracja: ["amenity=restaurant"],
-  pizzeria: ["amenity=restaurant", "cuisine=pizza"],
+  pizzeria: PIZZERIAS,
   kawiarnia: ["amenity=cafe"],
   piekarnia: ["shop=bakery"],
   cukiernia: ["shop=confectionery", "shop=pastry"],
   winiarnia: ["shop=wine", "amenity=bar"],
   // Health & Beauty
-  dentysta: ["amenity=dentist"],
+  dentysta: DENTISTS,
   lekarz: ["amenity=doctors"],
   przychodnia: ["amenity=clinic"],
   apteka: ["amenity=pharmacy"],
@@ -484,7 +498,7 @@ const KEYWORD_MAP: Record<string, string[]> = {
   kneipe: ["amenity=pub", "amenity=bar"],
   weinhandlung: ["shop=wine"],
   // Health & Beauty
-  zahnarzt: ["amenity=dentist"],
+  zahnarzt: DENTISTS,
   arzt: ["amenity=doctors"],
   hausarzt: ["amenity=doctors"],
   apotheke: ["amenity=pharmacy"],
@@ -685,7 +699,11 @@ function resolveKeyword(keyword: string): string[] | null {
 
   // Cap tag count so multi-word inputs ("піца суші бар кафе") can't balloon the
   // Overpass query into a timeout.
-  return collected.length > 0 ? [...new Set(collected)].slice(0, 12) : null;
+  const tags = [...new Set(collected)];
+  const specificTags = tags.filter((tag) =>
+    tag.includes("=") || !tags.some((other) => other.startsWith(`${tag}=`)),
+  );
+  return specificTags.length > 0 ? specificTags.slice(0, 12) : null;
 }
 
 // ─── Geocoding cache (in-memory) ────────────────────────────
@@ -828,69 +846,24 @@ export async function geocodeCity(city: string, countryCode?: string): Promise<G
     return cached;
   }
 
-  // Pin bare Dubai districts to the UAE so omonyms abroad don't win.
-  const geoQuery = dubaiDistrictQuery(city) ?? city;
+  // Qualify known Dubai districts only for a UAE or unscoped search.
+  const districtQuery = (!cc || cc === "ae") ? dubaiDistrictQuery(city) : null;
+  const geoQuery = districtQuery || city;
+  const isCyrillic = /[а-яёіїєґ]/iu.test(city);
+  const preferredCountry = cc || (districtQuery ? "ae" : isCyrillic ? "ua" : "");
 
-  const isCyrillicQuery = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
-
-  let coords: GeoCoords | null;
-  // The UA-preferring Cyrillic heuristic only applies when no explicit country
-  // is selected (or it's Ukraine). With any other country picked, fall through
-  // to the country-scoped path so e.g. Cyrillic "Москва"+RU resolves correctly.
-  if (isCyrillicQuery && (!cc || cc === "ua")) {
-    // Cyrillic: prefer Ukraine. Photon first; its settlement scoring (UA bonus +
-    // major-oblast bonus) resolves major Ukrainian cities to the real centre.
+  let coords = await geocodePhoton(geoQuery, preferredCountry);
+  if (!coords) {
+    // The public Nominatim endpoint is only used for an explicit search.
+    coords = await geocodeNominatim(geoQuery, preferredCountry);
+  }
+  if (!coords && !cc && preferredCountry === "ua") {
     coords = await geocodePhoton(geoQuery);
-    const photonIsUA =
-      !!coords &&
-      (coords.displayName.includes("Україн") ||
-        coords.displayName.includes("Ukraine"));
-    // Only cross-check with Nominatim when Photon did NOT already find a Ukrainian
-    // place (e.g. it resolved to a same-name BY/RU town). If Photon already has a
-    // UA hit, trust it — Nominatim ranks the real city as a low-priority
-    // `administrative` boundary and lets same-name villages outrank it, which
-    // would drag the search centre out to a random hamlet (e.g. Львів → a village
-    // near Кривий Ріг instead of the city of Lviv).
-    if (!photonIsUA) {
-      const nominatimResult = await geocodeNominatim(geoQuery);
-      if (
-        nominatimResult &&
-        (nominatimResult.displayName.includes("Україн") ||
-          nominatimResult.displayName.includes("Ukraine"))
-      ) {
-        coords = nominatimResult;
-      }
-      if (!coords) coords = nominatimResult;
-    }
-  } else {
-    // Latin: Photon scores by settlement type only and ignores global
-    // importance, so omonyms resolve wrong (Warsaw → Warsaw, Indiana instead
-    // of Warszawa, Poland). Nominatim ranks by importance globally, so prefer
-    // its settlement; fall back to Photon if Nominatim is unavailable.
-    const [photon, nominatim] = await Promise.all([
-      geocodePhoton(geoQuery, cc),
-      geocodeNominatim(geoQuery, false, cc),
-    ]);
-    coords = nominatim || photon;
-  }
-
-  // Second attempt: append "місто" (Ukrainian for "city") to prioritize city results
-  if (!coords) {
-    coords = await geocodePhoton(`${geoQuery} місто`, cc);
-    if (!coords) {
-      coords = await geocodeNominatim(`${geoQuery} місто`, true, cc);
-    }
-  }
-
-  // Final pass: global Nominatim with no country restriction so a Cyrillic-named
-  // city outside Ukraine (Алматы, София, Белград…) still resolves.
-  if (!coords) {
-    coords = await geocodeNominatim(geoQuery, false, cc);
   }
 
   if (!coords) {
     throw new Error(
-      `Місто "${city}" не знайдено. Спробуйте: Kyiv, Дніпро, Львів, London, Warszawa...`
+      `Не вдалося визначити місто «${city}». Уточніть назву й країну або повторіть пошук.`
     );
   }
 
@@ -906,10 +879,13 @@ export async function geocodeCity(city: string, countryCode?: string): Promise<G
 async function geocodePhoton(city: string, countryCode?: string): Promise<GeoCoords | null> {
   try {
     // Request multiple results so we can filter for city/settlement types
-    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=10`;
+    const url = new URL("https://photon.komoot.io/api/");
+    url.searchParams.set("q", city);
+    url.searchParams.set("limit", "15");
+    if (countryCode) url.searchParams.set("countrycode", countryCode.toUpperCase());
     const resp = await fetch(url, {
       headers: { "User-Agent": "LeadFinder/1.0" },
-      signal: AbortSignal.timeout(8000), // 8s timeout
+      signal: AbortSignal.timeout(4000),
     });
 
     if (!resp.ok) return null;
@@ -930,15 +906,7 @@ async function geocodePhoton(city: string, countryCode?: string): Promise<GeoCoo
     }
 
     const features = data?.features;
-    if (!features || features.length === 0) return null;
-
-    // Types that should NEVER be selected as a city (rivers, stations, etc.)
-    const excludedTypes = new Set([
-      "river", "water", "stream", "waterway", "canal", "lake",
-      "station", "bus_stop", "tram_stop", "railway",
-      "industrial", "garages", "quarry", "water_tower",
-      "hotel", "motel", "hostel", "guest_house",
-    ]);
+    if (!Array.isArray(features) || features.length === 0) return null;
 
     // Priority order for settlement types (higher = better)
     const typePriority: Record<string, number> = {
@@ -954,39 +922,19 @@ async function geocodePhoton(city: string, countryCode?: string): Promise<GeoCoo
       district: 1,
     };
 
-    // Detect if query is in Cyrillic → prefer Ukrainian results
-    const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
     const wantCC = (countryCode || "").toUpperCase();
+    const requestedName = geoCore(city);
 
-    // Score and sort results
     const scored = features.map((f: any) => {
-      const props = f.properties || {};
-      const osmType = props.osm_value || props.type || "";
-      const country = (props.countrycode || "").toUpperCase();
-      const state = props.state || "";
-
-      // Skip excluded types entirely
-      if (excludedTypes.has(osmType)) return { feature: f, score: -999 };
-
-      let score = typePriority[osmType] || 0;
-
-      // When the UI passed the selected country, strongly prefer that country so
-      // omonyms abroad never win (e.g. London → London, Ontario when country=GB).
-      if (wantCC) score += country === wantCC ? 50 : -50;
-
-      // Bonus for Cyrillic query → prefer UA results
-      if (isCyrillic && country === "UA") score += 20;
-      // Small bonus for BY/RU if Cyrillic (but much less than UA)
-      if (isCyrillic && (country === "BY" || country === "RU")) score += 5;
-
-      // Check for oblast/state names that indicate major Ukrainian cities
-      const majorCityStates = [
-        "Дніпропетровська", "Київська", "Львівська", "Одеська",
-        "Харківська", "Донецька", "Запорізька", "Вінницька",
-      ];
-      if (majorCityStates.some((s) => state.includes(s))) score += 15;
-
-      return { feature: f, score };
+      const props = f?.properties || {};
+      const country = String(props.countrycode || "").toUpperCase();
+      const type = [props.osm_value, props.type].find((value) => Object.hasOwn(typePriority, value));
+      if (!type || (wantCC && country !== wantCC)
+        || !validCoordinates(f.geometry?.coordinates?.[1], f.geometry?.coordinates?.[0])) {
+        return { feature: f, score: -1 };
+      }
+      const name = geoCore(String(props.name || ""));
+      return { feature: f, score: typePriority[type] + (name === requestedName ? 20 : 0) };
     });
 
     // Sort by score descending
@@ -1028,31 +976,23 @@ function geoCore(s: string): string {
     .trim();
 }
 
-async function geocodeNominatim(city: string, restrictToUA: boolean = true, countryCode?: string): Promise<GeoCoords | null> {
+async function geocodeNominatim(city: string, countryCode: string): Promise<GeoCoords | null> {
   try {
     // Detect Cyrillic for language/country preference
     const isCyrillic = /[а-яА-ЯёЁіІїЇєЄґҐ]/.test(city);
     const lang = isCyrillic ? "uk,en" : "en";
 
     // Request more results for better filtering
-    let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(city)}&limit=10&accept-language=${lang}`;
+    let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(city)}&limit=10&addressdetails=1&accept-language=${lang}`;
 
-    // Explicit country (from the UI selector) wins: scope to it so the right
-    // country's city is returned. Otherwise, for Cyrillic queries, prefer Ukraine
-    // when restrictToUA is set (the final geocode pass clears this so cities in
-    // any country still resolve).
-    const cc = (countryCode || "").toLowerCase().trim();
-    if (cc) {
-      url += `&countrycodes=${encodeURIComponent(cc)}`;
-    } else if (isCyrillic && restrictToUA) {
-      url += `&countrycodes=ua`;
-    }
+    const cc = countryCode.toLowerCase().trim();
+    if (cc) url += `&countrycodes=${encodeURIComponent(cc)}`;
 
     const resp = await fetch(url, {
       headers: {
         "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
       },
-      signal: AbortSignal.timeout(8000), // 8s timeout
+      signal: AbortSignal.timeout(5000),
     });
 
     // Nominatim returns 403 when rate-limited
@@ -1073,14 +1013,7 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true, coun
       return null;
     }
 
-    if (!data || data.length === 0) return null;
-
-    // Excluded types: rivers, waterways, stations, etc.
-    const excludedClasses = new Set(["waterway", "railway", "highway", "natural"]);
-    const excludedTypes = new Set(["river", "stream", "lake", "canal", "station", "bus_stop"]);
-
-    // Filter out non-settlement results
-    const settlementTypes = new Set(["city", "town", "village", "hamlet", "municipality", "borough"]);
+    if (!Array.isArray(data) || data.length === 0) return null;
 
     // Priority: city with class=place > administrative boundary > town/village
     const typePriority: Record<string, number> = {
@@ -1090,15 +1023,11 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true, coun
       municipality: 6,
       borough: 4,
       hamlet: 3,
-      administrative: 2,
+      suburb: 2,
+      neighbourhood: 2,
+      quarter: 2,
+      district: 2,
     };
-
-    // Region-level admin areas (state/emirate/province/country): their point is
-    // the region centroid, often in sparse/desert land far from the actual city
-    // (e.g. "Sharjah" the emirate vs. Sharjah the city). Demote them.
-    const regionTypes = new Set([
-      "state", "region", "province", "county", "country", "continent", "archipelago",
-    ]);
     // Sub-city subdivisions: a same-named suburb/neighbourhood must not outrank
     // the actual city (e.g. a "São Paulo" suburb in Pará vs. the megacity, which
     // OSM tags as an administrative boundary with no place-bonus).
@@ -1108,11 +1037,14 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true, coun
     const qCore = geoCore(city);
 
     const scored = data.map((r: any) => {
-      const type = (r.type || "").toLowerCase();
-      const cls = String(r.class || "");
+      const type = String(r.addresstype || r.type || "").toLowerCase();
+      const cls = String(r.category || r.class || "");
+      const country = String(r.address?.country_code || "").toLowerCase();
+      const isSettlement = (cls === "place" || cls === "boundary") && typePriority[type];
 
-      // Exclude waterways, railways, highways
-      if (excludedClasses.has(cls) || excludedTypes.has(type)) {
+      // Never use a region, venue or other non-settlement as the city centre.
+      if (!isSettlement || (cc && country && cc !== country)
+        || !validCoordinates(parseFloat(r.lat), parseFloat(r.lon))) {
         return { result: r, score: -999 };
       }
 
@@ -1123,9 +1055,6 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true, coun
 
       // Bonus for importance
       score += (r.importance || 0) * 10;
-
-      // Demote region centroids so the city/settlement wins.
-      if (regionTypes.has(type)) score -= 8;
 
       // Demote sub-city subdivisions so a same-named city wins over a suburb.
       if (subCityTypes.has(type)) score -= 7;
@@ -1146,8 +1075,6 @@ async function geocodeNominatim(city: string, restrictToUA: boolean = true, coun
     const result = best.result;
     const lat = parseFloat(result.lat);
     const lng = parseFloat(result.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
     return {
       lat,
       lng,
@@ -1181,56 +1108,19 @@ export async function searchOverpassAt(
   maxResults: number = 20,
   radiusKm: number = 10
 ): Promise<OSMResult[]> {
-  const coords = { lat, lng };
+  const normalized = normalizeKeyword(keyword);
+  if (!normalized) return [];
 
-  // Over-fetch a larger candidate pool than the caller asked for, so ranking
-  // (no-site leads first) can promote the best prospects before we slice down.
-  // Without this, Overpass' arbitrary order could push every HOT no-site lead
-  // past the maxResults cutoff and the client would never see them.
-  const pool = Math.min(Math.max(maxResults * 3, 60), 200);
-
-  // Step 2: Determine search strategy
-  // resolveKeyword handles plural/case forms, apostrophe variants and typos,
-  // so "ресторани", "аптек", "кавʼярні" all map to the right OSM tags.
-  const matchedTags = resolveKeyword(keyword);
-  if (matchedTags) {
-    console.log(`[Search] "${keyword}" → tags: ${matchedTags.join(", ")}`);
-  } else {
-    console.log(`[Search] "${keyword}" → no tag match, broad name search`);
-  }
-
-  // Step 3: Build & execute query with fallback
-  let allElements: any[] = [];
-
-  if (matchedTags) {
-    // ── Known category: precise tag search (fast & reliable) ──
-    // Search nodes and ways separately because output format differs
-    const nodeElements = await executeQuery(
-      buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, pool, "node"),
-    );
-    allElements.push(...nodeElements);
-
-    if (allElements.length < pool) {
-      const wayElements = await executeQuery(
-        buildTagQuery(matchedTags, coords.lat, coords.lng, radiusKm, pool, "way"),
-      );
-      allElements.push(...wayElements);
-    }
-  } else {
-    // ── Unknown keyword: broad search with name filter ──
-    const elements = await executeQuery(
-      buildBroadQuery(keyword, coords.lat, coords.lng, radiusKm, pool),
-    );
-    allElements.push(...elements);
-  }
-
-  // Step 4: Parse, deduplicate, rank, then trim to the requested count.
-  if (allElements.length === 0) {
-    return [];
-  }
-
-  const parsed = parseOverpassResults(allElements, pool);
-  return pageLeads(rankLeads(parsed), maxResults);
+  // Over-fetch names across all mapped geometry types before ranking. A full
+  // batch of nodes should not hide businesses mapped as buildings or relations.
+  const pool = Math.min(Math.max(maxResults * 6, 120), 400);
+  const tags = resolveKeyword(keyword);
+  const stem = ukStem(normalized);
+  const namePattern = tags ? undefined : (stem.length >= 4 ? stem : normalized);
+  const elements = await executeQuery(
+    buildSearchQuery(tags || BROAD_BUSINESS_TAGS, lat, lng, radiusKm, pool, namePattern),
+  );
+  return pageLeads(rankLeads(parseOverpassResults(elements), lat, lng, Math.min(radiusKm, 50)), maxResults);
 }
 
 // Build the final page from ranked leads. No-site HOT leads stay on top, but a
@@ -1243,7 +1133,7 @@ function pageLeads(ranked: OSMResult[], maxResults: number): OSMResult[] {
   const sites = ranked.filter(hasSite); // tier 3, order preserved
   if (sites.length === 0 || noSite.length === 0) return ranked.slice(0, maxResults);
 
-  const siteQuota = Math.min(sites.length, Math.max(3, Math.floor(maxResults * 0.25)));
+  const siteQuota = Math.min(sites.length, maxResults - 1, Math.max(1, Math.floor(maxResults * 0.25)));
   const noSiteSlots = Math.max(0, maxResults - siteQuota);
   const page = [...noSite.slice(0, noSiteSlots), ...sites.slice(0, siteQuota)];
 
@@ -1262,7 +1152,7 @@ function pageLeads(ranked: OSMResult[], maxResults: number): OSMResult[] {
 // product (HOT prospects for building one), and among those the reachable ones
 // (have a phone / email / social channel) come first. Sites are kept last —
 // the client analyzes them separately to grade redesign potential.
-function rankLeads(leads: OSMResult[]): OSMResult[] {
+function rankLeads(leads: OSMResult[], lat: number, lng: number, radiusKm: number): OSMResult[] {
   const hasSite = (l: OSMResult) => !!l.website && l.website !== "N/A";
   const reachable = (l: OSMResult) =>
     (!!l.phone && l.phone !== "N/A") ||
@@ -1274,82 +1164,48 @@ function rankLeads(leads: OSMResult[]): OSMResult[] {
   // 2 = no-site no contact, 3 = has a real site (needs redesign analysis).
   const tier = (l: OSMResult) =>
     l.socialOnly ? 0 : hasSite(l) ? 3 : reachable(l) ? 1 : 2;
-  // Stable sort (Array.prototype.sort is stable in modern JS) preserves the
-  // original Overpass order within each tier.
-  return [...leads].sort((a, b) => tier(a) - tier(b));
+  return leads
+    .map((lead) => ({ lead, tier: tier(lead), distance: distanceKm(lat, lng, lead.lat, lead.lng) }))
+    .filter(({ distance }) => distance <= radiusKm)
+    .sort((a, b) => a.tier - b.tier || a.distance - b.distance)
+    .map(({ lead }) => lead);
+}
+
+function distanceKm(lat: number, lng: number, otherLat: number, otherLng: number): number {
+  const radians = Math.PI / 180;
+  const halfLat = (otherLat - lat) * radians / 2;
+  const halfLng = (otherLng - lng) * radians / 2;
+  const a = Math.sin(halfLat) ** 2
+    + Math.cos(lat * radians) * Math.cos(otherLat * radians) * Math.sin(halfLng) ** 2;
+  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 // ─── Query builders ─────────────────────────────────────────
 
-function buildTagQuery(
+function buildSearchQuery(
   tags: string[],
   lat: number,
   lng: number,
   radiusKm: number,
-  maxResults: number,
-  elementType: "node" | "way"
+  pool: number,
+  namePattern?: string,
 ): string {
-  const radius = Math.min(radiusKm * 1000, 50000); // Cap at 50km
-  const conditions: string[] = [];
+  const radius = Math.min(radiusKm * 1000, 50000);
+  const nameFilter = namePattern
+    ? `["name"~${JSON.stringify(namePattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))},i]`
+    : '["name"]';
+  const selectors = tags.map((tag) => {
+    // Selectors in the same entry are ANDed; different entries are alternatives.
+    const filters = tag.split("&").map((part) => {
+      const [key, value] = part.split("=");
+      if (!value) return `["${key}"]`;
+      if (key === "cuisine") return `["cuisine"~"(^|;) *${value} *(;|$)",i]`;
+      return `["${key}"="${value}"]`;
+    }).join("");
+    return `nwr${filters}${nameFilter}(around:${radius},${lat},${lng});`;
+  });
 
-  for (const tag of tags) {
-    const [key, value] = tag.split("=");
-    if (value) {
-      conditions.push(`${elementType}["${key}"="${value}"](around:${radius},${lat},${lng});`);
-    } else {
-      conditions.push(`${elementType}["${key}"](around:${radius},${lat},${lng});`);
-    }
-  }
-
-  // Use "out body" for nodes (has lat/lon directly) or "out center" for ways
-  // qt = sort by quadtile (faster), limit to maxResults*2 to allow deduplication headroom
-  const output = elementType === "node" ? "out body" : "out center";
-  const limit = Math.min(maxResults * 2, 400);
-
-  return (
-    `[out:json][timeout:25];\n` +
-    `(\n  ${conditions.join("\n  ")}\n);\n` +
-    `${output} qt ${limit};`
-  );
-}
-
-function buildBroadQuery(
-  keyword: string,
-  lat: number,
-  lng: number,
-  radiusKm: number,
-  maxResults: number
-): string {
-  const radius = Math.min(radiusKm * 1000, 25000); // Smaller radius for broad search (cap 25km)
-  // Search on the stem so the name regex still matches declined/plural forms
-  // (e.g. stem "пекарн" matches "Пекарня", "Пекарні"). Fall back to the full
-  // normalized keyword when the stem is too short to be meaningful.
-  const norm = normalizeKeyword(keyword);
-  const stem = ukStem(norm);
-  const pattern = stem.length >= 4 ? stem : norm || keyword;
-  // Escape regex special chars AND double quotes (QL uses " as string delimiter)
-  const escaped = pattern.replace(/[-.*+?^${}()|[\]\\"]/g, "\\$&");
-
-  const conditions: string[] = [];
-
-  // Search by name across broad business categories
-  for (const tag of BROAD_BUSINESS_TAGS) {
-    const [key, value] = tag.split("=");
-    if (value) {
-      conditions.push(`node["${key}"="${value}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
-      conditions.push(`way["${key}"="${value}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
-    } else {
-      conditions.push(`node["${key}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
-      conditions.push(`way["${key}"]["name"~"${escaped}",i](around:${radius},${lat},${lng});`);
-    }
-  }
-
-  // Use "out center" for ways to get center coordinates, "out body" for nodes
-  return (
-    `[out:json][timeout:25];\n` +
-    `(\n  ${conditions.join("\n  ")}\n);\n` +
-    `out center qt ${maxResults};`
-  );
+  return `[out:json][timeout:25];\n(\n  ${selectors.join("\n  ")}\n);\nout center qt ${pool};`;
 }
 
 // ─── Retry helpers ──────────────────────────────────────────
@@ -1421,11 +1277,14 @@ async function fetchFromEndpoint(
       );
     }
 
-    if (data.remark && String(data.remark).includes("error")) {
+    if (typeof data?.remark === "string" && /error|timeout|timed out/i.test(data.remark)) {
       throw new EndpointError(endpoint, data.remark);
     }
+    if (!Array.isArray(data?.elements)) {
+      throw new EndpointError(endpoint, "Некоректна відповідь Overpass");
+    }
 
-    return Array.isArray(data.elements) ? data.elements : [];
+    return data.elements;
   } finally {
     clearTimeout(reqTimeout);
     roundSignal.removeEventListener("abort", onRoundAbort);
@@ -1514,30 +1373,31 @@ function extractOverpassError(html: string, status: number): string {
 
 // ─── Parse results ──────────────────────────────────────────
 
-function parseOverpassResults(elements: any[], maxResults: number): OSMResult[] {
+function parseOverpassResults(elements: any[]): OSMResult[] {
   const results: OSMResult[] = [];
   const seen = new Set<string>();
+  const atLocation = new Map<string, OSMResult>();
 
   for (const el of elements) {
-    if (results.length >= maxResults) break;
-
-    const name = (el.tags?.name || "").trim();
+    const name = typeof el?.tags?.name === "string" ? el.tags.name.trim() : "";
     if (!name) continue;
 
     // Coordinates: nodes have lat/lon directly, ways have center
-    const lat = el.lat ?? el.center?.lat ?? 0;
-    const lng = el.lon ?? el.center?.lon ?? 0;
-    if (lat === 0 && lng === 0) continue;
+    const lat = el.lat ?? el.center?.lat;
+    const lng = el.lon ?? el.center?.lon;
+    if (!validCoordinates(lat, lng)) continue;
 
-    // Deduplicate by name + approximate location (0.001° ≈ 100m)
-    const locKey = `${Math.round(lat * 1000)}_${Math.round(lng * 1000)}`;
-    const dedupKey = `${name.toLowerCase()}@${locKey}`;
+    // Preserve separate branches of the same business. Repeated OSM objects
+    // have the same type/id even when selected via several category tags.
+    const osmId = Number.isSafeInteger(el.id) ? `${el.type}/${el.id}` : "";
+    const dedupKey = osmId || `${name.toLowerCase()}@${lat},${lng}`;
     if (seen.has(dedupKey)) continue;
     seen.add(dedupKey);
 
     const contacts = extractContacts(el.tags);
 
-    results.push({
+    const lead: OSMResult = {
+      osmId,
       name,
       phone: extractPhone(el.tags),
       website: contacts.website,
@@ -1551,8 +1411,27 @@ function parseOverpassResults(elements: any[], maxResults: number): OSMResult[] 
       description: el.tags?.["description"] || "",
       lat,
       lng,
-      type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || "business",
-    });
+      type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || el.tags?.healthcare || "business",
+    };
+
+    // Merge an overlapping outline and point for the same named place while
+    // keeping separate OSM objects for nearby branches and different addresses.
+    const locationKey = `${name.toLowerCase()}@${lat.toFixed(4)},${lng.toFixed(4)}`;
+    const existing = atLocation.get(locationKey);
+    const sameAddress = existing && (
+      existing.address === lead.address || existing.address === "N/A" || lead.address === "N/A"
+    );
+    const sameGeometry = existing?.osmId.split("/")[0] === el.type;
+    if (existing && sameAddress && !sameGeometry) {
+      const fields = ["phone", "website", "address", "email", "facebook", "instagram", "telegram", "openingHours", "description"] as const;
+      for (const field of fields) {
+        if (!existing[field] || existing[field] === "N/A") existing[field] = lead[field];
+      }
+      existing.socialOnly = existing.website === "N/A" && (existing.socialOnly || lead.socialOnly);
+      continue;
+    }
+    if (!existing) atLocation.set(locationKey, lead);
+    results.push(lead);
   }
 
   return results;
@@ -1573,32 +1452,25 @@ function extractPhone(tags: Record<string, string> | undefined): string {
   return first;
 }
 
-function extractWebsite(tags: Record<string, string> | undefined): string {
-  if (!tags) return "N/A";
-  return tags["website"] || tags["contact:website"] || "N/A";
-}
-
 // Social platforms that businesses often put in the `website` tag instead of a
 // real site. Detecting these lets us reclassify such leads as "social-only".
 const SOCIAL_HOSTS: Array<{ re: RegExp; kind: "facebook" | "instagram" | "telegram" | "other" }> = [
-  { re: /(?:^|\.)facebook\.com|(?:^|\.)fb\.(?:com|me)|(?:^|\.)m\.facebook\.com/i, kind: "facebook" },
-  { re: /(?:^|\.)instagram\.com|(?:^|\.)instagr\.am/i, kind: "instagram" },
-  { re: /(?:^|\.)t\.me|(?:^|\.)telegram\.(?:me|org)/i, kind: "telegram" },
-  { re: /(?:^|\.)(?:tiktok\.com|twitter\.com|x\.com|vk\.com|wa\.me|api\.whatsapp\.com|linktr\.ee|taplink\.[a-z]+|youtube\.com|youtu\.be|linkedin\.com)/i, kind: "other" },
+  { re: /(?:^|\.)(?:facebook\.com|fb\.(?:com|me))$/i, kind: "facebook" },
+  { re: /(?:^|\.)(?:instagram\.com|instagr\.am)$/i, kind: "instagram" },
+  { re: /(?:^|\.)(?:t\.me|telegram\.(?:me|org))$/i, kind: "telegram" },
+  { re: /(?:^|\.)(?:tiktok\.com|twitter\.com|x\.com|vk\.com|wa\.me|api\.whatsapp\.com|linktr\.ee|taplink\.[a-z]+|youtube\.com|youtu\.be|linkedin\.com)$/i, kind: "other" },
 ];
 
-function classifySocialUrl(url: string): "facebook" | "instagram" | "telegram" | "other" | null {
-  if (!url || url === "N/A") return null;
-  let host = url;
+function websiteHost(value: string): string | null {
+  if (!value || /\s/.test(value)) return null;
   try {
-    host = new URL(url.startsWith("http") ? url : `https://${url}`).hostname;
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return url.hostname.includes(".") && !url.username && !url.password
+      ? url.hostname.replace(/\.$/, "")
+      : null;
   } catch {
-    /* not a parseable URL — fall back to matching the raw string */
+    return null;
   }
-  for (const { re, kind } of SOCIAL_HOSTS) {
-    if (re.test(host)) return kind;
-  }
-  return null;
 }
 
 interface Contacts {
@@ -1614,20 +1486,29 @@ interface Contacts {
 // website → we move the link to the right social field and flag it socialOnly,
 // so ranking/scoring treats it as a HOT prospect instead of "has a site".
 function extractContacts(tags: Record<string, string> | undefined): Contacts {
-  let website = extractWebsite(tags);
+  let website = "N/A";
   let facebook = tags?.["contact:facebook"] || "";
   let instagram = tags?.["contact:instagram"] || "";
   let telegram = tags?.["contact:telegram"] || "";
+  let hasSocialLink = !!(facebook || instagram || telegram);
 
-  const kind = classifySocialUrl(website);
-  if (kind) {
-    if (kind === "facebook") facebook = facebook || website;
-    else if (kind === "instagram") instagram = instagram || website;
-    else if (kind === "telegram") telegram = telegram || website;
-    website = "N/A"; // it was a social link, not a real website
+  // A profile in one tag should not hide an independent site in the other.
+  for (const entry of [tags?.website, tags?.["contact:website"]].filter(Boolean).join(";").split(";")) {
+    const value = entry.trim();
+    const host = websiteHost(value);
+    if (!host) continue;
+    const kind = SOCIAL_HOSTS.find(({ re }) => re.test(host))?.kind;
+    if (!kind) {
+      if (website === "N/A") website = value;
+      continue;
+    }
+    hasSocialLink = true;
+    if (kind === "facebook") facebook ||= value;
+    if (kind === "instagram") instagram ||= value;
+    if (kind === "telegram") telegram ||= value;
   }
 
-  const socialOnly = website === "N/A" && !!(facebook || instagram || telegram);
+  const socialOnly = website === "N/A" && hasSocialLink;
   return { website, facebook, instagram, telegram, socialOnly };
 }
 

@@ -81,9 +81,8 @@ export async function analyzeWebsite(url: string): Promise<WebsiteAnalysis> {
 
   if (!url || url === "N/A") return empty;
 
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "https://" + url;
-  }
+  // Map entries often retain HTTP links even after a site starts serving HTTPS.
+  url = "https://" + url.trim().replace(/^https?:\/\//i, "");
 
   let html = "";
   let finalUrl = url;
@@ -374,7 +373,7 @@ function scoreDesign(opts: {
   if (opts.limited) {
     return {
       score: "unknown",
-      notes: ["⚠️ Контент рендериться через JS або сайт недоступний — повний аналіз потребує браузера"],
+      notes: ["⚠️ Вміст сторінки отримано частково. Для перевірки відкрийте сайт у браузері."],
     };
   }
 
@@ -388,7 +387,7 @@ function scoreDesign(opts: {
       points += 1;
     } else {
       points += 0;
-      notes.push(`© ${opts.copyrightYear} — дуже старий сайт`);
+      notes.push(`© ${opts.copyrightYear} — давня дата копірайту`);
     }
   } else {
     points += 1; // neutral
@@ -399,25 +398,21 @@ function scoreDesign(opts: {
   if (opts.isMobileFriendly) {
     points += 2;
   } else {
-    notes.push("❌ Не адаптивний (no mobile viewport)");
+    notes.push("Не виявлено мобільного viewport");
   }
 
   // 3. SSL (0-1 point)
   if (opts.hasSsl) {
     points += 1;
   } else {
-    notes.push("⚠️ Немає HTTPS (без SSL сертифікату)");
+    notes.push("Сторінка відкрилась через HTTP");
   }
 
   // 4. Modern tech (0-2 points)
   const modernTech = ["Next.js", "Nuxt", "Vue.js", "React", "Angular", "Laravel", "Tilda", "Webflow", "Squarespace"];
-  const oldTech = ["Joomla", "Drupal", "1C-Bitrix"];
 
   if (opts.technologies.some((t) => modernTech.includes(t))) {
     points += 2;
-  } else if (opts.technologies.some((t) => oldTech.includes(t))) {
-    points += 0;
-    notes.push(`🔧 ${opts.technologies.join(", ")} — застаріла технологія`);
   } else if (opts.technologies.length > 0) {
     points += 1;
   }

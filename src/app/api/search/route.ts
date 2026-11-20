@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchOverpass, searchOverpassAt, geocodeCity } from "@/lib/osm-search";
+import { searchOverpassAt, geocodeCity, validCoordinates } from "@/lib/osm-search";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
+
+function parseCoordinate(value: unknown): number {
+  if (typeof value === "number") return value;
+  return typeof value === "string" && value.trim() ? Number(value) : NaN;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -26,24 +31,28 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    if (trimmedCountry && !/^[a-z]{2}$/.test(trimmedCountry)) {
+      return NextResponse.json({ error: "Некоректний код країни." }, { status: 400 });
+    }
     const parsedMax = Math.min(Math.max(parseInt(maxResults) || 20, 1), 200);
-    const parsedRadius = Math.min(Math.max(parseInt(radius) || 10, 1), 100);
+    const parsedRadius = Math.min(Math.max(parseInt(radius) || 10, 1), 50);
 
     // If the client picked a city from autocomplete it sends exact coordinates,
     // so we skip geocoding entirely (more accurate, one less round-trip).
-    const numLat = Number(lat);
-    const numLng = Number(lng);
-    const hasCoords = Number.isFinite(numLat) && Number.isFinite(numLng);
+    const numLat = parseCoordinate(lat);
+    const numLng = parseCoordinate(lng);
+    const hasCoords = validCoordinates(numLat, numLng);
 
     const geo = hasCoords
       ? { lat: numLat, lng: numLng, displayName: String(displayName || trimmedCity) }
       : await geocodeCity(trimmedCity, trimmedCountry);
 
-    const results = hasCoords
-      ? await searchOverpassAt(numLat, numLng, trimmedQuery, parsedMax, parsedRadius)
-      : await searchOverpass(trimmedCity, trimmedQuery, parsedMax, parsedRadius, trimmedCountry);
+    const results = await searchOverpassAt(geo.lat, geo.lng, trimmedQuery, parsedMax, parsedRadius);
 
     const businesses = results.slice(0, parsedMax).map((r) => ({
+      osmId: r.osmId,
+      lat: r.lat,
+      lng: r.lng,
       name: r.name,
       phone: r.phone,
       website: r.website,
@@ -60,14 +69,10 @@ export async function POST(request: NextRequest) {
       type: r.type,
     }));
 
-    // Geocoding succeeded but the niche returned nothing — usually means this
-    // category is poorly mapped in OSM (trades like plumber/electrician), not a
-    // broken search. Surface a hint so the UI shows guidance, not a silent zero.
     const note =
       businesses.length === 0
-        ? `У OpenStreetMap немає об'єктів "${trimmedQuery}" у радіусі ${parsedRadius} км. ` +
-          `Деякі ніші (сантехніки, електрики, майстри) рідко мапляться в OSM. ` +
-          `Спробуйте споріднену ніш (наприклад «hardware» замість «plumber»), збільшіть радіус або інше місто.`
+        ? `Не знайдено збігів для «${trimmedQuery}» у радіусі ${parsedRadius} км. ` +
+          "Дані OpenStreetMap можуть бути неповними. Спробуйте іншу назву категорії або більший радіус."
         : undefined;
 
     return NextResponse.json({
@@ -85,8 +90,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Невідома помилка";
     console.error("[Search API] Error:", message);
-    // Return 200 with error field so the client sees the actual message
-    // (some proxies/CDNs strip 500 response bodies)
     return NextResponse.json({ error: message, businesses: [], total: 0 }, { status: 500 });
   }
 }

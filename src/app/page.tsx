@@ -5,7 +5,7 @@ import {
   Search, FileSpreadsheet, FileText, Globe, Phone, MapPin,
   Smartphone, Loader2, Target, AlertCircle, ExternalLink,
   Mail, Clock, ChevronDown, ChevronUp, Copy, Check, MessageCircle,
-  ShieldOff, Monitor, MonitorX, Layout, Eye, DollarSign,
+  ShieldOff, Monitor, MonitorX, Layout, DollarSign,
   Filter, StickyNote,
   AlertTriangle, Flame, ShieldCheck, PhoneCall, Send,
   Star, StarOff, Settings, X, History, Trash2, ThumbsUp, ThumbsDown, Bot, Zap, RotateCcw, Gauge,
@@ -24,7 +24,7 @@ import {
 } from "@/lib/outreach-templates";
 import {
   getSearchHistory, saveSearchHistory, removeSearchHistoryItem, clearSearchHistory,
-  getFavorites, toggleFavorite, isFavorite,
+  getFavorites, toggleFavorite, leadKey, matchesFavorite,
   getTelegramSettings, saveTelegramSettings,
   type SearchHistoryEntry, type TelegramSettings,
 } from "@/lib/storage";
@@ -34,11 +34,14 @@ import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
 import { COUNTRIES, flagEmoji, nicheChipsForCountry, citiesForCountry } from "@/lib/countries";
 import {
   scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
-  calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting,
-  type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus, type ScoreBreakdown,
+  calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting, getWebsiteEvidence,
+  type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus,
 } from "@/lib/scoring";
 
 type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
+type SearchBusiness = Pick<LeadBusiness, "name" | "phone" | "website" | "address" | "email" |
+  "facebook" | "instagram" | "telegram" | "openingHours" | "description" | "rating" | "reviews"> &
+  { osmId?: string };
 
 // ─── PageSpeed types ─────────────────────────────────────
 interface PageSpeedResult {
@@ -103,18 +106,8 @@ function formatUrl(url: string): string {
 }
 
 function hasIssues(lead: LeadBusiness): boolean {
-  if (!lead.website || lead.website === "N/A") return true;
-  if (lead.designScore === "ancient") return true;
-  if (!lead.isMobileFriendly) return true;
-  if (!lead.hasSsl) return true;
-  if (lead.technologies.some((t) =>
-    ["Joomla", "Drupal", "uCoz", "1C-Bitrix", "Bitrix"].some((ot) =>
-      t.toLowerCase().includes(ot.toLowerCase())
-    )
-  )) return true;
-  return false;
+  return getProblemsForLead(lead).length > 0;
 }
-
 
 export default function Home() {
   const [city, setCity] = useState("");
@@ -134,49 +127,56 @@ export default function Home() {
   const [cityHits, setCityHits] = useState<Array<{ name: string; displayName: string; lat: number; lng: number; country: string }>>([]);
   const [cityOpen, setCityOpen] = useState(false);
   const [cityLoading, setCityLoading] = useState(false);
+  const singleCityRef = useRef<string | null>(null);
   const selectedGeoRef = useRef<{ name: string; lat: number; lng: number; displayName: string } | null>(null);
+  const cityRequestRef = useRef<AbortController | null>(null);
   const cityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchCities = useCallback((q: string, cc: string) => {
+  const cancelCityLookup = useCallback(() => {
     if (cityDebounceRef.current) clearTimeout(cityDebounceRef.current);
-    if (q.trim().length < 2) { setCityHits([]); setCityOpen(false); return; }
+    cityRequestRef.current?.abort();
+  }, []);
+  useEffect(() => cancelCityLookup, [cancelCityLookup]);
+
+  const fetchCities = useCallback((q: string, cc: string) => {
+    cancelCityLookup();
+    setCityHits([]);
+    setCityLoading(false);
+    if (q.trim().length < 2) return;
+
+    const request = new AbortController();
+    cityRequestRef.current = request;
     cityDebounceRef.current = setTimeout(async () => {
       setCityLoading(true);
       try {
-        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&country=${encodeURIComponent(cc)}`);
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&country=${encodeURIComponent(cc)}`, { signal: request.signal });
+        if (!res.ok) return;
         const data = await res.json();
-        setCityHits(data.cities || []);
-        setCityOpen(true);
-      } catch { setCityHits([]); } finally { setCityLoading(false); }
+        if (!request.signal.aborted) setCityHits(data.cities || []);
+      } catch {
+        if (!request.signal.aborted) setCityHits([]);
+      } finally {
+        if (!request.signal.aborted) setCityLoading(false);
+      }
     }, 350);
-  }, []);
+  }, [cancelCityLookup]);
 
-  const pickCity = useCallback((hit: { name: string; displayName: string; lat: number; lng: number }) => {
-    setCity(hit.name);
-    selectedGeoRef.current = { name: hit.name, lat: hit.lat, lng: hit.lng, displayName: hit.displayName };
-    setCityHits([]); setCityOpen(false);
-  }, []);
-
-  // Curated city picked from the dropdown — resolve exact coords via geocode API
-  // (country-scoped). If resolution fails, the search route geocodes by name.
-  const pickCuratedCity = useCallback(async (name: string, cc: string) => {
+  const pickCity = useCallback((name: string, hit: { name: string; displayName: string; lat: number; lng: number } | null, singleCity = true) => {
+    cancelCityLookup();
+    selectedGeoRef.current = hit;
+    singleCityRef.current = singleCity ? name : null;
     setCity(name);
-    setCityOpen(false);
     setCityHits([]);
-    selectedGeoRef.current = null;
-    try {
-      const res = await fetch(`/api/geocode?q=${encodeURIComponent(name)}&country=${encodeURIComponent(cc)}`);
-      const data = await res.json();
-      const hit = (data.cities || [])[0];
-      if (hit) selectedGeoRef.current = { name: hit.name, lat: hit.lat, lng: hit.lng, displayName: hit.displayName };
-    } catch { /* fall back to name-based geocoding in the search route */ }
-  }, []);
+    setCityLoading(false);
+    setCityOpen(false);
+  }, [cancelCityLookup]);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [expandedLead, setExpandedLead] = useState<string | null>(null);
+  const searchActive = useRef(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
@@ -193,7 +193,7 @@ export default function Home() {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   // Favorites
-  const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
+  const [favorites, setFavorites] = useState<LeadBusiness[]>([]);
   const [geoLocations, setGeoLocations] = useState<Array<{ city: string; displayName: string; lat: number; lng: number }>>([]);
 
   // Telegram Settings
@@ -226,8 +226,7 @@ export default function Home() {
   // Load history, favorites, and saved locale on mount (after hydration)
   useEffect(() => {
     setSearchHistory(getSearchHistory());
-    const favNames = getFavorites().map((f) => f.name);
-    setFavoritesSet(new Set(favNames));
+    setFavorites(getFavorites());
     setTgSettings(getTelegramSettings());
     // Load saved locale after hydration to avoid SSR mismatch
     const savedLocale = localStorage.getItem('leadfinder_locale') as Locale | null;
@@ -284,11 +283,9 @@ export default function Home() {
   const handleToggleFavorite = useCallback((lead: LeadBusiness, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const isNowFav = toggleFavorite(lead);
-    setFavoritesSet((prev) => {
-      const next = new Set(prev);
-      if (isNowFav) next.add(lead.name); else next.delete(lead.name);
-      return next;
-    });
+    setFavorites((prev) => isNowFav
+      ? [...prev, lead]
+      : prev.filter((favorite) => !matchesFavorite(favorite, lead)));
     showToast(isNowFav ? "⭐ Додано в обране" : "Видалено з обраного");
   }, [showToast]);
 
@@ -298,7 +295,7 @@ export default function Home() {
     if (tgSettings.hotLeadsOnly && lead.score !== "HOT") return;
     if (!tgSettings.botToken || !tgSettings.chatId) return;
 
-    const worthiness = isWorthContacting(lead);
+    const worthiness = getWebsiteEvidence(lead) === "checked" ? isWorthContacting(lead) : null;
     const issues = getIssuesText(lead);
     const message = buildLeadNotificationMessage({
       name: lead.name,
@@ -307,8 +304,8 @@ export default function Home() {
       phone: lead.phone,
       address: lead.address,
       issues,
-      worthinessScore: worthiness.score,
-      worthinessReason: worthiness.reason,
+      worthinessScore: worthiness?.score,
+      worthinessReason: worthiness?.reason,
     });
 
     try {
@@ -374,28 +371,32 @@ export default function Home() {
   }, [leads, showToast]);
 
   // ─── Search ───────────────────────────────────────────────
-  const handleSearch = useCallback(async (searchCity?: string, searchQuery?: string, searchMax?: string, searchRadius?: string) => {
-    const c = searchCity || city;
-    // Prefer the canonical token from a picked chip so the search resolves
-    // reliably even when the input shows a non-English/Ukrainian word.
-    const q = searchQuery || (nicheToken || query);
-    const mr = searchMax || maxResults;
-    const r = searchRadius || radius;
+  const handleSearch = useCallback(async (overrides: { city?: string; query?: string; maxResults?: string; radius?: string; country?: string; singleCity?: boolean } = {}) => {
+    if (searchActive.current || psBulkChecking || psSingleChecking !== null) return;
+    const c = (overrides.city ?? city).trim();
+    const q = (overrides.query ?? (nicheToken || query)).trim();
+    const mr = Number(overrides.maxResults ?? maxResults) || 20;
+    const r = Number(overrides.radius ?? radius) || 10;
+    const cc = overrides.country ?? country;
 
     if (!c || !q) { setErrorMessage("Заповніть місто та нішу"); return; }
-    setErrorMessage(""); setLeads([]); setExpandedIdx(null);
+    const singleCity = overrides.singleCity ?? (singleCityRef.current === c);
+    const cities = singleCity ? [c] : c.split(",").map((name) => name.trim()).filter(Boolean);
+    if (!cities.length) { setErrorMessage("Вкажіть місто"); return; }
+    const historyEntry = { city: c, query: q, maxResults: mr, radius: r, country: cc, singleCity };
+
+    searchActive.current = true;
+    cancelCityLookup();
+    setCityOpen(false); setCityLoading(false);
+    setErrorMessage(""); setLeads([]); setExpandedLead(null);
+    setPreviewOpen(new Set()); setPageSpeedResults({});
     setPhase("searching"); setProgress(0);
     setGeoLocations([]);
 
-    if (searchCity) setCity(searchCity);
-    if (searchQuery) setQuery(searchQuery);
-
-    const cities = c.split(",").map((cc) => cc.trim()).filter(Boolean);
-    if (cities.length === 0) { setErrorMessage("Вкажіть місто"); setPhase("error"); return; }
-
     try {
-      const allBusinesses: Array<{ name: string; phone: string; website: string; address: string; email: string; facebook: string; instagram: string; telegram: string; openingHours: string; description: string; rating: number | null; reviews: number }> = [];
-      const seenNames = new Set<string>();
+      const allBusinesses: SearchBusiness[] = [];
+      const seenBusinesses = new Set<string>();
+      const failedCities: string[] = [];
       let emptyNote = "";
 
       for (let ci = 0; ci < cities.length; ci++) {
@@ -404,17 +405,23 @@ export default function Home() {
         setProgress(Math.round((ci / cities.length) * 30));
 
         const sel = selectedGeoRef.current;
-        const useCoords = sel && sel.name.toLowerCase() === currentCity.toLowerCase();
-        const searchData = await safeJsonFetch("/api/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            city: currentCity, query: q, country,
-            maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10,
-            ...(useCoords ? { lat: sel!.lat, lng: sel!.lng, displayName: sel!.displayName } : {}),
-          }),
-          timeoutMs: 60000,
-        }, `Помилка пошуку у ${currentCity}`);
+        const useCoords = !overrides.city && sel && sel.name.toLowerCase() === currentCity.toLowerCase();
+        let searchData;
+        try {
+          searchData = await safeJsonFetch("/api/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              city: currentCity, query: q, country: cc, maxResults: mr, radius: r,
+              ...(useCoords ? { lat: sel.lat, lng: sel.lng, displayName: sel.displayName } : {}),
+            }),
+            timeoutMs: 60000,
+          }, `Помилка пошуку у ${currentCity}`);
+        } catch (error) {
+          if (cities.length === 1) throw error;
+          failedCities.push(currentCity);
+          continue;
+        }
 
         const businesses = searchData.businesses || [];
         if (searchData.note) emptyNote = searchData.note;
@@ -428,18 +435,25 @@ export default function Home() {
         }
 
         for (const b of businesses) {
-          const key = b.name.toLowerCase().trim();
-          if (!seenNames.has(key)) {
-            seenNames.add(key);
+          const key = leadKey(b);
+          if (!seenBusinesses.has(key)) {
+            seenBusinesses.add(key);
             allBusinesses.push(b);
           }
         }
       }
 
+      if (failedCities.length === cities.length) {
+        throw new Error(`Пошук не вдався у містах: ${failedCities.join(", ")}`);
+      }
+      if (failedCities.length) {
+        setErrorMessage(`Результати неповні. Пошук не вдався у містах: ${failedCities.join(", ")}`);
+      }
+
       if (allBusinesses.length === 0) {
         setPhase("done"); setProgress(100);
         setProgressLabel(emptyNote || "Нічого не знайдено.");
-        saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: 0 });
+        saveSearchHistory({ ...historyEntry, totalResults: 0 });
         setSearchHistory(getSearchHistory());
         return;
       }
@@ -458,7 +472,7 @@ export default function Home() {
         let finalUrl = "", technologies: string[] = [], designScore: DesignScore = "unknown";
         let designNotes: string[] = [], pageTitle = "", hasContactForm = false;
         let hasMetaDescription = false, hasOpenGraph = false;
-        let securityIssues: string[] = [], analysisLimited = false;
+        let securityIssues: string[] = [], analysisLimited = true;
 
         if (b.website && b.website !== "N/A") {
           try {
@@ -476,12 +490,12 @@ export default function Home() {
             hasMetaDescription = d.hasMetaDescription || false;
             hasOpenGraph = d.hasOpenGraph || false;
             securityIssues = d.securityIssues || [];
-            analysisLimited = d.analysisLimited || false;
+            analysisLimited = d.analysisLimited !== false;
           } catch { /* skip failed analysis */ }
         }
 
         const lead: LeadBusiness = {
-          name: b.name, phone: b.phone, website: b.website, address: b.address,
+          osmId: b.osmId, name: b.name, phone: b.phone, website: b.website, address: b.address,
           email: b.email, facebook: b.facebook, instagram: b.instagram, telegram: b.telegram,
           openingHours: b.openingHours, description: b.description,
           rating: b.rating, reviews: b.reviews,
@@ -489,7 +503,7 @@ export default function Home() {
           designScore, designNotes, securityIssues, pageTitle, hasContactForm,
           hasMetaDescription, hasOpenGraph,
           analysisLimited,
-          score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl),
+          score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl, analysisLimited),
           status: "new", notes: "", contactDate: null,
         };
         analyzed[i] = lead;
@@ -515,14 +529,16 @@ export default function Home() {
       setLeads(analyzed.filter(Boolean));
 
       // Save to search history
-      saveSearchHistory({ city: c, query: q, maxResults: parseInt(mr) || 20, radius: parseInt(r) || 10, totalResults: analyzed.length });
+      saveSearchHistory({ ...historyEntry, totalResults: analyzed.length });
       setSearchHistory(getSearchHistory());
 
       setPhase("done"); setProgress(100); setProgressLabel(`Готово! ${analyzed.length} лідів з ${cities.length} міст`);
     } catch (err) {
       setPhase("error"); setErrorMessage(err instanceof Error ? err.message : "Помилка");
+    } finally {
+      searchActive.current = false;
     }
-  }, [city, query, nicheToken, maxResults, radius, sendTelegramNotification]);
+  }, [city, query, nicheToken, maxResults, radius, country, cancelCityLookup, sendTelegramNotification, psBulkChecking, psSingleChecking]);
 
   // Filtering — memoized so it only recomputes when leads/filters change,
   // not on every unrelated re-render (toasts, expand toggles, field edits).
@@ -532,38 +548,42 @@ export default function Home() {
         .filter((l) => filterScore === "ALL" || l.score === filterScore)
         .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
         .filter((l) => !onlyWithIssues || hasIssues(l))
-        .filter((l) => !onlyFavorites || favoritesSet.has(l.name))
+        .filter((l) => !onlyFavorites || favorites.some((favorite) => matchesFavorite(favorite, l)))
         .filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))
         .sort((a, b) => {
           const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
           return order[a.score] - order[b.score];
         }),
-    [leads, filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, favoritesSet]
+    [leads, filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, favorites]
   );
 
   // Stats — single pass over leads instead of 7 separate filter scans.
   const { hotCount, warmCount, coldCount, ancientCount, noMobileCount, noSslCount, noWebsiteCount, avgPrice } =
     useMemo(() => {
       let hot = 0, warm = 0, cold = 0, ancient = 0, noMobile = 0, noSsl = 0, noWeb = 0;
-      let sumMin = 0, sumMax = 0;
+      let sumMin = 0, sumMax = 0, priced = 0;
       for (const l of leads) {
         if (l.score === "HOT") hot++;
         else if (l.score === "WARM") warm++;
         else if (l.score === "COLD") cold++;
+        const evidence = getWebsiteEvidence(l);
+        if (evidence === "not-listed") noWeb++;
+        if (evidence !== "checked") continue;
         if (l.designScore === "ancient") ancient++;
-        if (l.website !== "N/A" && !l.isMobileFriendly) noMobile++;
-        if (l.website !== "N/A" && !l.hasSsl) noSsl++;
-        if (!l.website || l.website === "N/A") noWeb++;
+        if (!l.isMobileFriendly) noMobile++;
+        if (!l.hasSsl) noSsl++;
         const p = estimatePrice(l);
-        sumMin += p.min;
-        sumMax += p.max;
+        if (p.max > 0) {
+          priced++;
+          sumMin += p.min;
+          sumMax += p.max;
+        }
       }
-      const n = leads.length || 1;
       return {
         hotCount: hot, warmCount: warm, coldCount: cold, ancientCount: ancient,
         noMobileCount: noMobile, noSslCount: noSsl, noWebsiteCount: noWeb,
-        avgPrice: leads.length > 0
-          ? { min: Math.round(sumMin / n), max: Math.round(sumMax / n) }
+        avgPrice: priced > 0
+          ? { min: Math.round(sumMin / priced), max: Math.round(sumMax / priced) }
           : { min: 0, max: 0 },
       };
     }, [leads]);
@@ -624,12 +644,17 @@ export default function Home() {
   }, [updateLead, leads]);
 
   const handleRunHistorySearch = useCallback((entry: SearchHistoryEntry) => {
-    setCity(entry.city);
-    setQuery(entry.query); setNicheToken(entry.query);
+    if (searchActive.current || psBulkChecking || psSingleChecking !== null) return;
+    pickCity(entry.city, null, entry.singleCity ?? false);
+    setQuery(entry.query); setNicheToken("");
     setMaxResults(String(entry.maxResults));
     setRadius(String(entry.radius));
-    handleSearch(entry.city, entry.query, String(entry.maxResults), String(entry.radius));
-  }, [handleSearch]);
+    if (entry.country) setCountry(entry.country);
+    handleSearch({
+      city: entry.city, query: entry.query, maxResults: String(entry.maxResults),
+      radius: String(entry.radius), country: entry.country, singleCity: entry.singleCity,
+    });
+  }, [handleSearch, pickCity, psBulkChecking, psSingleChecking]);
 
   const handleRemoveHistoryItem = useCallback((id: string) => {
     removeSearchHistoryItem(id);
@@ -651,17 +676,12 @@ export default function Home() {
     }
     const parsed = parseQuery(trimmed);
     setParsedQuery(parsed);
-    if (parsed.city) setCity(parsed.city);
+    if (parsed.city) pickCity(parsed.city, null);
     if (parsed.query) { setQuery(parsed.query); setNicheToken(""); }
-    // Auto-switch locale based on detected language
-    if (parsed.language === "en") setLocale("en");
-    else if (parsed.language === "ru") setLocale("ru");
-    else if (parsed.language === "ua") setLocale("ua");
-    // If both city and query are present, trigger search
     if (parsed.city && parsed.query) {
-      handleSearch(parsed.city, parsed.query);
+      handleSearch({ city: parsed.city, query: parsed.query, singleCity: true });
     }
-  }, [handleSearch]);
+  }, [handleSearch, pickCity]);
 
   // ─── Single PageSpeed check ──────────────────────────────
   const checkSinglePageSpeed = useCallback(async (lead: LeadBusiness, idx: number) => {
@@ -775,7 +795,7 @@ export default function Home() {
   }, [leads, showToast, t.pageSpeedError, t.pageSpeedNoResults, t.pageSpeedDone]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
+    <div className="lead-workspace min-h-screen">
       {/* Toast */}
       {toastMsg && (
         <div className="fixed top-4 right-4 z-[100] animate-in fade-in slide-in-from-top-2">
@@ -786,16 +806,11 @@ export default function Home() {
       )}
 
       {/* Header */}
-      <header className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg">
-              <Target className="w-4.5 h-4.5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">{t.appTitle}</h1>
-              <p className="text-[10px] text-muted-foreground">{t.appSubtitle}</p>
-            </div>
+      <header className="lead-topbar">
+        <div className="lead-shell lead-brand-row">
+          <div className="lead-brand">
+            <span className="lead-brand-mark"><Target aria-hidden="true" /></span>
+            <span>{t.appTitle}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {/* Language Switcher */}
@@ -805,104 +820,33 @@ export default function Home() {
                   key={loc.value}
                   onClick={() => setLocale(loc.value)}
                   className={`text-sm px-1 py-0.5 rounded transition-colors ${locale === loc.value ? 'bg-muted ring-1 ring-border' : 'hover:bg-muted/50 opacity-60 hover:opacity-100'}`}
+                  aria-label={loc.label}
+                  aria-pressed={locale === loc.value}
                   title={loc.label}
                 >
                   {loc.flag}
                 </button>
               ))}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} title={t.settings}>
+            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} aria-label={t.settings} title={t.settings}>
               <Settings className="w-4 h-4" />
             </Button>
-            {leads.length > 0 && (
-              <>
-                <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
-                  <FileText className="w-4 h-4" /><span className="hidden sm:inline ml-1">{t.exportCsv}</span>
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
-                  <FileSpreadsheet className="w-4 h-4" /><span className="hidden sm:inline ml-1">{t.exportExcel}</span>
-                </Button>
-                {hotCount > 0 && (
-                  <Button size="sm" onClick={() => handleExport("excel", true)} className="bg-red-600 hover:bg-red-700 text-white" title="Тільки HOT">
-                    <Flame className="w-4 h-4" /><span className="hidden sm:inline ml-1">HOT ({hotCount})</span>
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleBulkPageSpeed}
-                  disabled={psBulkChecking}
-                  title={t.bulkPageSpeedDesc}
-                  className="border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
-                >
-                  {psBulkChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
-                  <span className="hidden sm:inline ml-1">{t.pageSpeed}</span>
-                </Button>
-              </>
-            )}
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
-        {/* Search Card */}
-        <Card className="shadow-lg border-0">
-          <CardContent className="pt-5">
-            {/* Smart Query Input */}
-            <div className="space-y-1 mb-3">
-              <label className="text-xs font-medium text-muted-foreground">🔍 {t.nicheLabel}</label>
-              <div className="relative">
-                <Input
-                  placeholder={t.nichePlaceholder}
-                  value={smartQuery}
-                  onChange={(e) => setSmartQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleSmartQuery(smartQuery);
-                    }
-                  }}
-                  disabled={phase === "searching" || phase === "analyzing"}
-                  className="pr-20"
-                />
-                {smartQuery && (
-                  <button
-                    onClick={() => { setSmartQuery(""); setParsedQuery(null); }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-              {parsedQuery && smartQuery && (
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {parsedQuery.city && (
-                    <Badge variant="outline" className="text-[10px]">
-                      <MapPin className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.city}
-                    </Badge>
-                  )}
-                  {parsedQuery.query && (
-                    <Badge variant="outline" className="text-[10px]">
-                      <Target className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.query}
-                    </Badge>
-                  )}
-                  <Badge variant="secondary" className="text-[10px]">
-                    {parsedQuery.language === 'ua' ? '🇺🇦' : parsedQuery.language === 'en' ? '🇬🇧' : parsedQuery.language === 'ru' ? '🇷🇺' : '🌐'}
-                  </Badge>
-                </div>
-              )}
-            </div>
-            <div className="relative flex items-center my-2">
-              <div className="flex-grow border-t"></div>
-              <span className="flex-shrink mx-2 text-[10px] text-muted-foreground">— {t.advanced} —</span>
-              <div className="flex-grow border-t"></div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <main className="lead-shell lead-main">
+        <section className="lead-intro" aria-labelledby="workspace-title">
+          <h1 id="workspace-title">{t.workspaceTitle}</h1>
+          <p>{t.workspaceHint}</p>
+        </section>
+        <section className="lead-panel lead-search" aria-label={t.workspaceTitle}>
+            <div className="lead-fields">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Країна</label>
+                <label htmlFor="lead-country" className="lead-label">{t.countryLabel}</label>
                 <Select value={country} onValueChange={(v) => { setCountry(v); selectedGeoRef.current = null; if (city.trim().length >= 2) fetchCities(city, v); }}
                   disabled={phase === "searching" || phase === "analyzing"}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="lead-country" className="lead-field"><SelectValue /></SelectTrigger>
                   <SelectContent className="max-h-72">
                     {COUNTRIES.map((co) => (
                       <SelectItem key={co.code} value={co.code}>{flagEmoji(co.code)} {co.name}</SelectItem>
@@ -910,22 +854,26 @@ export default function Home() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1 relative">
-                <label className="text-xs font-medium text-muted-foreground">{t.cityLabel}</label>
-                <Input placeholder={t.cityPlaceholder} value={city} autoComplete="off"
-                  onChange={(e) => { setCity(e.target.value); selectedGeoRef.current = null; fetchCities(e.target.value, country); }}
+              <div className="space-y-1 relative" onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setCityOpen(false);
+              }}>
+                <label htmlFor="lead-city" className="lead-label">{t.cityLabel}</label>
+                <Input id="lead-city" className="lead-field pr-8" placeholder={t.cityPlaceholder} value={city} autoComplete="off"
+                  onChange={(e) => { setCity(e.target.value); setCityOpen(true); selectedGeoRef.current = null; singleCityRef.current = null; fetchCities(e.target.value, country); }}
                   onFocus={() => setCityOpen(true)}
-                  onBlur={() => setTimeout(() => setCityOpen(false), 150)}
                   disabled={phase === "searching" || phase === "analyzing"}
-                  onKeyDown={(e) => { if (e.key === "Enter") { setCityOpen(false); handleSearch(); } }} />
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setCityOpen(false);
+                    if (e.key === "Enter") handleSearch();
+                  }} />
                 {cityLoading
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[30px] text-muted-foreground" />
-                  : <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-[30px] text-muted-foreground pointer-events-none" />}
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[35px] text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-[35px] text-muted-foreground pointer-events-none" />}
                 {cityOpen && cityHits.length > 0 && (
-                  <div className="absolute z-50 left-0 right-0 top-[58px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
+                  <div className="absolute z-50 left-0 right-0 top-[69px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
                     {cityHits.map((hit, i) => (
                       <button key={`${hit.lat}-${hit.lng}-${i}`} type="button"
-                        onMouseDown={(e) => { e.preventDefault(); pickCity(hit); }}
+                        onMouseDown={(e) => e.preventDefault()} onClick={() => pickCity(hit.name, hit)}
                         className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-start gap-1.5">
                         <MapPin className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
                         <span><span className="font-medium">{hit.name}</span>
@@ -935,10 +883,10 @@ export default function Home() {
                   </div>
                 )}
                 {cityOpen && cityHits.length === 0 && city.trim().length < 2 && citiesForCountry(country).length > 0 && (
-                  <div className="absolute z-50 left-0 right-0 top-[58px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
+                  <div className="absolute z-50 left-0 right-0 top-[69px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
                     {citiesForCountry(country).map((name) => (
                       <button key={name} type="button"
-                        onMouseDown={(e) => { e.preventDefault(); pickCuratedCity(name, country); }}
+                        onMouseDown={(e) => e.preventDefault()} onClick={() => pickCity(name, null)}
                         className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-center gap-1.5">
                         <MapPin className="w-3 h-3 shrink-0 text-muted-foreground" />
                         <span className="font-medium">{name}</span>
@@ -948,14 +896,14 @@ export default function Home() {
                 )}
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">{t.nicheLabel}</label>
-                <Input placeholder={t.nichePlaceholder} value={query} onChange={(e) => { setQuery(e.target.value); setNicheToken(""); }}
+                <label htmlFor="lead-category" className="lead-label">{t.nicheLabel}</label>
+                <Input id="lead-category" className="lead-field" placeholder={t.nichePlaceholder} value={query} onChange={(e) => { setQuery(e.target.value); setNicheToken(""); }}
                   disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">{t.countLabel}</label>
+                <label htmlFor="lead-limit" className="lead-label">{t.countLabel}</label>
                 <Select value={maxResults} onValueChange={setMaxResults} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="lead-limit" className="lead-field"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="10">10</SelectItem><SelectItem value="20">20</SelectItem>
                     <SelectItem value="50">50</SelectItem>
@@ -963,9 +911,9 @@ export default function Home() {
                 </Select>
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">{t.radiusLabel}</label>
+                <label htmlFor="lead-radius" className="lead-label">{t.radiusLabel}</label>
                 <Select value={radius} onValueChange={setRadius} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="lead-radius" className="lead-field"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="5">5 {t.km}</SelectItem><SelectItem value="10">10 {t.km}</SelectItem>
                     <SelectItem value="15">15 {t.km}</SelectItem><SelectItem value="25">25 {t.km}</SelectItem>
@@ -973,9 +921,14 @@ export default function Home() {
                   </SelectContent>
                 </Select>
               </div>
+              <Button onClick={() => handleSearch()} disabled={phase === "searching" || phase === "analyzing" || psBulkChecking || psSingleChecking !== null || !city.trim() || !query.trim()}
+                className="lead-search-submit">
+                {phase === "searching" || phase === "analyzing" ? <Loader2 className="animate-spin" /> : <Search />}
+                {phase === "searching" ? t.searching : phase === "analyzing" ? t.analyzing : t.searchButton}
+              </Button>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-              <span className="text-[10px] text-muted-foreground">{flagEmoji(country)} {t.quickKeywords}</span>
+            <div className="lead-niches">
+              <span className="text-xs text-muted-foreground">{t.quickKeywords}</span>
               {(() => {
                 const chips = nicheChipsForCountry(country, locale);
                 const hasLocalLang = chips.some((c) => c.local.toLowerCase() !== c.en.toLowerCase());
@@ -1001,7 +954,8 @@ export default function Home() {
                           onClick={() => { setQuery(display); setNicheToken(chip.token); }}
                           disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
                           title={chip.en}
-                          className="text-[11px] px-1.5 py-0.5 rounded-full border hover:bg-accent disabled:opacity-50 transition-colors">
+                          aria-pressed={nicheToken === chip.token}
+                          className="lead-niche">
                           {display}{showTr && <span className="text-muted-foreground"> · {chip.label}</span>}
                         </button>
                       );
@@ -1015,33 +969,70 @@ export default function Home() {
                 <AlertCircle className="w-4 h-4 shrink-0" />{errorMessage}
               </div>
             )}
-            <div className="mt-3">
-              <Button onClick={() => handleSearch()} disabled={(phase === "searching" || phase === "analyzing") || !city || !query}
-                className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg">
-                {phase === "searching" || phase === "analyzing" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
-                {phase === "searching" ? t.searching : phase === "analyzing" ? t.analyzing : t.searchButton}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            <details className="lead-quick-search">
+              <summary><Search aria-hidden="true" />{t.quickSearch}<ChevronDown aria-hidden="true" /></summary>
+              <form className="lead-quick-form" onSubmit={(event) => { event.preventDefault(); handleSmartQuery(smartQuery); }}>
+                <div className="relative min-w-0">
+                  <Input
+                    id="lead-quick-query"
+                    aria-label={t.quickSearch}
+                    placeholder={locale === "ua" ? "Наприклад, стоматології у Львові" : t.nichePlaceholder}
+                    value={smartQuery}
+                    onChange={(e) => { setSmartQuery(e.target.value); setParsedQuery(null); }}
+                    disabled={phase === "searching" || phase === "analyzing"}
+                    className="lead-field pr-10"
+                  />
+                  {smartQuery && (
+                    <button type="button" aria-label={t.clearQuery}
+                      onClick={() => { setSmartQuery(""); setParsedQuery(null); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground">
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <Button type="submit" variant="outline" className="h-[2.65rem]"
+                  disabled={!smartQuery.trim() || phase === "searching" || phase === "analyzing" || psBulkChecking || psSingleChecking !== null}>
+                  {t.searchButton}
+                </Button>
+              </form>
+              {parsedQuery && smartQuery && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {parsedQuery.city && (
+                    <Badge variant="outline" className="text-[10px]">
+                      <MapPin className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.city}
+                    </Badge>
+                  )}
+                  {parsedQuery.query && (
+                    <Badge variant="outline" className="text-[10px]">
+                      <Target className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.query}
+                    </Badge>
+                  )}
+                  <Badge variant="secondary" className="text-[10px]">
+                    {parsedQuery.language === 'ua' ? '🇺🇦' : parsedQuery.language === 'en' ? '🇬🇧' : parsedQuery.language === 'ru' ? '🇷🇺' : '🌐'}
+                  </Badge>
+                </div>
+              )}
+
+            </details>
+        </section>
 
         {/* Search History */}
         {searchHistory.length > 0 && (
-          <Card className="shadow-sm border-0">
-            <div onClick={() => setHistoryOpen(!historyOpen)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setHistoryOpen(!historyOpen)} className="w-full text-left p-3 flex items-center justify-between cursor-pointer select-none">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <History className="w-4 h-4 text-muted-foreground" />
-                {t.searchHistory} ({searchHistory.length})
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleClearHistory(); }} className="text-xs text-red-500 hover:text-red-600 h-6 px-2">
-                  <Trash2 className="w-3 h-3 mr-1" />{t.clearAll}
-                </Button>
-                {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
-              </div>
-            </div>
+          <Card className="lead-panel shadow-none py-0 gap-0">
+            <button type="button" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}
+              className="w-full text-left px-4 py-3 flex items-center justify-between cursor-pointer">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <History className="w-4 h-4 text-muted-foreground" /> {t.searchHistory} ({searchHistory.length})
+              </span>
+              {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+            </button>
             {historyOpen && (
               <div className="border-t max-h-60 overflow-y-auto">
+                <div className="flex justify-end p-2">
+                  <Button variant="ghost" size="sm" onClick={handleClearHistory} className="text-xs text-red-600">
+                    <Trash2 className="w-3 h-3 mr-1" />{t.clearAll}
+                  </Button>
+                </div>
                 {searchHistory.map((entry) => (
                   <div key={entry.id} className="flex items-center justify-between px-3 py-2 hover:bg-muted/50 border-b last:border-b-0 group">
                     <button onClick={() => handleRunHistorySearch(entry)} className="flex-1 text-left min-w-0">
@@ -1067,7 +1058,7 @@ export default function Home() {
 
         {/* Geo Locations Found */}
         {geoLocations.length > 0 && (
-          <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <MapPin className="w-3.5 h-3.5" />
               <span className="font-medium">{t.foundLocations}:</span>
@@ -1116,29 +1107,54 @@ export default function Home() {
           </CardContent></Card>
         )}
 
-        {/* Summary Dashboard */}
-        {leads.length > 0 && phase === "done" && (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-              <MiniStat label={t.totalLeads} value={leads.length} />
-              <MiniStat label={`🔥 ${t.hot}`} value={hotCount} color="text-red-600" />
-              <MiniStat label={t.veryOldSites} value={ancientCount} color="text-orange-600" />
-              <MiniStat label={t.notMobile} value={noMobileCount} color="text-amber-600" />
-              <MiniStat label={t.noSsl} value={noSslCount} color="text-red-600" />
-              <MiniStat label={t.noWebsite} value={noWebsiteCount} color="text-purple-600" />
-              <MiniStat label={t.avgEstimate} value={`${avgPrice.min}-${avgPrice.max}$`} color="text-emerald-600" />
-            </div>
-            <div className="text-center text-xs text-muted-foreground bg-muted/50 rounded-lg py-2 px-4">
-              🎯 <span className="font-semibold text-foreground">{filteredLeads.length}</span> {t.filteredLeads} •
-              {onlyFavorites && <span className="ml-1">{t.onlyFavorites} •</span>}
-              {t.readyToContact}
+        <section className="lead-panel lead-results" aria-labelledby="results-title">
+          <div className="lead-results-heading">
+            <h2 id="results-title">{t.resultsTitle}{leads.length > 0 && <span>{filteredLeads.length} / {leads.length}</span>}</h2>
+            <div className="lead-result-actions">
+            {leads.length > 0 && (
+              <>
+                <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
+                  <FileText className="w-4 h-4" /><span className="ml-1">{t.exportCsv}</span>
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
+                  <FileSpreadsheet className="w-4 h-4" /><span className="ml-1">{t.exportExcel}</span>
+                </Button>
+                {hotCount > 0 && (
+                  <Button size="sm" onClick={() => handleExport("excel", true)} variant="outline" title="Тільки HOT">
+                    <Flame className="w-4 h-4" /><span className="ml-1">HOT</span>
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleBulkPageSpeed}
+                  disabled={phase !== "done" || psBulkChecking || psSingleChecking !== null}
+                  title={t.bulkPageSpeedDesc}
+                  className="border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                >
+                  {psBulkChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
+                  <span className="ml-1">{t.pageSpeed}</span>
+                </Button>
+              </>
+            )}
             </div>
           </div>
-        )}
+
+          {leads.length > 0 && phase === "done" && (
+            <div className="lead-metrics">
+              <MiniStat label={t.totalLeads} value={leads.length} />
+              <MiniStat label={t.hot} value={hotCount} color="text-red-700 dark:text-red-400" />
+              <MiniStat label={t.noWebsite} value={noWebsiteCount} />
+              <MiniStat label={t.notMobile} value={noMobileCount} />
+              <MiniStat label={t.noSsl} value={noSslCount} />
+              <MiniStat label={t.veryOldSites} value={ancientCount} />
+              <MiniStat label={t.avgEstimate} value={avgPrice.max ? `$${avgPrice.min}–${avgPrice.max}` : "—"} />
+            </div>
+          )}
 
         {/* Filters */}
         {leads.length > 0 && (phase === "done" || phase === "analyzing") && (
-          <div className="space-y-3">
+          <div className="lead-filter-bar">
             <div className="flex flex-wrap items-center gap-2">
               <Filter className="w-4 h-4 text-muted-foreground" />
               {(["ALL", "HOT", "WARM", "COLD"] as const).map((s) => (
@@ -1150,7 +1166,7 @@ export default function Home() {
               ))}
               <div className="h-4 w-px bg-border mx-1" />
               <Select value={filterStatus} onValueChange={(v) => setFilterStatus(v as LeadStatus | "ALL")}>
-                <SelectTrigger className="h-8 w-auto text-xs min-w-[120px]">
+                <SelectTrigger aria-label={t.status} className="h-8 w-auto text-xs min-w-[120px]">
                   <SelectValue placeholder={t.status} />
                 </SelectTrigger>
                 <SelectContent>
@@ -1160,18 +1176,18 @@ export default function Home() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="flex items-center gap-3 ml-auto">
+              <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-muted-foreground">{t.onlyFavorites}</label>
-                  <Switch checked={onlyFavorites} onCheckedChange={setOnlyFavorites} />
+                  <label htmlFor="lead-filter-favorites" className="text-xs text-muted-foreground">{t.onlyFavorites}</label>
+                  <Switch id="lead-filter-favorites" checked={onlyFavorites} onCheckedChange={setOnlyFavorites} />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-muted-foreground">{t.onlyWithIssues}</label>
-                  <Switch checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
+                  <label htmlFor="lead-filter-issues" className="text-xs text-muted-foreground">{t.onlyWithIssues}</label>
+                  <Switch id="lead-filter-issues" checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-muted-foreground">{t.websitesOnly}</label>
-                  <Switch checked={onlyWithWebsite} onCheckedChange={setOnlyWithWebsite} />
+                  <label htmlFor="lead-filter-website" className="text-xs text-muted-foreground">{t.websitesOnly}</label>
+                  <Switch id="lead-filter-website" checked={onlyWithWebsite} onCheckedChange={setOnlyWithWebsite} />
               </div>
             </div>
           </div>
@@ -1179,81 +1195,68 @@ export default function Home() {
         )}
 
         {/* Lead Cards */}
-        <div className="space-y-3">
-          {filteredLeads.slice(0, visibleCount).map((lead, idx) => {
+        {filteredLeads.length > 0 && (
+          <div className="lead-column-head" aria-hidden="true">
+            <span>{t.businessColumn}</span><span>{t.websiteColumn}</span><span>{t.priorityColumn}</span><span>{t.status}</span><span />
+          </div>
+        )}
+        <div className="lead-list">
+          {filteredLeads.slice(0, visibleCount).map((lead) => {
             const realIdx = leads.indexOf(lead);
             const sc = getScoreColor(lead.score);
             const dc = getDesignColor(lead.designScore);
             const stc = getStatusColor(lead.status);
-            const isExpanded = expandedIdx === idx;
+            const identity = leadKey(lead);
+            const isExpanded = expandedLead === identity;
+            const evidence = getWebsiteEvidence(lead);
             const screenshotUrl = getScreenshotUrl(lead.finalUrl || lead.website);
             const mobileScreenshotUrl = getMobileScreenshotUrl(lead.finalUrl || lead.website);
             const websiteUrl = formatUrl(lead.finalUrl || lead.website);
             const price = estimatePrice(lead);
             const issues = getIssuesText(lead);
             const selectedTmpl = templates.find((t) => t.id === selectedTemplateId);
-            const isPreviewOpen = previewOpen.has(idx);
-            const isFav = favoritesSet.has(lead.name);
-            const worthiness = isWorthContacting(lead);
+            const isPreviewOpen = previewOpen.has(realIdx);
+            const isFav = favorites.some((favorite) => matchesFavorite(favorite, lead));
             const problems = getProblemsForLead(lead);
-            // Social presence but no real website — warmest prospect.
-            const socialOnly = lead.website === "N/A" && !!(lead.facebook || lead.instagram || lead.telegram);
 
             return (
-              <Card key={`${lead.name}-${realIdx}`} className={`border-l-4 shadow-sm overflow-hidden transition-all ${sc.border} hover:shadow-md`}>
-                {/* Header row */}
-                <div onClick={() => setExpandedIdx(isExpanded ? null : idx)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setExpandedIdx(isExpanded ? null : idx)} className="w-full text-left p-3 sm:p-4 flex items-start gap-3 cursor-pointer select-none">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-semibold text-sm sm:text-base truncate max-w-[200px] sm:max-w-[260px]">{lead.name}</span>
-                      <Badge className={`${sc.bg} ${sc.text} ${sc.border} font-bold text-[10px] px-1.5`}>{sc.emoji} {sc.label}</Badge>
-                      {lead.website !== "N/A" && (
-                        <Badge className={`${dc.bg} ${dc.text} text-[10px] px-1.5`}>{dc.emoji} {dc.label}</Badge>
-                      )}
-                      <Badge className={`${stc.bg} ${stc.text} text-[10px] px-1.5`}>{stc.emoji} {stc.label}</Badge>
-                      <Badge className="bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-[10px] px-1.5">
-                        <DollarSign className="w-2.5 h-2.5 mr-0.5" />${price.min}-{price.max}
-                      </Badge>
-                      {/* Contact Worthiness Badge */}
-                      <Badge className={`${worthiness.worth
-                        ? "bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800"
-                        : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700"
-                      } text-[10px] px-1.5 border`}>
-                        {worthiness.worth ? <ThumbsUp className="w-2.5 h-2.5 mr-0.5" /> : <ThumbsDown className="w-2.5 h-2.5 mr-0.5" />}
-                        {worthiness.score}/100
-                      </Badge>
-                      {socialOnly && (
-                        <Badge className="bg-pink-100 dark:bg-pink-950/40 text-pink-700 dark:text-pink-400 border border-pink-200 dark:border-pink-800 text-[10px] px-1.5">
-                          📱 Лише соцмережі
-                        </Badge>
-                      )}
+              <article key={identity} className="lead-record">
+                <div className="lead-row">
+                  <button type="button" aria-expanded={isExpanded} aria-controls={isExpanded ? `lead-details-${realIdx}` : undefined}
+                    onClick={() => setExpandedLead(isExpanded ? null : identity)} className="lead-row-content" disabled={phase === "analyzing"}>
+                    <div className="lead-company">
+                      <span className="lead-company-mark" aria-hidden="true">{lead.name.trim().slice(0, 1).toLocaleUpperCase() || "•"}</span>
+                      <span className="min-w-0">
+                        <span className="lead-company-name">{lead.name}</span>
+                        {lead.address && lead.address !== "N/A" && <span className="lead-row-caption">{lead.address}</span>}
+                        {(!lead.address || lead.address === "N/A") && lead.phone && lead.phone !== "N/A" && <span className="lead-row-caption">{lead.phone}</span>}
+                      </span>
                     </div>
-                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs sm:text-sm text-muted-foreground">
-                      {lead.phone !== "N/A" && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{lead.phone}</span>}
-                      {lead.address !== "N/A" && <span className="flex items-center gap-1 truncate max-w-[180px]"><MapPin className="w-3 h-3 shrink-0" />{lead.address}</span>}
-                      {lead.website !== "N/A" && <span className="flex items-center gap-1 truncate max-w-[140px]"><Globe className="w-3 h-3 shrink-0" />{lead.website.replace(/^https?:\/\//, "")}</span>}
+                    <div className="min-w-0">
+                      <span className="lead-row-domain">{lead.website && lead.website !== "N/A" ? lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "") : t.noWebsite}</span>
+                      {evidence !== "not-listed" && <span className="lead-row-caption">{evidence === "limited" ? t.analysisLimitedLabel : dc.label}</span>}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0 mt-1">
-                    {/* Favorite star */}
-                    <button onClick={(e) => handleToggleFavorite(lead, e)} className="p-1 rounded-md hover:bg-muted transition-colors" title={isFav ? t.removeFromFavorites : t.addToFavorites}>
-                      {isFav ? <Star className="w-4 h-4 text-amber-500 fill-amber-500" /> : <Star className="w-4 h-4 text-muted-foreground/40" />}
+                    <div className="lead-row-priority">
+                      <span className={`lead-priority lead-priority-${lead.score.toLowerCase()}`}>{sc.label}</span>
+                      {price.max > 0 && <span className="lead-row-caption">${price.min}–${price.max}</span>}
+                    </div>
+                    <div className="lead-row-status"><span className="lead-status">{stc.label}</span></div>
+                  </button>
+                  <div className="lead-row-actions">
+                    <button type="button" aria-pressed={isFav} onClick={(e) => handleToggleFavorite(lead, e)} className="lead-favorite"
+                      aria-label={isFav ? t.removeFromFavorites : t.addToFavorites} title={isFav ? t.removeFromFavorites : t.addToFavorites}>
+                      {isFav ? <Star className="fill-amber-500 text-amber-600" /> : <Star />}
                     </button>
-                    {screenshotUrl && (
-                      <div className="hidden sm:block w-16 h-10 rounded overflow-hidden border bg-muted relative">
-                        <img src={screenshotUrl} alt="" className="w-full h-full object-cover object-top" loading="lazy" />
-                      </div>
-                    )}
-                    {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                    {isExpanded ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
                   </div>
                 </div>
 
                 {/* Expanded Content */}
                 {isExpanded && (
-                  <div className="border-t bg-muted/20">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-3 sm:p-4">
+                  <div id={`lead-details-${realIdx}`} className="lead-inspector">
+                    <div className={`grid grid-cols-1 gap-5 p-4 sm:p-6 ${evidence === "not-listed" ? "" : "lg:grid-cols-2"}`}>
                       {/* LEFT: Screenshots */}
-                      <div className="space-y-3">
+                      {evidence !== "not-listed" && <div className="space-y-3">
                         {screenshotUrl && (
                           <div>
                             <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" />{t.desktop}</p>
@@ -1293,11 +1296,6 @@ export default function Home() {
                           </div>
                         )}
 
-                        {!screenshotUrl && !mobileScreenshotUrl && (
-                          <div className="text-center py-8 text-sm text-muted-foreground">
-                            {t.noSiteBestProspect}
-                          </div>
-                        )}
 
                         {/* PageSpeed Check Button */}
                         {lead.website !== "N/A" && (
@@ -1305,7 +1303,7 @@ export default function Home() {
                             size="sm"
                             variant="outline"
                             onClick={(e) => { e.stopPropagation(); checkSinglePageSpeed(lead, realIdx); }}
-                            disabled={psSingleChecking === realIdx || psBulkChecking}
+                            disabled={phase !== "done" || psSingleChecking !== null || psBulkChecking}
                             className="w-full text-xs border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
                           >
                             {psSingleChecking === realIdx
@@ -1313,12 +1311,19 @@ export default function Home() {
                               : <><Gauge className="w-3.5 h-3.5 mr-1.5" />{t.checkPageSpeed}</>}
                           </Button>
                         )}
-                      </div>
+                      </div>}
 
                       {/* RIGHT: Details */}
                       <div className="space-y-4">
+                        {evidence !== "checked" && (
+                          <div className="rounded-lg border bg-card px-4 py-3 text-sm">
+                            <strong>{evidence === "limited" ? t.analysisLimitedLabel : t.noWebsite}</strong>
+                            <p className="mt-1 text-muted-foreground">{issues}</p>
+                          </div>
+                        )}
+
                         {/* Design Issues Section */}
-                        <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-900/50">
+                        {evidence === "checked" && <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-900/50">
                           <h4 className="text-xs font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5" />
                             {t.problems} ({(() => {
@@ -1333,7 +1338,7 @@ export default function Home() {
                               </p>
                             ))}
                           </div>
-                        </div>
+                        </div>}
 
                         {/* Problem Library Details */}
                         {problems.length > 0 && (
@@ -1365,7 +1370,7 @@ export default function Home() {
                         )}
 
                         {/* Technologies & Badges */}
-                        {lead.website !== "N/A" && (
+                        {evidence === "checked" && (
                           <div>
                             <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
                               <Layout className="w-3.5 h-3.5" /> {t.technologies}
@@ -1392,7 +1397,7 @@ export default function Home() {
                         )}
 
                         {/* Security findings (header-derived, factual) */}
-                        {lead.website !== "N/A" && lead.securityIssues && lead.securityIssues.length > 0 && (
+                        {evidence === "checked" && lead.securityIssues && lead.securityIssues.length > 0 && (
                           <div>
                             <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
                               <ShieldOff className="w-3.5 h-3.5 text-red-500" /> {t.securityTitle}
@@ -1494,16 +1499,16 @@ export default function Home() {
                         })()}
 
                         {/* Price estimation */}
-                        <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-900/50">
+                        {price.max > 0 && <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-900/50">
                           <h4 className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
                             <DollarSign className="w-3.5 h-3.5" /> {t.priceEstimate}
                           </h4>
                           <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400">${price.min} — ${price.max}</div>
                           <div className="text-[10px] text-muted-foreground">{price.note}</div>
-                        </div>
+                        </div>}
 
                         {/* Scoring Breakdown — Why HOT? */}
-                        {(() => {
+                        {evidence === "checked" && (() => {
                           const breakdown = calculateLeadScoreDetailed(lead);
                           const dsc = getDetailedScoreColor(breakdown.rating);
                           const severityColors: Record<string, string> = { critical: "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30", warning: "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30", info: "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30" };
@@ -1554,7 +1559,7 @@ export default function Home() {
                                     className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 flex items-center gap-1 break-all">
                                     {websiteUrl.replace(/^https?:\/\//, "")} <ExternalLink className="w-3 h-3 shrink-0" />
                                   </a>
-                                ) : <span className="text-xs text-red-500 font-medium">{t.noSiteTopProspect}</span>}
+                                ) : <span className="text-xs text-muted-foreground">{t.noWebsite}</span>}
                               </div>
                             </div>
                           </div>
@@ -1628,7 +1633,7 @@ export default function Home() {
                             ))}
                           </SelectContent>
                         </Select>
-                        <Button variant="ghost" size="sm" onClick={() => togglePreview(idx)} className="text-[11px] h-7 px-2">
+                        <Button variant="ghost" size="sm" onClick={() => togglePreview(realIdx)} className="text-[11px] h-7 px-2">
                           {isPreviewOpen ? <ChevronUp className="w-3 h-3 mr-0.5" /> : <ChevronDown className="w-3 h-3 mr-0.5" />}
                           {isPreviewOpen ? t.hide : t.preview}
                         </Button>
@@ -1691,7 +1696,7 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-              </Card>
+              </article>
             );
           })}
         </div>
@@ -1707,19 +1712,19 @@ export default function Home() {
 
         {/* Empty state */}
         {phase === "idle" && (
-          <div className="text-center py-16 space-y-3">
-            <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center">
-              <Eye className="w-7 h-7 text-emerald-500" />
+          <div className="lead-empty">
+            <div className="lead-empty-symbol">
+              <Search aria-hidden="true" />
             </div>
             <h2 className="text-lg font-bold">{t.emptyTitle}</h2>
-            <p className="text-muted-foreground max-w-md mx-auto text-xs">
+            <p className="text-muted-foreground max-w-md text-sm">
               {t.emptyDescription}
             </p>
           </div>
         )}
 
         {phase === "done" && leads.length === 0 && (
-          <div className="text-center py-12 text-sm text-muted-foreground">{t.noResults}</div>
+          <div className="text-center py-12 text-sm text-muted-foreground">{progressLabel || t.noResults}</div>
         )}
 
         {phase === "done" && filteredLeads.length === 0 && leads.length > 0 && (
@@ -1728,11 +1733,12 @@ export default function Home() {
             {t.noFiltersResults}
           </div>
         )}
+        </section>
       </main>
 
       <footer className="border-t mt-auto">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 text-center text-[10px] text-muted-foreground">
-          {t.footer}
+        <div className="lead-shell py-4 text-xs text-muted-foreground">
+          <span>{t.appTitle}</span><span aria-hidden="true"> · </span><a className="underline underline-offset-2" href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>
         </div>
       </footer>
 
@@ -1838,9 +1844,9 @@ export default function Home() {
 
 function MiniStat({ label, value, color }: { label: string; value: number | string; color?: string }) {
   return (
-    <div className="rounded-lg p-2.5 bg-card border text-center">
-      <div className={`text-sm sm:text-base font-bold ${color || ""}`}>{value}</div>
-      <div className="text-[9px] sm:text-[10px] text-muted-foreground leading-tight">{label}</div>
+    <div className="lead-metric">
+      <div className={`lead-metric-value ${color || ""}`}>{value}</div>
+      <div className="lead-metric-label">{label}</div>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { validCoordinates } from "@/lib/osm-search";
 
 // City autocomplete. Given a partial name + ISO country code, returns matching
 // settlements with exact coordinates. The client passes those coordinates
@@ -15,11 +16,11 @@ interface CityHit {
   lng: number;
   country: string;
   type: string;
-  importance: number;
 }
 
 const PLACE_TYPES = new Set([
   "city", "town", "village", "municipality", "borough", "hamlet", "suburb",
+  "neighbourhood", "quarter", "district",
 ]);
 
 // Lower = more important settlement. Used so a big city always ranks above a
@@ -39,32 +40,34 @@ function rankHits(hits: CityHit[], q: string): CityHit[] {
     // Then by settlement weight: city > town > … > hamlet.
     const at = TYPE_RANK[a.type] ?? 9;
     const bt = TYPE_RANK[b.type] ?? 9;
-    if (at !== bt) return at - bt;
-    // Finally by provider importance (Nominatim) — bigger place wins ties.
-    return b.importance - a.importance;
+    return at - bt;
   });
 }
 
 async function fromPhoton(q: string, country: string): Promise<CityHit[]> {
-  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=15&osm_tag=place`;
+  const url = new URL("https://photon.komoot.io/api/");
+  url.searchParams.set("q", q);
+  url.searchParams.set("limit", "15");
+  url.searchParams.set("osm_tag", "place");
+  if (country) url.searchParams.set("countrycode", country.toUpperCase());
   const resp = await fetch(url, {
     headers: { "User-Agent": "LeadFinder/1.0" },
     signal: AbortSignal.timeout(8000),
   });
-  if (!resp.ok) return [];
+  if (!resp.ok) throw new Error("Сервіс підказок міст тимчасово недоступний.");
   const ct = resp.headers.get("content-type") || "";
-  if (!ct.includes("json")) return [];
+  if (!ct.includes("json")) throw new Error("Некоректна відповідь сервісу підказок міст.");
   const data = await resp.json();
-  const feats: any[] = data?.features || [];
+  const feats: any[] = Array.isArray(data?.features) ? data.features : [];
   const hits: CityHit[] = [];
   for (const f of feats) {
-    const p = f.properties || {};
+    const p = f?.properties || {};
     const cc = (p.countrycode || "").toLowerCase();
     if (country && cc !== country) continue;
-    const type = (p.osm_value || p.type || "").toLowerCase();
-    if (!PLACE_TYPES.has(type)) continue;
+    const type = [p.osm_value, p.type].find((value) => PLACE_TYPES.has(value));
+    if (!type) continue;
     const coords = f.geometry?.coordinates;
-    if (!coords) continue;
+    if (!validCoordinates(coords?.[1], coords?.[0])) continue;
     const region = p.state || p.county || "";
     hits.push({
       name: p.name || q,
@@ -73,40 +76,6 @@ async function fromPhoton(q: string, country: string): Promise<CityHit[]> {
       lng: coords[0],
       country: cc,
       type,
-      importance: 0,
-    });
-  }
-  return hits;
-}
-
-async function fromNominatim(q: string, country: string): Promise<CityHit[]> {
-  let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=10&accept-language=uk,en&featuretype=settlement`;
-  if (country) url += `&countrycodes=${encodeURIComponent(country)}`;
-  const resp = await fetch(url, {
-    headers: { "User-Agent": "LeadFinder/1.0 (lead tool)" },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!resp.ok) return [];
-  const ct = resp.headers.get("content-type") || "";
-  if (!ct.includes("json")) return [];
-  const data = await resp.json();
-  if (!Array.isArray(data)) return [];
-  const hits: CityHit[] = [];
-  for (const r of data) {
-    const type = (r.type || "").toLowerCase();
-    const cls = (r.class || "").toLowerCase();
-    if (cls === "place" && !PLACE_TYPES.has(type) && type !== "administrative") continue;
-    const lat = parseFloat(r.lat);
-    const lng = parseFloat(r.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    hits.push({
-      name: (r.display_name || "").split(",")[0] || q,
-      displayName: r.display_name || q,
-      lat,
-      lng,
-      country: (r.address?.country_code || country || "").toLowerCase(),
-      type: type === "administrative" ? "city" : type,
-      importance: typeof r.importance === "number" ? r.importance : 0,
     });
   }
   return hits;
@@ -137,15 +106,16 @@ export async function GET(request: NextRequest) {
   const q = (searchParams.get("q") || "").trim();
   const country = (searchParams.get("country") || "").trim().toLowerCase();
 
+  if (country && !/^[a-z]{2}$/.test(country)) {
+    return NextResponse.json({ cities: [], error: "Некоректний код країни." }, { status: 400 });
+  }
   if (q.length < 2) {
     return NextResponse.json({ cities: [] });
   }
 
   try {
-    let hits = await fromPhoton(q, country);
-    if (hits.length === 0) {
-      hits = await fromNominatim(q, country);
-    }
+    // Photon supports autocomplete. Keep public Nominatim for submitted searches.
+    const hits = await fromPhoton(q, country);
     return NextResponse.json({ cities: dedupe(rankHits(hits, q)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "geocode error";
