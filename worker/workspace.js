@@ -13,6 +13,29 @@ const statuses = [
   "won",
   "skipped",
 ];
+const hasContact = (b) =>
+  Boolean((b.phone && b.phone !== "N/A") || (b.email && b.email !== "N/A"));
+// Least recently checked first. For "booking" sites go first (the check needs a site);
+// for "website" half of the run goes to contactable companies without an own site — the hottest leads.
+export function pickQueue(businesses, seen, service) {
+  const fresh = (a, b) =>
+    (seen.get(a.osmId) || "").localeCompare(seen.get(b.osmId) || "");
+  const all = businesses.filter((b) => b.osmId && b.name);
+  if (service !== "website")
+    return all
+      .sort((a, b) => fresh(a, b) || Number(hasWebsite(b)) - Number(hasWebsite(a)))
+      .slice(0, LIMITS.perRun);
+  const noSite = all.filter((b) => !hasWebsite(b) && hasContact(b)).sort(fresh);
+  const rest = all
+    .filter((b) => !noSite.includes(b))
+    .sort((a, b) => fresh(a, b) || Number(hasWebsite(b)) - Number(hasWebsite(a)));
+  const picked = [...noSite.slice(0, LIMITS.perRun / 2)];
+  for (const b of [...rest, ...noSite.slice(LIMITS.perRun / 2)]) {
+    if (picked.length >= LIMITS.perRun) break;
+    picked.push(b);
+  }
+  return picked;
+}
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
 const json = (data, status = 200) =>
   Response.json(data, {
@@ -380,7 +403,7 @@ export class Workspace {
           c.query,
           LIMITS.perRun * 5,
           c.radius,
-          true,
+          c.service === "booking",
         );
         if (!current()) return;
         this.setTransient(
@@ -411,14 +434,7 @@ export class Workspace {
             return [lead.osmId, lead.checkedAt];
           }),
       );
-      c.queue = businesses
-        .filter((b) => b.osmId && b.name)
-        .sort(
-          (a, b) =>
-            (seen.get(a.osmId) || "").localeCompare(seen.get(b.osmId) || "") ||
-            Number(hasWebsite(b)) - Number(hasWebsite(a)),
-        )
-        .slice(0, LIMITS.perRun);
+      c.queue = pickQueue(businesses, seen, c.service);
       c.checked = 0;
       c.total = c.queue.length;
       c.attempt = 0;

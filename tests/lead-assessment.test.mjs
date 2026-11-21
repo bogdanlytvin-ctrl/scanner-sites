@@ -89,3 +89,66 @@ test("a linked official contact page can supply a public contact", async t => {
   assert.deepEqual(result.contact, { kind: "email", value: "office@clinic.example", source: clinic.website + "contacts" });
   assert.equal(result.priority, "high");
 });
+
+test("selling a website: no own site with a phone is a high-priority lead", async t => {
+  const calls = respond(t, "");
+  const result = await assessLead({ ...clinic, website: "N/A" }, "website");
+  assert.equal(result.priority, "high");
+  assert.equal(result.confidence, "partial");
+  assert.match(result.summary, /не вказано власного сайту/);
+  assert.match(result.suggestion, /Google/);
+  assert.deepEqual(calls, []);
+});
+
+test("selling a website: only a social profile is a high lead, without contact only review", async t => {
+  respond(t, "");
+  const social = await assessLead({ ...clinic, website: "instagram.com/voloshka" }, "website");
+  assert.equal(social.priority, "high");
+  assert.match(social.summary, /соцмережі/);
+  assert.equal(social.evidence.at(-1).url, "https://instagram.com/voloshka");
+  const viaField = await assessLead({ ...clinic, website: "", instagram: "https://www.instagram.com/voloshka" }, "website");
+  assert.match(viaField.summary, /соцмережі/);
+  const noContact = await assessLead({ ...clinic, website: "N/A", phone: "" }, "website");
+  assert.equal(noContact.priority, "review");
+});
+
+function serve(t, handler) {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Answer: [{ type: 1, data: "93.184.216.34" }] });
+    calls.push(url.href);
+    return handler(url, calls.length);
+  });
+  return calls;
+}
+
+test("a site that fails twice (no answer / 5xx) is a verified high lead", async t => {
+  const calls = serve(t, () => { throw new TypeError("fetch failed"); });
+  const dead = await assessLead(clinic, "website");
+  assert.equal(dead.priority, "high");
+  assert.equal(dead.confidence, "verified");
+  assert.match(dead.summary, /двічі не відкрився/);
+  assert.equal(calls.length, 2);
+  t.mock.restoreAll();
+  serve(t, () => new Response("bad gateway", { status: 522, headers: { "content-type": "text/html" } }));
+  assert.equal((await assessLead(clinic, "booking")).priority, "high");
+});
+
+test("one failure followed by a working page, 503 walls and our own guard are not 'dead'", async t => {
+  serve(t, (url, n) => n === 1 ? new Response("x", { status: 502 }) : new Response("ok", { headers: { "content-type": "text/html" } }));
+  assert.notEqual((await assessLead(clinic, "website")).priority, "high");
+  t.mock.restoreAll();
+  serve(t, () => new Response("Just a moment", { status: 503, headers: { "content-type": "text/html" } }));
+  assert.equal((await assessLead(clinic, "website")).priority, "review");
+  t.mock.restoreAll();
+  serve(t, () => assert.fail("guard must stop the request"));
+  assert.equal((await assessLead({ ...clinic, website: "http://clinic.example:8080/" }, "website")).priority, "review");
+});
+
+test("a parked 'domain for sale' page is a high lead", async t => {
+  serve(t, () => new Response("<html><head><title>clinic.example is for sale</title></head><body>Buy this domain today. Contact the registrar for the price of this premium domain name.</body></html>", { headers: { "content-type": "text/html" } }));
+  const result = await assessLead(clinic, "website");
+  assert.equal(result.priority, "high");
+  assert.match(result.summary, /заглушка/);
+});

@@ -13,7 +13,7 @@ export interface LeadAssessment {
   contact: { kind: "phone" | "email"; value: string; source: string } | null;
 }
 
-type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string };
+type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string };
 type Contact = NonNullable<LeadAssessment["contact"]>;
 
 const bookingLabel = /записат|запис на|онлайн.запис|заброню|бронюва|book (?:now|online|a |an )|appointment|reserv(?:e|ation)|umów|rezerw|записать/i;
@@ -59,13 +59,23 @@ function parsePage(html: string, url: string) {
   });
   const identityText = [$("title").first().text(), $("h1").first().text(), $('meta[property="og:site_name"]').attr("content") || ""].join(" ");
   const body = $("body").text().replace(/\s+/g, " ").trim();
-  const blocked = /^(just a moment|access denied|attention required|verify you are human|checking your browser|captcha|domain for sale)/i.test($("title").text().trim());
+  const title = $("title").text().trim();
+  const blocked = /^(just a moment|access denied|attention required|verify you are human|checking your browser|captcha|domain for sale)/i.test(title);
+  // Registrar/parking placeholders: the company no longer has a working site on this domain.
+  const parked = /domain (?:is )?for sale|buy this domain|this domain (?:is|may be) (?:for sale|parked)|domain (?:has )?expired|parked (?:free|domain)|домен продається|домен продается|купити цей домен|купить этот домен/i.test(title + " " + body.slice(0, 600));
   const viewport = $('meta[name="viewport" i]').first().attr("content") || "";
   const fixedWidth = Number(viewport.match(/(?:^|[,;\s])width\s*=\s*(\d+)(?=[,;\s]|$)/i)?.[1] || 0);
-  return { identityText, contacts, links, fixedWidth, readable: !blocked && body.length >= 60 };
+  return { identityText, contacts, links, fixedWidth, parked, readable: !blocked && !parked && body.length >= 60 };
 }
 
-type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null };
+type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean };
+
+/** No answer at all (DNS/connection failure, timeout) or an origin-down error. 503/429 are skipped: anti-bot walls use them. */
+function looksDead(r: PageReading): boolean {
+  if (r.refused) return false;
+  return r.status === 0 || [500, 502, 504].includes(r.status) || (r.status >= 520 && r.status <= 530);
+}
+const statusLabel = (r: PageReading) => (r.status ? "HTTP " + r.status : "немає відповіді");
 
 async function readPage(url: string, statusOnly = false): Promise<PageReading> {
   const result: PageReading = { url, status: 0, page: null };
@@ -98,7 +108,10 @@ async function readPage(url: string, statusOnly = false): Promise<PageReading> {
       html += decoder.decode(value, { stream: true });
     }
     result.page = parsePage(html + decoder.decode(), result.url);
-  } catch { /* Timeout and unreadable documents leave the result unconfirmed. */ }
+  } catch (err) {
+    // Our own safety guard (private IP, odd port, redirect loop) is not evidence that the site is down.
+    if (/^(Заблоковано|Дозволені|Некоректний|Забагато)/.test(err instanceof Error ? err.message : "")) result.refused = true;
+  }
   return result;
 }
 
@@ -133,10 +146,44 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
     contact: contact("phone", candidate.phone, mapUrl) || contact("email", candidate.email, mapUrl),
   };
   const home = candidate.website && candidate.website !== "N/A" ? webUrl(candidate.website) : null;
-  if (!home || socialDomain.test(new URL(home).hostname)) return assessment;
+  const hotLead = (summary: string, suggestion: string) => {
+    assessment.summary = summary;
+    assessment.priority = assessment.contact ? "high" : "review";
+    assessment.suggestion = assessment.contact ? suggestion : "Знайдіть телефон або пошту компанії перед зверненням.";
+    return assessment;
+  };
+  if (!home || socialDomain.test(new URL(home).hostname)) {
+    if (service !== "website") return assessment;
+    // Selling a website: no own site on the map (or only a social profile) is the classic lead.
+    // OSM can be incomplete, so this stays "partial" and the suggestion asks for a quick Google check.
+    const profile = [candidate.website, candidate.instagram, candidate.facebook]
+      .map(v => (v && v !== "N/A" ? webUrl(v) : null))
+      .find(url => url && socialDomain.test(new URL(url).hostname));
+    assessment.confidence = "partial";
+    if (profile) assessment.evidence.push({ label: "Сторінка в соцмережі замість сайту", url: profile });
+    return hotLead(
+      profile ? "Замість власного сайту — лише сторінка в соцмережі." : "На карті не вказано власного сайту компанії.",
+      "Перед дзвінком перевірте в Google, чи сайту справді немає. Запропонуйте простий сайт із контактами, цінами й онлайн-записом.",
+    );
+  }
 
   const reading = await readPage(home);
   assessment.evidence.push({ label: reading.status ? "Головна сторінка · HTTP " + reading.status : "Спроба відкрити головну сторінку", url: reading.url });
+  if (reading.page?.parked) {
+    assessment.confidence = "verified";
+    assessment.evidence.push({ label: "Домен показує заглушку продажу / паркування", url: reading.url });
+    return hotLead("На домені компанії замість сайту — заглушка «домен продається».",
+      "Запропонуйте новий сайт: зараз клієнти з карти потрапляють на чужу заглушку.");
+  }
+  if (looksDead(reading)) {
+    const repeat = await readPage(home, true);
+    assessment.evidence.push({ label: "Повторна перевірка · " + statusLabel(repeat), url: repeat.url });
+    if (looksDead(repeat)) {
+      assessment.confidence = "verified";
+      return hotLead("Сайт компанії двічі не відкрився (" + statusLabel(reading) + ", потім " + statusLabel(repeat) + ").",
+        "Запропонуйте відновити або зробити новий сайт: зараз клієнти бачать помилку.");
+    }
+  }
   const page = reading.page;
   if (!page?.readable || socialDomain.test(new URL(reading.url).hostname)) {
     assessment.summary = "Сторінку не вдалося прочитати достатньо для висновку.";
