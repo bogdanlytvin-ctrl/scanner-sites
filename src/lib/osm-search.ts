@@ -1,6 +1,8 @@
 // OpenStreetMap data via Overpass, with Photon city lookup and Nominatim
 // as a fallback for explicit city searches.
 
+import { mergeSources } from "./merge-sources";
+
 export interface GeoCoords {
   lat: number;
   lng: number;
@@ -30,6 +32,8 @@ export interface OSMResult {
   // True when the business has a social presence (FB/IG/Telegram) but no real
   // website — the warmest prospect: already online, just needs a proper site.
   socialOnly: boolean;
+  /** Directories this record came from: "osm", "overture" or both after merging. */
+  sources?: string[];
 }
 
 // ─── Overpass endpoints (fallback chain) ────────────────────
@@ -1164,7 +1168,8 @@ const readPublishedAsset: ReadAsset = path => fetch(new URL(path, "https://scann
   signal: AbortSignal.timeout(4000), redirect: "manual",
 });
 
-type SnapshotRow = ["n" | "w", number, number, number, Record<string, string>];
+// "o" rows come from the Overture Maps tiles and carry the Overture id (a string).
+type SnapshotRow = ["n" | "w" | "o", number | string, number, number, Record<string, string>];
 
 function matchesSelector(tags: Record<string, string>, selector: string): boolean {
   return selector.split("&").every(part => {
@@ -1239,7 +1244,7 @@ async function filterSnapshot(
   snapshot: CitySnapshot, selectors: string[], namePattern: string | undefined,
   lat: number, lng: number, radius: number,
 ) {
-  const elements: Array<{type: string; id: number; lat: number; lon: number; tags: Record<string,string>}> = [];
+  const elements: Array<{type: string; id: number | string; lat: number; lon: number; tags: Record<string,string>}> = [];
   // Each compressed group contains exactly the specified set of category tags.
   // Other tags (cuisine, names, contacts) are checked on the individual place.
   const indexedKeys = new Set(["shop", "amenity", "healthcare", "craft", "office", "tourism", "leisure"]);
@@ -1257,7 +1262,7 @@ async function filterSnapshot(
       if ((!namePattern || normalizeKeyword(tags.name).includes(namePattern))
           && selectors.some(selector => matchesSelector(tags, selector))
           && distanceKm(lat, lng, y, x) <= radius) {
-        elements.push({ type: kind === "n" ? "node" : "way", id, lat: y, lon: x, tags });
+        elements.push({ type: kind === "n" ? "node" : kind === "w" ? "way" : "overture", id, lat: y, lon: x, tags });
       }
     }
   }
@@ -1271,13 +1276,19 @@ const TILE_SOURCES = [
   "https://raw.githubusercontent.com/bogdanlytvin-ctrl/scanner-sites/osm-tiles/",
   "https://cdn.jsdelivr.net/gh/bogdanlytvin-ctrl/scanner-sites@osm-tiles/",
 ];
+// Second directory: Overture Maps places (Meta, Microsoft, Foursquare…), rebuilt monthly by refresh-overture.yml.
+const OVERTURE_SOURCES = [
+  "https://raw.githubusercontent.com/bogdanlytvin-ctrl/scanner-sites/overture-tiles/",
+  "https://cdn.jsdelivr.net/gh/bogdanlytvin-ctrl/scanner-sites@overture-tiles/",
+];
 type TileIndex = { asOf: string; tiles: Record<string, number> };
 const tileCache = new Map<string, { value: unknown; expires: number }>();
 
-async function fetchTileFile<T>(path: string, ttlMs: number, check: (data: any) => boolean): Promise<T> {
-  const hit = tileCache.get(path);
+async function fetchTileFile<T>(path: string, ttlMs: number, check: (data: any) => boolean, sources = TILE_SOURCES): Promise<T> {
+  const cacheKey = sources[0] + path;
+  const hit = tileCache.get(cacheKey);
   if (hit && hit.expires > Date.now()) return hit.value as T;
-  for (const base of TILE_SOURCES) {
+  for (const base of sources) {
     try {
       const response = await fetch(base + path, {
         redirect: "manual", signal: AbortSignal.timeout(8000),
@@ -1288,7 +1299,7 @@ async function fetchTileFile<T>(path: string, ttlMs: number, check: (data: any) 
       if (!check(data)) continue;
       // Keep the index and a handful of tiles warm without holding the whole country in memory.
       if (tileCache.size > 12) tileCache.delete(tileCache.keys().next().value as string);
-      tileCache.set(path, { value: data, expires: Date.now() + ttlMs });
+      tileCache.set(cacheKey, { value: data, expires: Date.now() + ttlMs });
       return data as T;
     } catch { /* try the mirror */ }
   }
@@ -1304,16 +1315,16 @@ export function tileCells(lat: number, lng: number, radiusKm: number): string[] 
   return cells;
 }
 
-async function readTiles(selectors: string[], namePattern: string | undefined, lat: number, lng: number, radius: number) {
+async function readTiles(selectors: string[], namePattern: string | undefined, lat: number, lng: number, radius: number, sources = TILE_SOURCES) {
   const index = await fetchTileFile<TileIndex>("index.json", 3600_000,
-    data => Number.isFinite(Date.parse(data?.asOf)) && data?.tiles && typeof data.tiles === "object");
+    data => Number.isFinite(Date.parse(data?.asOf)) && data?.tiles && typeof data.tiles === "object", sources);
   const cells = tileCells(lat, lng, radius);
   // Outside the country (or the index) tiles have nothing to say: let the caller use Overpass.
   if (!cells.some(cell => index.tiles[cell])) throw new Error("Немає каталогу для цієї місцевості.");
   const elements: Awaited<ReturnType<typeof filterSnapshot>>["elements"] = [];
   for (const cell of cells.filter(cell => index.tiles[cell])) {
     const tile = await fetchTileFile<CitySnapshot>(`tiles/${cell}.json`, 6 * 3600_000,
-      data => data?.city === "tile:" + cell && data?.groups && typeof data.groups === "object");
+      data => data?.city === "tile:" + cell && data?.groups && typeof data.groups === "object", sources);
     elements.push(...(await filterSnapshot(tile, selectors, namePattern, lat, lng, radius)).elements);
   }
   return { elements, asOf: index.asOf };
@@ -1331,8 +1342,19 @@ export async function discoverBusinessesAt(
   const selectors = tags || BROAD_BUSINESS_TAGS;
   const radius = Math.min(50, radiusKm);
   const pool = Math.min(Math.max(maxResults * 6, 120), 400);
-  const select = (elements: any[]) => {
-    const ranked = rankLeads(parseOverpassResults(elements), lat, lng, radius);
+  // Second directory (Overture Maps), read alongside OSM. If it is unreachable the search is OSM-only.
+  const overtureRead = readTiles(selectors, namePattern, lat, lng, radius, OVERTURE_SOURCES).catch(() => null);
+  const withOverture = async (elements: any[], source: string, note?: string, asOf?: string): Promise<DiscoveryResult> => {
+    const more = await overtureRead;
+    const merged = mergeSources(parseOverpassResults(elements), more ? parseOverpassResults(more.elements) : []);
+    const extra = !more ? "" : source === "Overture Maps" ? ` · ${more.asOf.slice(0, 10)}` : ` + Overture Maps · ${more.asOf.slice(0, 10)}`;
+    return {
+      businesses: select(merged), source: source + extra, asOf,
+      note: more ? (note ? note + " " : "") + "Доповнено даними Overture Maps (CDLA-Permissive-2.0): однакові заклади з двох карт об'єднано." : note,
+    };
+  };
+  const select = (places: OSMResult[]) => {
+    const ranked = rankLeads(places, lat, lng, radius);
     if (!preferSites) return pageLeads(ranked, maxResults);
     const priority = (item: OSMResult) => {
       const site = item.website !== "N/A" && !!item.website;
@@ -1346,11 +1368,9 @@ export async function discoverBusinessesAt(
   if (region) {
     try {
       const snapshot = await readSnapshot(region, selectors, namePattern, lat, lng, radius, readAsset);
-      regional = {
-        businesses: select(snapshot.elements),
-        source: `OpenStreetMap · ${region.city} · ${snapshot.asOf.slice(0,10)}`, asOf: snapshot.asOf,
-        note: `Регіональна вибірка відкритих даних на ${snapshot.asOf.slice(0,10)}. Покриття — вибрані категорії в межах 20 км від центру (${region.city}); позначки на мапі можуть бути неповними.`,
-      };
+      regional = await withOverture(snapshot.elements, `OpenStreetMap · ${region.city} · ${snapshot.asOf.slice(0,10)}`,
+        `Регіональна вибірка відкритих даних на ${snapshot.asOf.slice(0,10)}. Покриття — вибрані категорії в межах 20 км від центру (${region.city}); позначки на мапі можуть бути неповними.`,
+        snapshot.asOf);
       const fullyInside = distanceKm(lat, lng, region.lat, region.lng) + radius <= 20;
       if (regional.businesses.length && fullyInside && Date.now() - Date.parse(snapshot.asOf) < 7 * 86_400_000) return regional;
     } catch {
@@ -1361,18 +1381,19 @@ export async function discoverBusinessesAt(
   try {
     const tiles = await readTiles(selectors, namePattern, lat, lng, radius);
     const date = tiles.asOf.slice(0, 10);
-    return {
-      businesses: select(tiles.elements), source: `OpenStreetMap · ${date}`, asOf: tiles.asOf,
-      note: `Вибірка відкритих даних OpenStreetMap на ${date}; позначки на мапі можуть бути неповними.`,
-    };
+    return await withOverture(tiles.elements, `OpenStreetMap · ${date}`,
+      `Вибірка відкритих даних OpenStreetMap на ${date}; позначки на мапі можуть бути неповними.`, tiles.asOf);
   } catch {
     // No tile coverage or the data branch is unreachable: ask Overpass directly.
   }
   try {
     const elements = await executeQuery(buildSearchQuery(selectors, lat, lng, radius, pool, namePattern));
-    return { businesses: select(elements), source: "OpenStreetMap (Overpass)" };
+    return await withOverture(elements, "OpenStreetMap (Overpass)");
   } catch (err) {
     if (regional?.businesses.length) return regional;
+    // OSM unreachable everywhere: Overture alone is still a usable list.
+    const more = await overtureRead;
+    if (more?.elements.length) return await withOverture([], "Overture Maps");
     throw err;
   }
 }
@@ -1542,7 +1563,8 @@ function parseOverpassResults(elements: any[]): OSMResult[] {
 
     // Preserve separate branches of the same business. Repeated OSM objects
     // have the same type/id even when selected via several category tags.
-    const osmId = Number.isSafeInteger(el.id) ? `${el.type}/${el.id}` : "";
+    const osmId = Number.isSafeInteger(el.id) ? `${el.type}/${el.id}`
+      : el.type === "overture" && typeof el.id === "string" && /^[\w-]{8,64}$/.test(el.id) ? `overture/${el.id}` : "";
     const dedupKey = osmId || `${name.toLowerCase()}@${lat},${lng}`;
     if (seen.has(dedupKey)) continue;
     seen.add(dedupKey);
@@ -1564,7 +1586,8 @@ function parseOverpassResults(elements: any[]): OSMResult[] {
       description: el.tags?.["description"] || "",
       lat,
       lng,
-      type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || el.tags?.healthcare || "business",
+      type: el.tags?.amenity || el.tags?.shop || el.tags?.craft || el.tags?.office || el.tags?.tourism || el.tags?.healthcare || el.tags?.leisure || "business",
+      sources: [el.type === "overture" ? "overture" : "osm"],
     };
 
     // Merge an overlapping outline and point for the same named place while

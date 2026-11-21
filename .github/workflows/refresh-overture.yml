@@ -1,0 +1,44 @@
+name: Refresh Overture business tiles
+
+# Overture Maps publishes a new release about once a month (third week). Build the Ukraine
+# tiles a few days later; the search merges them with the OpenStreetMap tiles.
+on:
+  schedule:
+    - cron: '40 5 26 * *'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Overture release, e.g. 2026-11-18.0 (empty = latest)'
+        required: false
+
+jobs:
+  overture-tiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build Ukraine business tiles from Overture Maps
+        shell: bash
+        env:
+          RELEASE: ${{ github.event.inputs.release }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check duckdb==2.0.1
+          out="$RUNNER_TEMP/overture"
+          python scripts/build-overture-tiles.py "$out" ${RELEASE:+--release "$RELEASE"}
+      - name: Publish tiles as a single-commit data branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/overture"
+          printf '%s\n' "Business tiles for Lead Finder from Overture Maps (https://overturemaps.org). Data: Overture Maps Foundation, CDLA-Permissive-2.0." > README.md
+          git init -q -b overture-tiles
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -q -m "Ukraine Overture tiles $(date -u +%F)"
+          # One commit replaces the previous month: the data branch never grows.
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/overture-tiles

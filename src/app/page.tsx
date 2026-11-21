@@ -106,6 +106,7 @@ function CampaignItem({ item, busy, selected, select, act, setCadence }: { item:
       {item.nextAt && !item.paused && <p>{nextLabel} · {dateLabel(item.nextAt)}</p>}
       {item.source && <details className="lf-source"><summary>Джерело списку <ChevronDown size={13}/></summary>
         <p><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{item.source}</a></p>
+        {/Overture/.test(item.source) && <p><a href="https://docs.overturemaps.org/attribution/" target="_blank" rel="noreferrer">Overture Maps Foundation, CDLA-Permissive-2.0</a></p>}
         {item.sourceNote && <p>{item.sourceNote}</p>}
         {item.sourceDate && <p>Дані станом на {item.sourceDate.slice(0, 10)}</p>}
       </details>}
@@ -173,7 +174,8 @@ function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead;
   const rawSite = known(lead.website);
   const website = publicLink(rawSite) || (/^[\da-z.-]+\.[a-z]{2,}(?:[/?#]|$)/i.test(rawSite) ? publicLink("https://" + rawSite) : undefined);
   const source = publicLink(lead.contact?.source);
-  const osm = /^(node|way|relation)\/\d+$/.test(lead.osmId) ? "https://www.openstreetmap.org/" + lead.osmId : undefined;
+  const osm = /^(node|way|relation)\/\d+$/.test(lead.osmId) ? "https://www.openstreetmap.org/" + lead.osmId
+    : publicLink(lead.evidence.find(e => e.label.startsWith("Місце на карті"))?.url);
   return <article className="lf-lead">
     <div className="lf-lead-head"><span className={'lf-priority ' + lead.priority}>{priorities[lead.priority]}</span>
       {typeof lead.score === "number" && <span className={"lf-score " + (lead.score >= 75 ? "hot" : lead.score >= 50 ? "warm" : "cold")} title="Наскільки перспективний лід: причина звернутися, впевненість перевірки й наявність контакту">{lead.score}<small>/100</small></span>}

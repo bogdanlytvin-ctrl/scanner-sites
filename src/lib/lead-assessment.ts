@@ -25,7 +25,7 @@ export interface LeadAssessment {
 
 export type LeadKind = "no-site" | "social" | "placeholder" | "closed" | "dead" | "site" | "unclear";
 
-type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string };
+type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string; lat?: number; lng?: number; sources?: string[] };
 /** Real-browser check (Chromium + Lighthouse on the VPS): mobile score and a phone screenshot. */
 export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null; html?: string | null; cert?: { validTo: string; issuer?: string } | null };
 export type AssessOptions = {
@@ -502,11 +502,18 @@ export async function assessLead(candidate: Candidate & { branches?: number }, s
 }
 
 async function assessOnce(candidate: Candidate, service: LeadService, options: AssessOptions): Promise<LeadAssessment> {
-  const mapUrl = /^(node|way|relation)\/\d+$/.test(candidate.osmId) ? "https://www.openstreetmap.org/" + candidate.osmId : "";
+  const osmCard = /^(node|way|relation)\/\d+$/.test(candidate.osmId);
+  // Overture places have no public page of their own: point at the spot on the map instead.
+  const pin = Number.isFinite(candidate.lat) && Number.isFinite(candidate.lng)
+    ? `https://www.openstreetmap.org/?mlat=${candidate.lat}&mlon=${candidate.lng}#map=19/${candidate.lat}/${candidate.lng}` : "";
+  const mapUrl = osmCard ? "https://www.openstreetmap.org/" + candidate.osmId : pin;
+  const fromOverture = candidate.osmId.startsWith("overture/") || Boolean(candidate.sources?.includes("overture"));
+  const mapLabel = osmCard ? (fromOverture ? "Картка компанії в OpenStreetMap (доповнено даними Overture Maps)" : "Картка компанії в OpenStreetMap")
+    : "Місце на карті (дані Overture Maps)";
   const assessment: LeadAssessment = {
     priority: "review", confidence: "unknown", checkedAt: new Date().toISOString(),
     summary: "У картці немає підтвердженого власного сайту.", suggestion: "Уточніть офіційну адресу сайту компанії.",
-    evidence: mapUrl ? [{ label: "Картка компанії в OpenStreetMap", url: mapUrl }] : [],
+    evidence: mapUrl ? [{ label: mapLabel, url: mapUrl }] : [],
     contact: contact("phone", candidate.phone, mapUrl) || contact("email", candidate.email, mapUrl) || socialContact(candidate, mapUrl),
   };
   const home = candidate.website && candidate.website !== "N/A" ? webUrl(candidate.website) : null;

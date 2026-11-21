@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { geocodeCity, searchOverpassAt, validCoordinates } from "../src/lib/osm-search.ts";
+import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, next) {
+  return next(/^\.\/[\w-]+$/.test(specifier) && context.parentURL?.includes("/src/lib/") ? specifier + ".ts" : specifier, context);
+} });
+const { geocodeCity, searchOverpassAt, validCoordinates } = await import("../src/lib/osm-search.ts");
 import { parseQuery } from "../src/lib/query-parser.ts";
 import { calculateLeadScoreDetailed, getWebsiteEvidence, scoreLead } from "../src/lib/scoring.ts";
 

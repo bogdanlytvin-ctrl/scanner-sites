@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { discoverBusinessesAt, geocodeCity, regionalCity } from "../src/lib/osm-search.ts";
+import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, next) {
+  return next(/^\.\/[\w-]+$/.test(specifier) && context.parentURL?.includes("/src/lib/") ? specifier + ".ts" : specifier, context);
+} });
+const { discoverBusinessesAt, geocodeCity, regionalCity } = await import("../src/lib/osm-search.ts");
 
 const readAsset = async path => new Response(await readFile(new URL("../public" + path, import.meta.url)));
 const unavailable = () => new Response(null, { status: 503 });
@@ -74,7 +78,7 @@ test("an unreadable weekly file falls back to the shipped directory during a liv
 });
 
 import { gzipSync } from "node:zlib";
-import { tileCells } from "../src/lib/osm-search.ts";
+const { tileCells } = await import("../src/lib/osm-search.ts");
 
 const tileOf = (cell, rows) => ({
   city: "tile:" + cell, asOf: "2026-11-19T01:48:17Z",
