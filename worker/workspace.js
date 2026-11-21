@@ -503,6 +503,15 @@ export class Workspace {
       this.sql.exec("DELETE FROM leads WHERE campaign=?", c.id);
       this.sql.exec("DELETE FROM shots WHERE campaign=?", c.id);
       this.sql.exec("DELETE FROM campaigns WHERE id=?", c.id);
+    } else if (data.action === "cadence") {
+      if (!["manual", "daily", "weekly"].includes(data.cadence))
+        return failure("Некоректний розклад.");
+      c.cadence = data.cadence;
+      const period = { daily: DAY, weekly: 7 * DAY }[c.cadence];
+      // A running check keeps its own timer; an idle search gets the next run from now (or none for manual).
+      if (!c.paused && activePhases.includes(c.phase))
+        this.save(c, c.nextAt ? Date.parse(c.nextAt) : Date.now() + 500);
+      else this.save(c, period && !c.paused ? Date.now() + period : null);
     } else if (data.action === "pause") {
       c.paused = true;
       c.version = crypto.randomUUID();

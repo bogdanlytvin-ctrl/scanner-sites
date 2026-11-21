@@ -89,7 +89,7 @@ function SearchForm({ onCreate, busy }: { onCreate: (form: Action) => void; busy
   </form>;
 }
 
-function CampaignItem({ item, busy, selected, select, act }: { item: Campaign; busy: boolean; selected: boolean; select: () => void; act: (action: string) => void }) {
+function CampaignItem({ item, busy, selected, select, act, setCadence }: { item: Campaign; busy: boolean; selected: boolean; select: () => void; act: (action: string) => void; setCadence: (cadence: Cadence) => void }) {
   const running = [...activePhases, "retry"].includes(item.phase) && !item.paused;
   const nextLabel = item.phase === "retry" ? "Повтор після збою" : activePhases.includes(item.phase) ? "Наступний етап перевірки" : "Наступний пошук";
   const [confirm, setConfirm] = useState(false);
@@ -98,7 +98,7 @@ function CampaignItem({ item, busy, selected, select, act }: { item: Campaign; b
       <strong>{item.query}</strong><span><MapPin size={14} /> {item.city} · {item.radius} км</span>
     </button>
     <div className="lf-campaign-info">
-      <div className="lf-inline"><span className={'lf-phase ' + item.phase}>{item.paused ? "На паузі" : phases[item.phase]}</span><span>{cadences[item.cadence]}</span></div>
+      <div className="lf-inline"><span className={'lf-phase ' + item.phase}>{item.paused ? "На паузі" : phases[item.phase]}</span><select className="lf-cadence" aria-label={"Розклад пошуку " + item.query} value={item.cadence} disabled={busy} onChange={e => setCadence(e.target.value as Cadence)}>{Object.entries(cadences).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></div>
       <div>{services[item.service]}</div>
       {item.message && <p>{item.message}</p>}
       {item.total > 0 && <p>Перевірено {item.checked} із {item.total}</p>}
@@ -300,7 +300,7 @@ export default function Home() {
           {formVisible && <SearchForm onCreate={form => void mutate({ action: "create", ...form })} busy={mutating || !data}/>}
           {campaigns.length > 0 && <div className="lf-campaigns">
             <button className={'lf-all ' + (!selected ? "selected" : "")} onClick={() => setSelected("")} aria-pressed={!selected}>Усі пошуки <span>{campaigns.length}</span></button>
-            {campaigns.map(c => <CampaignItem key={c.id} item={c} selected={selected === c.id} select={() => setSelected(c.id)} busy={mutating} act={action => void mutate({ action, id: c.id })} />)}
+            {campaigns.map(c => <CampaignItem key={c.id} item={c} selected={selected === c.id} select={() => setSelected(c.id)} busy={mutating} act={action => void mutate({ action, id: c.id })} setCadence={cadence => void mutate({ action: "cadence", id: c.id, cadence })} />)}
           </div>}
         </section>{data && <AccessPanel busy={mutating} transfer={transfer} restore={code => mutate({ action: "restore", code })}/>}</aside>
         <section className="lf-panel lf-results" aria-labelledby="lf-results-title">

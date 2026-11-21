@@ -187,3 +187,4 @@
 .lf-draft textarea { width: 100%; min-height: 180px; margin: 6px 0; resize: vertical; font: inherit; line-height: 1.45; }
 .lf-draft-subject { margin: 8px 0 0; }
 .lf-draft-hint, .lf-draft-wait { margin: 2px 0 8px; color: var(--muted); font-size: .8rem; display: flex; gap: 6px; align-items: center; }
+.lf-cadence { width: auto; padding: 2px 6px; font-size: .8rem; }

@@ -246,7 +246,7 @@ test("without phone or email an Instagram/Telegram profile is the contact for a 
 const gapsOf = r => (r.gaps || []).map(g => (g.strong ? "!" : "") + g.label);
 
 test("site gaps: no mobile viewport, no HTTPS, old WordPress and no contact way are serious and evidenced", async t => {
-  serve(t, () => page('<html><head><title>Волошка</title><meta name="generator" content="WordPress 4.9.8"></head><body><h1>Волошка</h1><p>Ми працюємо для вас щодня. Сучасне лікування зубів для всієї родини у Львові.</p><footer>© 2016 Волошка</footer></body></html>'));
+  serve(t, url => url.protocol === "https:" ? Promise.reject(new TypeError("connect ECONNREFUSED")) : page('<html><head><title>Волошка</title><meta name="generator" content="WordPress 4.9.8"></head><body><h1>Волошка</h1><p>Ми працюємо для вас щодня. Сучасне лікування зубів для всієї родини у Львові.</p><footer>© 2016 Волошка</footer></body></html>'));
   const r = await assessLead({ ...clinic, website: "http://clinic.example/" }, "website");
   const gaps = gapsOf(r).join(" | ");
   for (const re of [/!Немає HTTPS/, /!Не адаптований під телефон/, /!WordPress 4\.9/, /!Немає зворотного зв'язку/, /!Сайт давно не оновлювався \(у футері © 2016\)/, /Немає опису для Google/])
@@ -387,4 +387,124 @@ test("real-browser probe: its score and phone screenshot are used; Google is not
   assert.equal(broken.screenshot, undefined);
   const junk = await assessLead(clinic, "website", { probe: async () => ({ score: 90, screenshot: "javascript:alert(1)" }) });
   assert.equal(junk.screenshot, undefined);
+});
+
+
+test("http-only link to a site that also works on https is a small redirect fix, not «no HTTPS»", async t => {
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>')));
+  const r = await assessLead({ ...clinic, website: "http://clinic.example/" }, "website");
+  const gaps = gapsOf(r).join(" | ");
+  assert.doesNotMatch(gaps, /Немає HTTPS/);
+  assert.match(gaps, /^Немає переадресації з http:\/\/ на https:\/\//);
+  assert.ok(r.evidence.some(e => /по https:\/\/ · HTTP 200/.test(e.label)));
+});
+
+test("an open copyright range finished by a script is not an old site; a closed old one is", async t => {
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><footer>© 2015 - <script>document.write(2026)</script> Волошка</footer>')));
+  assert.doesNotMatch(gapsOf(await assessLead(clinic, "website")).join(" | "), /давно не оновлювався/);
+  t.mock.restoreAll();
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><footer>© 2015 - 2019 Волошка</footer>')));
+  assert.match(gapsOf(await assessLead(clinic, "website")).join(" | "), /давно не оновлювався \(у футері © 2019\)/);
+});
+
+test("WordPress version is read from core files when the generator tag is hidden", async t => {
+  const core = '<script src="/wp-includes/js/jquery/jquery.js?ver=4.9.8"></script><script src="/wp-includes/js/wp-embed.min.js?ver=4.9.8"></script>';
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>', "Волошка", MODERN + core)));
+  assert.match(gapsOf(await assessLead(clinic, "website")).join(" | "), /!WordPress 4\.9 — версія без оновлень безпеки/);
+});
+
+test("the domain spelling the company name confirms the site when the page title does not", async t => {
+  serve(t, () => page(html('<a href="https://t.me/x">Telegram</a>', "Стоматологія на Подолі")));
+  const r = await assessLead({ ...clinic, name: "Галси", phone: "", website: "https://www.galsi-dental.com.ua/" }, "website");
+  assert.ok(r.evidence.some(e => /збігається з адресою сайту/.test(e.label)), r.summary);
+  t.mock.restoreAll();
+  serve(t, () => page(html('<a href="https://t.me/x">Telegram</a>', "Ресторани групи")));
+  const other = await assessLead({ ...clinic, name: "Масони", phone: "", website: "https://www.fest.lviv.ua/uk/restaurants/x" }, "website");
+  assert.match(other.summary, /не вдалося звірити/);
+});
+
+test("a QR-menu platform page instead of a site is a hot lead", async t => {
+  respond(t, "");
+  const r = await assessLead({ ...clinic, website: "https://qrboss.com.ua/poverh.restobar" }, "website");
+  assert.equal(r.priority, "high");
+  assert.match(r.summary, /платформі \(qrboss\.com\.ua\)/);
+});
+
+test("a resolving domain that is silent twice gets a slower third try before it is called dead", async t => {
+  let n = 0;
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] });
+    if (++n <= 2) throw new TypeError("fetch failed");
+    return page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>'));
+  });
+  const r = await assessLead(clinic, "website");
+  assert.doesNotMatch(r.summary, /не відкрився/);
+  assert.ok(r.evidence.some(e => /Третя перевірка .* HTTP 200/.test(e.label)));
+});
+
+test("a closed Google business.site is named as such", async t => {
+  serve(t, () => page("Not found", 404));
+  const r = await assessLead({ ...clinic, website: "https://dental-clinic-7066.business.site/" }, "website");
+  assert.equal(r.priority, "high");
+  assert.match(r.summary, /business\.site .* Google закрив у 2024/);
+});
+
+test("a map link with a www. that does not exist is judged by the working bare domain", async t => {
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Status: 3 });
+    if (url.hostname.startsWith("www.")) throw new TypeError("getaddrinfo ENOTFOUND");
+    return page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>'));
+  });
+  const r = await assessLead({ ...clinic, website: "https://www.clinic.example/" }, "website");
+  assert.doesNotMatch(r.summary, /не існує|не відкрився/);
+  assert.ok(r.evidence.some(e => /без www · HTTP 200/.test(e.label)));
+});
+
+test("buttons added by scripts (seen only in the browser) are not reported as missing", async t => {
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><form><input type="tel"><textarea></textarea></form>')));
+  const without = await assessLead(clinic, "website");
+  assert.match(gapsOf(without).join(" | "), /Немає кнопок месенджерів/);
+  const probe = async () => ({ score: 90, html: html('<a href="tel:+380501234567">Подзвонити</a><form><input type="tel"><textarea></textarea></form><a href="https://t.me/voloshka">Telegram</a>') });
+  const withBrowser = await assessLead(clinic, "website", { probe });
+  assert.doesNotMatch(gapsOf(withBrowser).join(" | "), /месенджерів/);
+  assert.ok(withBrowser.evidence.some(e => /в браузері \(з виконаними скриптами\)/.test(e.label)));
+});
+
+test("a hosting «site has been created» placeholder is a hot lead", async t => {
+  serve(t, () => page("<html><head><title>Congratulations!</title></head><body><h1>Congratulations, the site has been created!</h1><p>Your website is up and running! To put your site in this place, delete the index.html file in the site folder.</p></body></html>"));
+  const r = await assessLead(clinic, "website");
+  assert.equal(r.priority, "high");
+  assert.match(r.summary, /заглушка хостингу/);
+});
+
+test("a site wrapped in an iframe is not reported as having no contact", async t => {
+  serve(t, () => page('<html><head><title>Волошка</title>' + MODERN + '</head><body><h1>Волошка</h1><iframe src="/main.html" width="100%"></iframe></body></html>'));
+  const gaps = gapsOf(await assessLead(clinic, "website")).join(" | ");
+  assert.doesNotMatch(gaps, /зворотного зв'язку|онлайн-запису/);
+});
+
+test("phone or e-mail fields outside a <form> tag count as an enquiry form", async t => {
+  serve(t, () => page(html('<div class="t-form"><input type="tel" name="phone"><button>Надіслати</button></div>')));
+  assert.doesNotMatch(gapsOf(await assessLead(clinic, "website")).join(" | "), /зворотного зв'язку|Немає форми заявки/);
+});
+
+test("a map address without a scheme falls back to http when https does not answer", async t => {
+  serve(t, url => url.protocol === "https:" ? Promise.reject(new TypeError("fetch failed")) : page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>')));
+  const r = await assessLead({ ...clinic, website: "clinic.example" }, "website");
+  assert.doesNotMatch(r.summary, /не відкрився|не відкривається/);
+  assert.match(gapsOf(r).join(" | "), /!Немає HTTPS/);
+});
+
+test("a match by domain only (name absent on the page) is never a hot lead", async t => {
+  serve(t, () => page(html('<p>Національна лотерея: Золотий кубок</p>', "Лотерея")));
+  const r = await assessLead({ ...clinic, name: "Галси", phone: "", website: "https://www.galsi-dental.com.ua/" }, "website");
+  assert.notEqual(r.priority, "high");
+  assert.match(r.summary, /^Назви компанії на сторінці немає/);
+});
+
+test("a Russian-language hosting placeholder title is recognised too", async t => {
+  serve(t, () => page("<html><head><title>Поздравляем, сайт создан!</title></head><body><div><h1>Site is ready to use</h1><p>Upload your files to the site folder to replace this page.</p></div></body></html>"));
+  assert.match((await assessLead(clinic, "website")).summary, /заглушка хостингу/);
 });

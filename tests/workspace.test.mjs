@@ -276,3 +276,23 @@ test("offer templates cover a missing site and a dead site", async () => {
   const dead = templateOffer(offerFacts({ name: "Europa", website: "http://x.ua", summary: "Домен сайту x.ua більше не існує.", priority: "high" }, { city: "Ужгород" }));
   assert.match(dead.text, /проблема: домен сайту x\.ua більше не існує\./);
 });
+
+
+test("a saved search can switch between manual and daily runs", async () => {
+  const { objects, ns } = environment();
+  const r = await workspaceRequest(makeReq({ ...params, cadence: "manual" }), ns);
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  assert.equal(w.get(c.id).phase, "done");
+  assert.equal(w.get(c.id).nextAt, null);
+  await post(w, { action: "cadence", id: c.id, cadence: "daily" });
+  const daily = w.get(c.id);
+  assert.equal(daily.cadence, "daily");
+  const wait = Date.parse(daily.nextAt) - Date.now();
+  assert.ok(wait > 23 * 3600_000 && wait <= 24 * 3600_000, "next run in a day");
+  await post(w, { action: "cadence", id: c.id, cadence: "manual" });
+  assert.equal(w.get(c.id).nextAt, null);
+  assert.equal((await post(w, { action: "cadence", id: c.id, cadence: "hourly" })).status, 400);
+});

@@ -19,7 +19,7 @@ export interface LeadAssessment {
 
 type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string };
 /** Real-browser check (Chromium + Lighthouse on the VPS): mobile score and a phone screenshot. */
-export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null };
+export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null; html?: string | null };
 export type AssessOptions = { pageSpeedKey?: string; probe?: (url: string) => Promise<ProbeResult | null> };
 
 // Niches where clients expect to book online; hotels book rooms, the rest book a visit.
@@ -45,10 +45,10 @@ const contactsLabel = /контакт|contact|kontakt|зв[’'ʼ]?яз/i;
 const genericName = /^(стоматологія|стоматологічна|стоматологічний|медична|медичний|приватна|міська|лікарня|клініка|піцерія|кафе|ресторан|готель|магазин|салон|краси|львів|київ|центр|dental|clinic|dentist|hotel|studio|restaurant|cafe|the|and|salon)$/;
 const socialDomain = /(^|\.)(instagram\.com|facebook\.com|fb\.com|fb\.me|t\.me|linktr\.ee|wa\.me|tiktok\.com)$/i;
 // Hosted menu / link-in-bio pages: a business that has only these has no own website.
-const platformDomain = /(^|\.)(choiceqr\.com|taplink\.cc|taplink\.at|taplink\.ws|linkr\.bio|mssg\.me|beacons\.ai)$/i;
+const platformDomain = /(^|\.)(choiceqr\.com|qrboss\.com\.ua|taplink\.cc|taplink\.at|taplink\.ws|linkr\.bio|mssg\.me|beacons\.ai)$/i;
 // Sites behind bot protection reject non-browser agents from datacenter IPs; the analyzer route uses the same header.
 const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-const deadPage = /website [^<]{0,80} (?:is )?not configured|site not found|account (?:has been )?suspended|hosting (?:account )?(?:is )?suspended|this site can.t be reached|сайт не знайдено|сайт заблоковано|аккаунт заблокирован|хостинг призупинено/i;
+const deadPage = /website [^<]{0,80} (?:is )?not configured|site not found|account (?:has been )?suspended|hosting (?:account )?(?:is )?suspended|this site can.t be reached|сайт не знайдено|сайт заблоковано|аккаунт заблокирован|хостинг призупинено|the site has been created|your website is up and running|delete the index\.html|default (?:web )?page for (?:this|the) (?:domain|server)|apache2 (?:ubuntu|debian) default page|welcome to nginx|сайт успішно створено|сайт успешно создан|сайт створено!|сайт создан!|поздравляем, сайт создан|вітаємо, сайт створено/i;
 
 function webUrl(value: string, base?: string): string | null {
   try {
@@ -138,7 +138,9 @@ function parsePage(html: string, url: string) {
   const parked = /domain (?:is )?for sale|buy this domain|this domain (?:is|may be) (?:for sale|parked)|domain (?:has )?expired|parked (?:free|domain)|домен продається|домен продается|купити цей домен|купить этот домен/i.test(title + " " + body.slice(0, 600));
   const unconfigured = deadPage.test(title + " " + body.slice(0, 600));
   // Little visible text but a real title/description: the page is built by scripts, still a working site.
-  const scripted = body.length < 60 && (title.length >= 3 || metaText.length >= 20);
+  // A page that only wraps the real site in an iframe: its contacts live inside the frame, unseen here.
+  const framed = body.length < 400 && $("iframe[src]").filter((_, el) => { try { return new URL($(el).attr("src") || "", url).hostname === new URL(url).hostname; } catch { return false; } }).length > 0;
+  const scripted = (body.length < 60 && (title.length >= 3 || metaText.length >= 20)) || framed;
   const viewport = $('meta[name="viewport" i]').first().attr("content") || "";
   const fixedWidth = Number(viewport.match(/(?:^|[,;\s])width\s*=\s*(\d+)(?=[,;\s]|$)/i)?.[1] || 0);
   const hrefs = $("a[href]").map((_, el) => ($(el).attr("href") || "").trim()).get();
@@ -148,7 +150,9 @@ function parsePage(html: string, url: string) {
     form: $("form").filter((_, el) => {
       const f = $(el);
       return f.find("textarea, input[type=tel], input[type=email]").length > 0 || f.find("input[type=text], input:not([type])").length >= 2;
-    }).length > 0,
+    }).length > 0
+      // Script-built forms (Tilda, React) often skip the <form> tag: a phone/e-mail field or a message box is enough.
+      || $("textarea, input[type=tel], input[type=email]").filter((_, el) => !/search|пошук|поиск/i.test(($(el).attr("name") || "") + ($(el).attr("placeholder") || ""))).length > 0,
     telLink: hrefs.some(h => /^tel:/i.test(h)),
     mailLink: hrefs.some(h => /^mailto:/i.test(h)),
     messengers: hrefs.some(h => /^(viber|whatsapp|tg):|(^|\/\/)(t\.me|telegram\.me|wa\.me|api\.whatsapp\.com|m\.me)\//i.test(h)),
@@ -159,7 +163,7 @@ function parsePage(html: string, url: string) {
     phoneText: /(?:\+?38\s?)?\(?0\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}\b/.test(body),
     copyright: copyrightYear($("footer").text() || body),
     deadTech: /\.swf\b|application\/x-shockwave-flash|<frameset|<marquee/i.test(html),
-    cms: oldCms($('meta[name="generator" i]').attr("content") || ""),
+    cms: oldCms($('meta[name="generator" i]').attr("content") || "") || oldCms(wpAssetVersion(html)),
     description: ($('meta[name="description" i]').attr("content") || "").trim().length >= 30,
     // A "Записатися"/"Book now" control of any kind, or a known booking system on the page.
     booking: bookingWidget.test(html) || $("a, button, [role=button], input[type=submit]").filter((_, el) => bookingLabel.test(($(el).text() || $(el).attr("value") || $(el).attr("aria-label") || "").trim())).length > 0,
@@ -170,10 +174,19 @@ function parsePage(html: string, url: string) {
 /** Latest plausible year next to a ©/copyright marker; null when there is no trustworthy marker. */
 function copyrightYear(text: string): number | null {
   const now = new Date().getFullYear();
-  const years = [...text.matchAll(/(?:©|&copy;|\(c\)|copyright)\s*(?:\d{4}\s*[-–—]\s*)?(\d{4})/gi)]
+  // "© 2015 – " with the end year written by a script reads as an open range: not evidence of an old site.
+  const years = [...text.matchAll(/(?:©|&copy;|\(c\)|copyright)\s*(?:\d{4}\s*[-–—]\s*)?(\d{4})(?!\s*[-–—]\s*(?:\d|$|[^\d\s]))/gi)]
     .flatMap(m => (m[0].match(/\d{4}/g) || []).map(Number))
     .filter(y => y >= 2005 && y <= now + 1);
   return years.length ? Math.max(...years) : null;
+}
+
+/** WordPress core files carry the core version (?ver=4.9.8) even when the generator tag is removed. */
+function wpAssetVersion(html: string): string {
+  const versions = [...html.matchAll(/\/wp-includes\/[^"'\s?]+\?ver=(\d)\.(\d+)/gi)].map(m => m[1] + "." + m[2]);
+  // Several core files must agree; one plugin-style number is not enough.
+  const top = versions.find(v => versions.filter(x => x === v).length >= 2);
+  return top ? "WordPress " + top : "";
 }
 
 /** CMS versions that are out of support (security updates stopped). */
@@ -187,6 +200,8 @@ function oldCms(generator: string): string | null {
 }
 
 type Gap = { label: string; strong: boolean; pitch: string; missing?: string };
+/** Signals that mean "the visitor has this": present in either the raw HTML or the rendered page. */
+const PRESENCE = ["viewport", "form", "telLink", "mailLink", "messengers", "widget", "socials", "contactLink", "phoneText", "description", "booking"] as const;
 
 /** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
 /** Rough speed estimate without Google PageSpeed: only what the HTML and the response show. */
@@ -206,11 +221,14 @@ function slowHints(page: NonNullable<PageReading["page"]>, ms: number, bytes: nu
   return hints.length >= 2 || ms > 3500 ? hints : [];
 }
 
-function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = "", bytes = 0): Gap[] {
+function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = "", bytes = 0, httpsWorks = false): Gap[] {
   const s = page.signals, gaps: Gap[] = [];
   const now = new Date().getFullYear();
   const old = s.copyright !== null && s.copyright <= now - 5;
-  if (finalUrl.startsWith("http://"))
+  // HTTPS exists but http:// is not redirected: Chrome upgrades the visit itself, so it is a small fix, not "insecure".
+  if (finalUrl.startsWith("http://") && httpsWorks)
+    gaps.push({ label: "Немає переадресації з http:// на https:// (посилання на карті веде на незахищену адресу)", strong: false, pitch: "налаштувати переадресацію на HTTPS" });
+  else if (finalUrl.startsWith("http://"))
     gaps.push({ label: "Немає HTTPS — браузер позначає сайт як «Не захищено»", strong: true, pitch: "налаштувати HTTPS (SSL-сертифікат)", missing: "HTTPS" });
   if (!s.viewport)
     gaps.push({ label: "Не адаптований під телефон (немає налаштування viewport)", strong: true, pitch: "зробити мобільну версію", missing: "мобільної версії" });
@@ -260,13 +278,13 @@ function looksDead(r: PageReading): boolean {
 }
 const statusLabel = (r: PageReading) => (r.status ? "HTTP " + r.status : "немає відповіді");
 
-async function readPage(url: string, statusOnly = false): Promise<PageReading> {
+async function readPage(url: string, statusOnly = false, timeout = 7500): Promise<PageReading> {
   const result: PageReading = { url, status: 0, page: null };
   const started = Date.now();
   try {
     const response = await safeFetch(url, {
       headers: { Accept: "text/html,application/xhtml+xml", "Accept-Language": "uk,ru;q=0.8,en;q=0.6", "User-Agent": BROWSER_UA },
-      cache: "no-store", signal: AbortSignal.timeout(7500),
+      cache: "no-store", signal: AbortSignal.timeout(timeout),
     });
     result.url = response.url || url;
     result.status = response.status;
@@ -320,11 +338,32 @@ function sameContact(candidate: Candidate, item: Contact): boolean {
   return local.length >= 9 && (item.value.startsWith("+") ? siteDigits : mapDigits).endsWith(local);
 }
 
-function matchesBusiness(candidate: Candidate, page: ReturnType<typeof parsePage>) {
+/** The map links this site and its domain spells a distinctive word of the name (Кнаус → knaus.com.ua, Галси → galsi-dental). */
+function domainMatches(name: string, url: string): boolean {
+  const labels = new URL(url).hostname.toLowerCase().replace(/^www\./, "").split(".");
+  // Drop the public suffix (.com.ua, .kiev.ua, .lviv.ua, .ua, .com …): keep the registrable name.
+  while (labels.length > 1 && (labels.length > 2 || /^(com|net|org|in|biz|info|co|ua|kiev|kyiv|lviv|odessa|dp|kharkov|kh|zp|vn|if|te|lutsk|rv|pl|ck|cn|cv|zt|uz|km|mk|ks|sm|lg|dn)$/.test(labels[labels.length - 1])))
+    labels.pop();
+  const flat = labels.join("").replace(/[^a-z0-9]/g, "");
+  if (flat.length < 4) return false;
+  return words(name).filter(word => !genericName.test(word)).some(word => {
+    const base = latin(word);
+    const forms = new Set([base, base.replace(/h/g, "g"), base.replace(/y/g, "i"), base.replace(/h/g, "g").replace(/y/g, "i")]);
+    for (const form of forms) {
+      if (form.length < 4) continue;
+      if (flat.includes(form)) return true;
+      if (form.length < 5) continue;
+      for (let i = 0; i + form.length <= flat.length; i++) if (distance(form, flat.slice(i, i + form.length)) <= 1) return true;
+    }
+    return false;
+  });
+}
+
+function matchesBusiness(candidate: Candidate, page: ReturnType<typeof parsePage>, url = "") {
   const pageWords = new Set(words(page.identityText));
   const distinctive = words(candidate.name).filter(word => word.length >= 3 && !genericName.test(word));
   const nameMatches = distinctive.length > 0 && distinctive.every(word => hasWord(pageWords, word));
-  return nameMatches || page.contacts.some(item => sameContact(candidate, item));
+  return nameMatches || page.contacts.some(item => sameContact(candidate, item)) || (url !== "" && domainMatches(candidate.name, url));
 }
 
 /** Check only links advertised by the business. Confirm an actionable issue before ranking it high. */
@@ -412,13 +451,44 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   }
   if (looksDead(reading)) {
     // Full second read: after a transient failure it gives a page we can still assess.
-    const repeat = await readPage(home);
+    let repeat = await readPage(home);
     assessment.evidence.push({ label: "Повторна перевірка · " + statusLabel(repeat), url: repeat.url });
+    const host = new URL(home).hostname;
+    // Google closed all free business.site websites in 2024: the owner often still thinks the site exists.
+    if (looksDead(repeat) && /(^|\.)business\.site$/i.test(host)) {
+      assessment.confidence = "verified";
+      return hotLead("Сайт на business.site (безкоштовний сайт Google-профілю) Google закрив у 2024 році — посилання з карти веде на помилку.",
+        "Запропонуйте власний сайт замість закритого сайту Google: компанія, ймовірно, не знає, що його вже немає.");
+    }
+    const dns = looksDead(repeat) ? await dnsStatus(host) : "ok";
+    // Silence from a server whose domain resolves can be a short outage: one slower, later try before calling it dead.
+    if (looksDead(repeat) && repeat.status === 0 && dns === "ok") {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const last = await readPage(home, false, 15_000);
+      assessment.evidence.push({ label: "Третя перевірка (довше очікування) · " + statusLabel(last), url: last.url });
+      if (!looksDead(last)) repeat = last;
+    }
+    // The map may add a "www." the domain never had: the site itself can be fine without it.
+    if (looksDead(repeat) && dns === "missing" && host.startsWith("www.")) {
+      const bare = new URL(home);
+      bare.hostname = host.slice(4);
+      const alt = await readPage(bare.href);
+      assessment.evidence.push({ label: "Та сама адреса без www · " + statusLabel(alt), url: alt.url });
+      if (!looksDead(alt)) repeat = alt;
+    }
+    // https:// failed: the same address over plain http may work (the map gave no scheme, or the site moved on with a redirect).
+    let brokenCertificate = false;
+    if (looksDead(repeat) && home.startsWith("https://") && dns !== "missing" && dns !== "dead-dns") {
+      const plain = await readPage(home.replace(/^https:/i, "http:"));
+      if (plain.status >= 200 && plain.status < 300) {
+        assessment.evidence.push({ label: "Та сама адреса по http:// · HTTP " + plain.status, url: plain.url });
+        if (plain.url.startsWith("http://") && /^https:\/\//i.test(candidate.website.trim())) brokenCertificate = true;
+        else repeat = plain;
+      }
+    }
     if (looksDead(repeat)) {
       assessment.confidence = "verified";
       // Name the cause when it can be confirmed: a lapsed domain or a broken certificate sells better than "it is down".
-      const host = new URL(home).hostname;
-      const dns = await dnsStatus(host);
       if (dns === "dead-dns") {
         assessment.evidence.push({ label: "DNS · сервери імен домену " + host + " не відповідають", url: "https://cloudflare-dns.com/dns-query?name=" + host + "&type=A" });
         return hotLead("Сайт не працює: DNS-сервери домену " + host + " не відповідають — схоже, хостинг відключено.",
@@ -429,14 +499,9 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
         return hotLead("Домен сайту " + host + " більше не існує (не продовжено) — посилання з карти веде в нікуди.",
           "Запропонуйте відновити домен або зробити новий сайт.");
       }
-      if (home.startsWith("https://")) {
-        const plain = await readPage(home.replace(/^https:/i, "http:"), true);
-        if (plain.status >= 200 && plain.status < 300 && plain.url.startsWith("http://")) {
-          assessment.evidence.push({ label: "Та сама адреса по http:// · HTTP " + plain.status, url: plain.url });
-          return hotLead("Сайт не відкривається по HTTPS (помилка сертифіката) — браузер показує «Підключення не захищене», працює лише по http.",
-            "Запропонуйте полагодити SSL-сертифікат і налаштувати HTTPS.");
-        }
-      }
+      if (brokenCertificate)
+        return hotLead("Сайт не відкривається по HTTPS (помилка сертифіката) — браузер показує «Підключення не захищене», працює лише по http.",
+          "Запропонуйте полагодити SSL-сертифікат і налаштувати HTTPS.");
       if (reading.status === 525 || reading.status === 526)
         return hotLead("Сайт не відкривається через помилку SSL-сертифіката (" + statusLabel(reading) + ").",
           "Запропонуйте полагодити SSL-сертифікат і налаштувати HTTPS.");
@@ -462,7 +527,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     const extra = await readPage(contactLink.url);
     if (extra.page?.readable && new URL(extra.url).hostname === new URL(reading.url).hostname) contactPage = extra;
   }
-  const identityPage = matchesBusiness(candidate, page) ? reading
+  const identityPage = matchesBusiness(candidate, page, reading.url) ? reading
     : contactPage?.page && matchesBusiness(candidate, contactPage.page) ? contactPage : null;
   if (!identityPage) {
     assessment.summary = "Назву або контакт на сайті не вдалося звірити з карткою компанії.";
@@ -470,8 +535,10 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     return assessment;
   }
 
+  // Only the domain spells the name: the page itself never names the company, so the domain may have changed hands.
+  const domainOnly = !matchesBusiness(candidate, page) && !(contactPage?.page && matchesBusiness(candidate, contactPage.page));
   assessment.confidence = "partial";
-  assessment.evidence.push({ label: "Назва або контакт збігається з карткою компанії", url: identityPage.url });
+  assessment.evidence.push({ label: domainOnly ? "Назва компанії збігається з адресою сайту (на самій сторінці назви немає)" : "Назва або контакт збігається з карткою компанії", url: identityPage.url });
   const siteContacts = [...page.contacts, ...(contactPage?.page?.contacts || [])];
   assessment.contact = siteContacts.find(item => sameContact(candidate, item)) || siteContacts[0] || assessment.contact;
   const booking = page.links.find(link => bookingLabel.test(link.label));
@@ -519,17 +586,34 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.suggestion = assessment.contact ? suggestion : "Контакту на карті немає — знайдіть телефон кнопкою «Знайти телефон у Google» або в Google Картах.";
   }
 
-  const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0);
+  let httpsWorks = false;
+  if (reading.url.startsWith("http://")) {
+    const secure = await readPage(reading.url.replace(/^http:/i, "https:"), true);
+    httpsWorks = secure.status >= 200 && secure.status < 300 && secure.url.startsWith("https://");
+    if (httpsWorks) assessment.evidence.push({ label: "Та сама адреса по https:// · HTTP " + secure.status, url: secure.url });
+  }
   // Prefer our own browser on the VPS (free, also gives a screenshot); fall back to Google with a key.
   let speed: { score: number; lcp: string } | null = null;
   let speedSource = "Google PageSpeed";
+  let judged = page;
   if (service === "website" && options.probe) {
     const probe = await options.probe(reading.url).catch(() => null);
+    // Widgets, messenger and booking buttons are often added by scripts: what the browser shows counts as present.
+    if (typeof probe?.html === "string" && probe.html.length > 200) {
+      const rendered = parsePage(probe.html, reading.url);
+      if (rendered.readable) {
+        const merged = { ...page.signals };
+        for (const key of PRESENCE) merged[key] = page.signals[key] || rendered.signals[key];
+        judged = { ...page, signals: merged, scripted: rendered.scripted };
+        assessment.evidence.push({ label: "Сторінку перевірено і в браузері (з виконаними скриптами)", url: reading.url });
+      }
+    }
     if (probe?.screenshot && /^data:image\/(jpeg|png|webp);base64,/.test(probe.screenshot) && probe.screenshot.length < 400_000)
       assessment.screenshot = probe.screenshot;
     if (typeof probe?.score === "number") { speed = { score: probe.score, lcp: (probe.lcp || "").replace(/\u00a0/g, " ") }; speedSource = "Перевірка в браузері"; }
   }
   if (!speed && service === "website" && options.pageSpeedKey) speed = await pageSpeed(reading.url, options.pageSpeedKey);
+  const gaps = siteGaps(judged, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0, httpsWorks);
   {
     if (speed) {
       // The real measurement replaces the rough estimate.
@@ -548,7 +632,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.gaps = gaps.map(({ label, strong }) => ({ label, strong }));
     const strong = gaps.filter(g => g.strong);
     // Script-built pages keep their "buttons not checked" summary unless a serious gap is certain.
-    if (service === "website" && !issue && (strong.length || !page.scripted)) {
+    if (service === "website" && !issue && (strong.length || !judged.scripted)) {
       // One confirmed serious gap is a reason to call; several small ones are worth a look.
       const pitch = (strong.length ? strong : gaps).slice(0, 3).map(g => g.pitch).join(", ");
       assessment.summary = strong.length
@@ -561,6 +645,11 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
       } else if (gaps.length >= 3 && assessment.priority === "low") assessment.priority = "review";
     }
     if (service === "website") for (const g of strong) assessment.evidence.push({ label: "Сайт · " + g.label, url: reading.url });
+  }
+  if (domainOnly) {
+    if (assessment.priority === "high") assessment.priority = "review";
+    assessment.confidence = "partial";
+    assessment.summary = "Назви компанії на сторінці немає — перевірте, що сайт ще їхній. " + assessment.summary;
   }
   return assessment;
 }
