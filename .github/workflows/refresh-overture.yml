@@ -28,6 +28,7 @@ jobs:
           RELEASE: ${{ github.event.inputs.release }}
         run: |
           set -euo pipefail
+          python -I tests/overture_build_test.py
           python -m pip install --disable-pip-version-check duckdb==2.0.1
           out="$RUNNER_TEMP/overture"
           python scripts/build-overture-tiles.py "$out" ${RELEASE:+--release "$RELEASE"}

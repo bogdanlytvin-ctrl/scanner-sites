@@ -364,7 +364,7 @@ export class Workspace {
       return new Response(leadsCsv(rows, campaigns), {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="leads-${iso().slice(0, 10)}.csv"`,
+          "Content-Disposition": `attachment; filename="leads-${new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Kyiv" })}.csv"`,
           "Cache-Control": "private, no-store",
         },
       });

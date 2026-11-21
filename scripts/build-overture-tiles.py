@@ -156,8 +156,13 @@ def place_tags(row):
     return tags
 
 
+# Holiday flats are often named by their address ("вул. Котляревського, 1"): not a business name.
+ADDRESS_NAME = re.compile(r"^\s*(вул\.?|вулиця|ул\.?|улица|просп\.?|проспект|пр-т|пров\.?|провулок|бульв\.?|бульвар|площа|пл\.|шосе|str\.?|street|ul\.)\s", re.I)
+
+
 def keep(row):
-    if row["country"] != "UA" or not (row["name"] or "").strip():
+    name = (row["name"] or "").strip()
+    if row["country"] != "UA" or not name or ADDRESS_NAME.match(name) or not re.search(r"[^\W\d_]", name):
         return False
     if row["status"] in ("permanently_closed", "temporarily_closed"):
         return False
