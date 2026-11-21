@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Activity, ArrowUpRight, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList, ExternalLink, KeyRound, ListFilter, LoaderCircle, MapPin, Pause, Play, Plus, Radar, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Activity, ArrowUpRight, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList, Copy, Mail, PenLine, ExternalLink, KeyRound, ListFilter, LoaderCircle, MapPin, Pause, Play, Plus, Radar, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { COUNTRIES, citiesForCountry, nicheChipsForCountry } from "@/lib/countries";
 import "./workspace.css";
 
@@ -28,6 +28,7 @@ type Lead = {
   summary: string; suggestion: string; evidence: { label: string; url: string }[];
   contact: { value: string; source: string; kind: "phone" | "email" | "social" } | null;
   branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[]; shot?: boolean;
+  draft?: { subject: string; text: string; source: "claude" | "template"; at: string };
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
 type Action = Record<string, unknown>;
@@ -131,7 +132,31 @@ function lookupLinks(lead: Lead, city?: string) {
   };
 }
 
-function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campaign; busy: boolean; save: (status: Status, notes?: string) => void }) {
+/** Offer letter: drafted on request, edited and sent by a person (never sent automatically). */
+function DraftBox({ lead, busy, drafting, write }: { lead: Lead; busy: boolean; drafting: boolean; write: () => void }) {
+  const [text, setText] = useState(lead.draft?.text || "");
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { setText(lead.draft?.text || ""); }, [lead.draft?.text]);
+  if (drafting) return <div className="lf-draft"><p className="lf-draft-wait"><LoaderCircle className="animate-spin" size={15}/> Claude пише лист… це 5–30 секунд.</p></div>;
+  if (!lead.draft) return <div className="lf-draft"><button className="lf-btn lf-small" disabled={busy} onClick={write}><PenLine /> Написати пропозицію</button></div>;
+  const email = known(lead.email);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); window.setTimeout(() => setCopied(false), 2000); } catch { /* clipboard blocked: the text stays selectable */ }
+  };
+  return <details className="lf-draft" open>
+    <summary>Лист-пропозиція{lead.draft.source === "template" ? " (шаблон)" : ""} <ChevronDown size={15}/></summary>
+    {lead.draft.subject && <p className="lf-draft-subject"><strong>Тема:</strong> {lead.draft.subject}</p>}
+    <label><span className="sr-only">Текст пропозиції для {lead.name}</span><textarea value={text} maxLength={3000} rows={9} onChange={e => setText(e.target.value)} /></label>
+    <p className="lf-draft-hint">Перечитайте, підставте своє ім'я й телефон і надішліть самі.{lead.draft.source === "template" ? " Claude зараз недоступний, тому це шаблон." : ""}</p>
+    <div className="lf-tools">
+      <button className="lf-btn lf-small" onClick={() => void copy()}>{copied ? <Check /> : <Copy />}{copied ? "Скопійовано" : "Копіювати"}</button>
+      {email && <a className="lf-btn lf-small" href={"mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(lead.draft.subject || "") + "&body=" + encodeURIComponent(text)}><Mail /> Відкрити в пошті</a>}
+      <button className="lf-btn lf-small" disabled={busy} onClick={write}><RefreshCw /> Написати інакше</button>
+    </div>
+  </details>;
+}
+
+function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead; campaign?: Campaign; busy: boolean; drafting: boolean; save: (status: Status, notes?: string) => void; write: () => void }) {
   const [notes, setNotes] = useState(lead.notes || "");
   useEffect(() => { setNotes(lead.notes || ""); }, [lead.notes]);
   const rawSite = known(lead.website);
@@ -154,6 +179,7 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
       <a className="lf-btn lf-small" href={links.maps} target="_blank" rel="noreferrer"><MapPin /> Google Карти</a>
     </div>; })()}
     {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
+    <DraftBox lead={lead} busy={busy} drafting={drafting} write={write}/>
     <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
       <div className="lf-proof"><strong>{confidenceNames[lead.confidence]}</strong>
         {lead.evidence.map((item, i) => <div key={i}>{publicLink(item.url) ? <a href={publicLink(item.url)} target="_blank" rel="noreferrer">{item.label} <ExternalLink size={13}/></a> : item.label}</div>)}
@@ -199,6 +225,7 @@ export default function Home() {
   const [selected, setSelected] = useState("");
   const [priority, setPriority] = useState<Priority | "all">("all");
   const [status, setStatus] = useState<Status | "all">("all");
+  const [drafting, setDrafting] = useState("");
   const currentRequest = useRef(0);
   const locked = useRef(false);
   const read = useRef(false);
@@ -279,7 +306,7 @@ export default function Home() {
         <section className="lf-panel lf-results" aria-labelledby="lf-results-title">
           <div className="lf-panel-head"><div><h2 id="lf-results-title">Компанії <span className="lf-count">{scoped.length}</span></h2>{chosen && <p>{chosen.query} · {chosen.city}</p>}</div><label className="lf-status-filter"><ListFilter size={16}/><span className="sr-only">Фільтр за статусом</span><select value={status} onChange={e => setStatus(e.target.value as Status | "all")}><option value="all">Усі статуси</option>{Object.entries(statuses).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label></div>
           <div className="lf-tabs" aria-label="Пріоритет компаній">{(["all", "high", "review", "low"] as const).map(id => <button key={id} aria-pressed={priority === id} onClick={() => setPriority(id)}>{id === "all" ? "Усі" : id === "high" ? "Високий" : id === "review" ? "Уточнити" : "Низький"} <span>{id === "all" ? byStatus.length : byStatus.filter(l => l.priority === id).length}</span></button>)}</div>
-          {visible.length ? <div className="lf-lead-list">{visible.map(l => <LeadCard key={l.id} lead={l} campaign={campaigns.find(c => c.id === l.campaignId)} busy={mutating} save={(value, notes) => void mutate({ action: "status", id: l.id, status: value, ...(notes !== undefined && { notes }) })}/>)}</div> :
+          {visible.length ? <div className="lf-lead-list">{visible.map(l => <LeadCard key={l.id} lead={l} campaign={campaigns.find(c => c.id === l.campaignId)} busy={mutating} drafting={drafting === l.id} write={() => { setDrafting(l.id); void mutate({ action: "draft", id: l.id }).finally(() => setDrafting("")); }} save={(value, notes) => void mutate({ action: "status", id: l.id, status: value, ...(notes !== undefined && { notes }) })}/>)}</div> :
             <div className="lf-empty" aria-live="polite"><span className="lf-empty-icon">{loading || checkingSelection ? <LoaderCircle className="animate-spin"/> : <Search/>}</span>
               <h3>{loading ? "Відкриваємо кабінет" : !data ? "Не вдалося відкрити кабінет" : scoped.length ? "За цими фільтрами компаній немає" : checkingSelection ? "Пошук триває" : campaigns.length ? "Для цього пошуку ще немає компаній" : "Тут з’являться знайдені компанії"}</h3>
               <p>{loading ? "Завантажуємо збережені пошуки та результати." : !data ? "Спробуйте оновити дані." : scoped.length ? "Змініть пріоритет або статус, щоб побачити інші результати." : checkingSelection ? "Результати з’являтимуться в міру перевірки сайтів." : campaigns.length ? "Стан останньої перевірки вказано в картці пошуку." : "Створіть перший пошук. У кожній картці будуть висновок перевірки, його джерела та статус роботи."}</p>

@@ -1,5 +1,5 @@
 // All user records live in a separate SQLite-backed Durable Object per private session.
-const LIMITS = { campaigns: 5, perRun: 12 };
+const LIMITS = { campaigns: 5, perRun: 12, draftsPerDay: 40 };
 const DAY = 86_400_000;
 const MINUTE = 60_000;
 const cookieName = "__Host-lead-workspace";
@@ -134,6 +134,55 @@ const sha = async (value) =>
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
+/** Facts about a lead for the offer writer: only what the check found, nothing invented. */
+export function offerFacts(lead, campaign) {
+  const site = filled(lead.website);
+  const situation = !site
+    ? lead.contact?.kind === "social" ? "немає власного сайту, лише сторінка в соцмережі" : "немає власного сайту"
+    : lead.priority === "high" ? "сайт не працює або це лише сторінка на платформі"
+    : "сайт працює, але є що покращити";
+  return {
+    name: lead.name,
+    city: campaign?.city || "",
+    niche: campaign?.query || "",
+    website: site ? lead.website : "",
+    situation,
+    summary: lead.summary || "",
+    gaps: (lead.gaps || []).slice(0, 8),
+    branches: lead.branches > 1 ? lead.branches : undefined,
+    hasShot: Boolean(lead.shot),
+  };
+}
+
+/** Plain offer used when Claude on the VPS is unavailable. */
+export function templateOffer(f) {
+  const where = f.city ? " у місті " + f.city : "";
+  const lines = ["Добрий день! Я веб-розробник, переглядав компанії" + where + "."];
+  if (!f.website) {
+    lines.push(
+      "Помітив, що в «" + f.name + "» немає власного сайту. Багато клієнтів спершу шукають у телефоні, і сайт з цінами, контактами та кнопкою «подзвонити» допомагає отримувати більше звернень.",
+    );
+  } else if (f.situation.startsWith("сайт не працює")) {
+    lines.push(
+      "Помітив, що з вашим сайтом проблема: " + f.summary.charAt(0).toLowerCase() + f.summary.slice(1).replace(/\.$/, "") + ". Люди, які шукають вас в інтернеті, бачать помилку й можуть піти до інших.",
+    );
+  } else {
+    const top = [...f.gaps].sort((a, b) => b.strong - a.strong).slice(0, 3);
+    lines.push(
+      top.length
+        ? "Переглянув сайт «" + f.name + "» і помітив кілька моментів:\n" + top.map((g) => "— " + g.label).join("\n") + "\nЦе можна виправити, щоб більше відвідувачів телефонували й записувалися."
+        : "Переглянув сайт «" + f.name + "» і маю кілька ідей, як отримувати з нього більше звернень.",
+    );
+  }
+  if (f.hasShot) lines.push("Можу надіслати знімок, як сайт виглядає на телефоні.");
+  lines.push("Якщо цікаво, безкоштовно покажу, як це могло б виглядати, або коротко зідзвонимося.");
+  lines.push("[Ваше ім'я], [телефон]");
+  return {
+    subject: f.website ? "Сайт «" + f.name + "»: що можна покращити" : "Сайт для «" + f.name + "»",
+    text: lines.join("\n\n"),
+  };
+}
+
 export async function workspaceRequest(request, ns) {
   if (!["GET", "POST"].includes(request.method))
     return failure("Метод недоступний.", 405);
@@ -173,12 +222,13 @@ export async function workspaceRequest(request, ns) {
     if (!data || typeof data.action !== "string")
       return failure("Невідома дія.");
     if (
-      ["create", "run", "resume", "transfer", "restore"].includes(data.action)
+      ["create", "run", "resume", "transfer", "restore", "draft"].includes(data.action)
     ) {
       const ip = await sha(request.headers.get("CF-Connecting-IP") || "local");
       const allowed = await directory().fetch("https://internal/admit", {
         method: "POST",
-        body: ip,
+        // Offer drafts get their own hourly counter so they don't eat into search runs.
+        body: (data.action === "draft" ? "draft:" : "") + ip,
       });
       if (!allowed.ok)
         return failure("Ліміт запусків. Спробуйте за годину.", 429);
@@ -303,6 +353,7 @@ export class Workspace {
     }
     if (request.method === "GET") return this.snapshot();
     const data = await request.json();
+    if (data?.action === "draft") return this.draft(data.id);
     const result = this.change(data);
     if (result) return result;
     await this.schedule();
@@ -330,6 +381,38 @@ export class Workspace {
       JSON.stringify(c),
       due ?? null,
     );
+  }
+  leadRow(id) {
+    if (typeof id !== "string") return null;
+    const row = this.sql.exec("SELECT body FROM leads WHERE id=?", id).toArray()[0];
+    return row ? JSON.parse(row.body) : null;
+  }
+  async draft(id) {
+    const lead = this.leadRow(id);
+    if (!lead) return failure("Компанію не знайдено.", 404);
+    const day = Math.floor(Date.now() / DAY),
+      key = "drafts:" + day,
+      used = Number(this.transient(key) || 0);
+    if (used >= LIMITS.draftsPerDay)
+      return failure("На сьогодні вже написано " + LIMITS.draftsPerDay + " листів. Завтра знову.", 429);
+    this.setTransient(key, String(used + 1), (day + 1) * DAY);
+    const facts = offerFacts(lead, this.get(lead.campaignId));
+    let written = null;
+    try {
+      written = this.services.writeOffer ? await this.services.writeOffer(facts) : null;
+    } catch {
+      written = null;
+    }
+    const text = typeof written?.text === "string" ? written.text.trim().slice(0, 3000) : "";
+    const draft = text
+      ? { subject: clean(written.subject, 120), text, source: "claude", at: iso() }
+      : { ...templateOffer(facts), source: "template", at: iso() };
+    // The lead may have been re-checked while Claude was writing: attach the draft to the current row.
+    const current = this.leadRow(id);
+    if (!current) return failure("Компанію не знайдено.", 404);
+    current.draft = draft;
+    this.sql.exec("UPDATE leads SET body=? WHERE id=?", JSON.stringify(current), id);
+    return this.snapshot();
   }
   snapshot() {
     const campaigns = this.allCampaigns().map(
@@ -618,6 +701,7 @@ export class Workspace {
       shot: Boolean(screenshot),
       status: previous.status || "new",
       notes: previous.notes || "",
+      ...(previous.draft && { draft: previous.draft }),
     };
     this.sql.exec(
       "INSERT OR REPLACE INTO leads VALUES(?,?,?)",

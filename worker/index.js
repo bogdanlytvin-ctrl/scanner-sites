@@ -17,6 +17,17 @@ async function probeSite(env, url) {
   return response.ok ? response.json() : null;
 }
 
+// Offer letter drafted by Claude on the VPS (/home/claude/writer, no tools). null -> the workspace uses a template.
+async function writeOffer(env, lead) {
+  const response = await fetch(env.PROBE_URL.replace(/\/$/, "") + "/write", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + env.PROBE_TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify({ lead }),
+    signal: AbortSignal.timeout(150_000),
+  });
+  return response.ok ? response.json() : null;
+}
+
 export class LeadWorkspace extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -27,6 +38,7 @@ export class LeadWorkspace extends DurableObject {
           pageSpeedKey: env.GOOGLE_PAGESPEED_API_KEY,
           probe: env.PROBE_URL && env.PROBE_TOKEN ? (url) => probeSite(env, url) : undefined,
         }),
+      writeOffer: env.PROBE_URL && env.PROBE_TOKEN ? (lead) => writeOffer(env, lead) : undefined,
       discoverBusinessesAt: (...args) =>
         discoverBusinessesAt(...args, (path) =>
           env.ASSETS.fetch(

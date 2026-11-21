@@ -225,3 +225,54 @@ test("phone screenshots are stored apart from leads, served only to the owner an
   await post(w, { action: "delete", id: c.id });
   assert.equal((await workspaceRequest(shotReq(cookie), ns)).status, 404);
 });
+
+test("offer drafts: Claude text when available, a template otherwise, kept across re-checks and capped per day", async () => {
+  let facts = null;
+  let writerUp = true;
+  const { objects, ns } = environment({
+    assessLead: async () => ({ ...assessment, priority: "low", gaps: [{ label: "Немає онлайн-запису", strong: true }] }),
+    writeOffer: async (f) => { facts = f; if (!writerUp) throw new Error("down"); return { subject: "Тема", text: "  Лист від Claude  " }; },
+  });
+  const r = await workspaceRequest(makeReq(params), ns);
+  const cookie = r.headers.get("set-cookie").split(";")[0];
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  const id = w.snapshot && (await (await workspaceRequest(makeReq(null, cookie), ns)).json()).leads[0].id;
+
+  let snap = await (await workspaceRequest(makeReq({ action: "draft", id }, cookie), ns)).json();
+  assert.deepEqual(snap.leads[0].draft.text, "Лист від Claude");
+  assert.equal(snap.leads[0].draft.source, "claude");
+  assert.equal(facts.city, "Львів");
+  assert.equal(facts.niche, "стоматологія");
+  assert.equal(facts.situation, "сайт працює, але є що покращити");
+  assert.deepEqual(facts.gaps, [{ label: "Немає онлайн-запису", strong: true }]);
+
+  writerUp = false;
+  snap = await (await workspaceRequest(makeReq({ action: "draft", id }, cookie), ns)).json();
+  assert.equal(snap.leads[0].draft.source, "template");
+  assert.match(snap.leads[0].draft.text, /Немає онлайн-запису/);
+  assert.match(snap.leads[0].draft.text, /\[Ваше ім'я\], \[телефон\]/);
+
+  await post(w, { action: "run", id: c.id });
+  await tick(w, c.id);
+  await tick(w, c.id);
+  snap = await (await workspaceRequest(makeReq(null, cookie), ns)).json();
+  assert.equal(snap.leads[0].draft.source, "template", "a re-check keeps the draft");
+
+  const missing = await workspaceRequest(makeReq({ action: "draft", id: "nope" }, cookie), ns);
+  assert.equal(missing.status, 404);
+  for (let i = 0; i < 40; i++) await post(w, { action: "draft", id });
+  const capped = await post(w, { action: "draft", id });
+  assert.equal(capped.status, 429);
+});
+
+test("offer templates cover a missing site and a dead site", async () => {
+  const { templateOffer, offerFacts } = await import("../worker/workspace.js");
+  const none = templateOffer(offerFacts({ name: "Ромашка", website: "N/A", summary: "", priority: "high" }, { city: "Львів", query: "кафе" }));
+  assert.match(none.subject, /Сайт для «Ромашка»/);
+  assert.match(none.text, /немає власного сайту/);
+  const dead = templateOffer(offerFacts({ name: "Europa", website: "http://x.ua", summary: "Домен сайту x.ua більше не існує.", priority: "high" }, { city: "Ужгород" }));
+  assert.match(dead.text, /проблема: домен сайту x\.ua більше не існує\./);
+});
