@@ -1,1870 +1,267 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import {
-  Search, FileSpreadsheet, FileText, Globe, Phone, MapPin,
-  Smartphone, Loader2, Target, AlertCircle, ExternalLink,
-  Mail, Clock, ChevronDown, ChevronUp, Copy, Check, MessageCircle,
-  ShieldOff, Monitor, MonitorX, Layout, DollarSign,
-  Filter, StickyNote,
-  AlertTriangle, Flame, ShieldCheck, PhoneCall, Send,
-  Star, StarOff, Settings, X, History, Trash2, ThumbsUp, ThumbsDown, Bot, Zap, RotateCcw, Gauge,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import {
-  getTemplates, fillTemplate, getIssuesText, estimatePrice, getProblemsForLead,
-} from "@/lib/outreach-templates";
-import {
-  getSearchHistory, saveSearchHistory, removeSearchHistoryItem, clearSearchHistory,
-  getFavorites, toggleFavorite, leadKey, matchesFavorite,
-  getTelegramSettings, saveTelegramSettings,
-  type SearchHistoryEntry, type TelegramSettings,
-} from "@/lib/storage";
-import { buildLeadNotificationMessage } from "@/lib/telegram-bot";
-import { getTranslations, AVAILABLE_LOCALES, type Locale } from "@/lib/i18n";
-import { parseQuery, type ParsedQuery } from "@/lib/query-parser";
-import { COUNTRIES, flagEmoji, nicheChipsForCountry, citiesForCountry } from "@/lib/countries";
-import {
-  scoreLead, getScoreColor, getDesignColor, getStatusColor, getStatusList,
-  calculateLeadScoreDetailed, getDetailedScoreColor, isWorthContacting, getWebsiteEvidence,
-  type LeadScore, type LeadBusiness, type DesignScore, type LeadStatus,
-} from "@/lib/scoring";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Activity, ArrowUpRight, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList, ExternalLink, KeyRound, ListFilter, LoaderCircle, MapPin, Pause, Play, Plus, Radar, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { COUNTRIES, citiesForCountry, nicheChipsForCountry } from "@/lib/countries";
+import "./workspace.css";
 
-type Phase = "idle" | "searching" | "analyzing" | "done" | "error";
-type SearchBusiness = Pick<LeadBusiness, "name" | "phone" | "website" | "address" | "email" |
-  "facebook" | "instagram" | "telegram" | "openingHours" | "description" | "rating" | "reviews"> &
-  { osmId?: string };
+const services = { website: "Сайт для бізнесу", booking: "Онлайн-запис" };
+const cadences = { manual: "Вручну", daily: "Щодня", weekly: "Щотижня" };
+const phases = { queued: "У черзі", discovering: "Шукаємо компанії", checking: "Перевіряємо сайти", done: "Завершено", retry: "Очікує повтору", error: "Потрібна увага" };
+const priorities = { high: "Високий пріоритет", review: "Варто уточнити", low: "Низький пріоритет" };
+const confidenceNames = { verified: "Підтверджено", partial: "Частково підтверджено", unknown: "Бракує даних" };
+const statuses = { new: "Нова", in_progress: "У роботі", contacted: "Звернувся", replied: "Відповіли", won: "Є угода", skipped: "Пропущено" };
 
-// ─── PageSpeed types ─────────────────────────────────────
-interface PageSpeedResult {
-  performanceScore: number | null;
-  firstContentfulPaint: number | null;  // ms
-  largestContentfulPaint: number | null; // ms
-  totalBlockingTime: number | null; // ms
-  cumulativeLayoutShift: number | null; // decimal
-  speedIndex: number | null; // ms
-  diagnostics: string[];
-  error?: string;
+type Service = keyof typeof services;
+type Cadence = keyof typeof cadences;
+type Phase = keyof typeof phases;
+type Priority = keyof typeof priorities;
+type Confidence = keyof typeof confidenceNames;
+type Status = keyof typeof statuses;
+type Campaign = {
+  id: string; city: string; country: string; query: string; radius: number; service: Service; cadence: Cadence;
+  paused: boolean; phase: Phase; updatedAt: string; nextAt: string | null; checked: number; total: number; message: string; source?: string; sourceNote?: string; sourceDate?: string | null;
+};
+type Lead = {
+  id: string; campaignId: string; name: string; website: string; phone: string; email: string; address: string;
+  osmId: string; status: Status; notes: string; service: Service; priority: Priority; confidence: Confidence; checkedAt: string;
+  summary: string; suggestion: string; evidence: { label: string; url: string }[];
+  contact: { value: string; source: string; kind: "phone" | "email" } | null;
+};
+type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
+type Action = Record<string, unknown>;
+const activePhases: Phase[] = ["queued", "discovering", "checking"];
+
+function dateLabel(value: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleString("uk-UA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── Safe fetch helper ──────────────────────────────────────
-async function safeJsonFetch(url: string, options: RequestInit & { timeoutMs?: number }, errorMsg: string): Promise<any> {
-  const controller = new AbortController();
-  const timeoutMs = options.timeoutMs || 30000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const { timeoutMs: _t, ...fetchOpts } = options;
+function known(value?: string | null) {
+  return value && value.trim() && value !== "N/A" ? value : "";
+}
 
+function publicLink(value?: string) {
+  if (!value) return undefined;
   try {
-    const resp = await fetch(url, { ...fetchOpts, signal: controller.signal });
-    const contentType = resp.headers.get("content-type") || "";
-
-    if (!contentType.includes("application/json")) {
-      const text = await resp.text().catch(() => "");
-      const truncated = text.slice(0, 200);
-      throw new Error(`${errorMsg}: сервер повернув HTML замість JSON (${resp.status}). ${truncated}`);
-    }
-
-    const data = await resp.json();
-
-    if (!resp.ok) {
-      throw new Error(data.error || `${errorMsg} (HTTP ${resp.status})`);
-    }
-
-    return data;
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw new Error(`${errorMsg}: таймаут (${timeoutMs / 1000}с). Спробуйте зменшити кількість результатів.`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
+  } catch {
+    return undefined;
   }
 }
 
-function getScreenshotUrl(url: string): string {
-  if (!url || url === "N/A") return "";
-  const cleanUrl = url.startsWith("http") ? url : `https://${url}`;
-  return `https://image.thum.io/get/width/1280/crop/640/allowJPG/wait/3/${cleanUrl}`;
+async function api<T>(body?: Action): Promise<T> {
+  const response = await fetch("/api/workspace", {
+    method: body ? "POST" : "GET", credentials: "same-origin", cache: "no-store",
+    ...(body && { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) throw new Error(data?.error || "Кабінет тимчасово недоступний. Спробуйте оновити дані.");
+  return data as T;
 }
 
-function getMobileScreenshotUrl(url: string): string {
-  if (!url || url === "N/A") return "";
-  const cleanUrl = url.startsWith("http") ? url : `https://${url}`;
-  return `https://image.thum.io/get/width/375/crop/812/allowJPG/wait/3/${cleanUrl}`;
+function SearchForm({ onCreate, busy }: { onCreate: (form: Action) => void; busy: boolean }) {
+  const [country, setCountry] = useState("ua");
+  const [city, setCity] = useState("");
+  const [query, setQuery] = useState("");
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!query.trim() || !city.trim()) return;
+    const fields = new FormData(event.currentTarget);
+    onCreate({ country, city: city.trim(), query: query.trim(), radius: Number(fields.get("radius")), service: fields.get("service"), cadence: fields.get("cadence") });
+  }
+  return <form className="lf-form" onSubmit={submit}>
+    <div className="lf-field-pair">
+      <label>Країна<select value={country} onChange={(e) => { setCountry(e.target.value); setCity(""); }}>{COUNTRIES.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
+      <label>Радіус<select name="radius" defaultValue="5">{[1, 3, 5, 10, 20, 50].map(r => <option value={r} key={r}>{r} км</option>)}</select></label>
+    </div>
+    <label>Місто<input list="lf-cities" placeholder="Наприклад, Львів" value={city} maxLength={90} required onChange={e => setCity(e.target.value)} /></label>
+    <datalist id="lf-cities">{citiesForCountry(country).map(name => <option key={name} value={name} />)}</datalist>
+    <label>Вид бізнесу<input list="lf-niches" placeholder="Наприклад, стоматологія" value={query} maxLength={80} required onChange={e => setQuery(e.target.value)} /></label>
+    <datalist id="lf-niches">{nicheChipsForCountry(country, "ua").map(chip => <option key={chip.token} value={chip.label} />)}</datalist>
+    <label>Що пропоную<select name="service">{Object.entries(services).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label>
+    <label>Повторювати пошук<select name="cadence" defaultValue="manual">{Object.entries(cadences).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label>
+    <button className="lf-btn lf-primary" type="submit" disabled={busy || !city.trim() || !query.trim()}><Play size={16} /> Зберегти й запустити</button>
+  </form>;
 }
 
-function formatUrl(url: string): string {
-  return url.startsWith("http") ? url : `https://${url}`;
+function CampaignItem({ item, busy, selected, select, act }: { item: Campaign; busy: boolean; selected: boolean; select: () => void; act: (action: string) => void }) {
+  const running = [...activePhases, "retry"].includes(item.phase) && !item.paused;
+  const nextLabel = item.phase === "retry" ? "Повтор після збою" : activePhases.includes(item.phase) ? "Наступний етап перевірки" : "Наступний пошук";
+  const [confirm, setConfirm] = useState(false);
+  return <article className={'lf-campaign' + (selected ? ' selected' : '')}>
+    <button className="lf-campaign-select" aria-pressed={selected} onClick={select}>
+      <strong>{item.query}</strong><span><MapPin size={14} /> {item.city} · {item.radius} км</span>
+    </button>
+    <div className="lf-campaign-info">
+      <div className="lf-inline"><span className={'lf-phase ' + item.phase}>{item.paused ? "На паузі" : phases[item.phase]}</span><span>{cadences[item.cadence]}</span></div>
+      <div>{services[item.service]}</div>
+      {item.message && <p>{item.message}</p>}
+      {item.total > 0 && <p>Перевірено {item.checked} із {item.total}</p>}
+      {item.nextAt && !item.paused && <p>{nextLabel} · {dateLabel(item.nextAt)}</p>}
+      {item.source && <details className="lf-source"><summary>Джерело списку <ChevronDown size={13}/></summary>
+        <p><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{item.source}</a></p>
+        {item.sourceNote && <p>{item.sourceNote}</p>}
+        {item.sourceDate && <p>Дані станом на {item.sourceDate.slice(0, 10)}</p>}
+      </details>}
+      <div className="lf-tools">
+        <button className="lf-btn lf-small" disabled={busy || running || item.paused} onClick={() => act("run")}><Play /> Запустити</button>
+        {item.cadence !== "manual" && <button className="lf-btn lf-small" disabled={busy} onClick={() => act(item.paused ? "resume" : "pause")}>{item.paused ? <Play /> : <Pause />}{item.paused ? "Відновити" : "Пауза"}</button>}
+        <button className="lf-icon-btn" aria-label={'Видалити пошук ' + item.query} title="Видалити пошук" disabled={busy} onClick={() => setConfirm(v => !v)}><Trash2 size={15}/></button>
+      </div>
+      {confirm && <div className="lf-confirm"><p>Видалити цей пошук і його результати?</p><div className="lf-tools"><button className="lf-btn lf-small" disabled={busy} onClick={() => act("delete")}>Так, видалити</button><button className="lf-btn lf-small" onClick={() => setConfirm(false)}>Скасувати</button></div></div>}
+    </div>
+  </article>;
 }
 
-function hasIssues(lead: LeadBusiness): boolean {
-  return getProblemsForLead(lead).length > 0;
+function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campaign; busy: boolean; save: (status: Status, notes?: string) => void }) {
+  const [notes, setNotes] = useState(lead.notes || "");
+  useEffect(() => { setNotes(lead.notes || ""); }, [lead.notes]);
+  const rawSite = known(lead.website);
+  const website = publicLink(rawSite) || (/^[\da-z.-]+\.[a-z]{2,}(?:[/?#]|$)/i.test(rawSite) ? publicLink("https://" + rawSite) : undefined);
+  const source = publicLink(lead.contact?.source);
+  const osm = /^(node|way|relation)\/\d+$/.test(lead.osmId) ? "https://www.openstreetmap.org/" + lead.osmId : undefined;
+  return <article className="lf-lead">
+    <div className="lf-lead-head"><span className={'lf-priority ' + lead.priority}>{priorities[lead.priority]}</span><time dateTime={lead.checkedAt}>{dateLabel(lead.checkedAt)}</time></div>
+    <h3>{lead.name}</h3>
+    <div className="lf-place"><MapPin size={15} /> {known(lead.address) || campaign?.city || "Адресу не вказано"}</div>
+    <p className="lf-summary">{lead.summary}</p>
+    {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
+    <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
+      <div className="lf-proof"><strong>{confidenceNames[lead.confidence]}</strong>
+        {lead.evidence.map((item, i) => <div key={i}>{publicLink(item.url) ? <a href={publicLink(item.url)} target="_blank" rel="noreferrer">{item.label} <ExternalLink size={13}/></a> : item.label}</div>)}
+        {!lead.evidence.length && <div>Підтверджених спостережень поки немає.</div>}
+        {website && <div><a href={website} target="_blank" rel="noreferrer">Сайт компанії <ExternalLink size={13} /></a></div>}
+        {osm && <div><a href={osm} target="_blank" rel="noreferrer">Картка на мапі <ExternalLink size={13}/></a></div>}
+        {known(lead.phone) && <div>Телефон · {lead.phone}</div>}
+        {known(lead.email) && <div>Пошта · {lead.email}</div>}
+        {lead.contact && <div>Контакт для звернення · {lead.contact.value} {source && <a href={source} target="_blank" rel="noreferrer">Джерело <ExternalLink size={13}/></a>}</div>}
+        {!lead.contact && !known(lead.phone) && !known(lead.email) && <div>Публічний контакт поки не підтверджено.</div>}
+      </div>
+    </details>
+    <div className="lf-status-row"><label>Мій статус<select aria-label={'Статус компанії ' + lead.name} value={lead.status} disabled={busy} onChange={e => save(e.target.value as Status)}>{Object.entries(statuses).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
+      <details className="lf-note"><summary>Нотатка{lead.notes && <Check size={14}/>}</summary><label><span className="sr-only">Нотатка про компанію</span><textarea value={notes} maxLength={1000} onChange={e => setNotes(e.target.value)} /></label><button className="lf-btn lf-small" disabled={busy || notes === (lead.notes || "")} onClick={() => save(lead.status, notes)}>Зберегти нотатку</button></details>
+    </div>
+  </article>;
+}
+
+function AccessPanel({ busy, transfer, restore }: { busy: boolean; transfer: () => Promise<string | null>; restore: (code: string) => Promise<boolean> }) {
+  const [code, setCode] = useState("");
+  const [input, setInput] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  return <details className="lf-access"><summary><KeyRound size={15} /> Доступ з іншого пристрою <ChevronDown size={15} /></summary>
+    <p>Цей браузер має доступ до кабінету. Очищення cookie прибере доступ із цього браузера. Для входу з іншого пристрою отримайте тут одноразовий код і введіть його там протягом 10 хвилин.</p>
+    <button className="lf-btn lf-small" disabled={busy} onClick={async () => { const value = await transfer(); if (value) setCode(value); }}>Отримати код</button>
+    {code && <p className="lf-code"><code>{code}</code></p>}
+    <label>Код з іншого пристрою<input autoComplete="off" value={input} onChange={e => { setInput(e.target.value); setConfirm(false); }} /></label>
+    {confirm && <p>Цей браузер відкриє кабінет, з якого отримано код. Збережіть код поточного кабінету, якщо хочете повернутися до нього.</p>}
+    <button className="lf-btn lf-small" disabled={busy || !input.trim()} onClick={async () => {
+      if (!confirm) { setConfirm(true); return; }
+      if (await restore(input.trim())) { setInput(""); setCode(""); setConfirm(false); }
+    }}>{confirm ? "Підтвердити вхід" : "Увійти за кодом"}</button>
+  </details>;
 }
 
 export default function Home() {
-  const [city, setCity] = useState("");
-  const [query, setQuery] = useState("");
-  // When a chip is picked, the input shows the local/English word but the search
-  // uses this canonical token (KEYWORD_MAP only resolves English + Ukrainian).
-  const [nicheToken, setNicheToken] = useState("");
-  // Chip display language: "local" = country's language, "en" = English.
-  const [chipLang, setChipLang] = useState<"local" | "en">("local");
-  const [maxResults, setMaxResults] = useState("20");
-  const [radius, setRadius] = useState("10");
+  const [data, setData] = useState<Snapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [mutating, setMutating] = useState(false);
+  const [error, setError] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [priority, setPriority] = useState<Priority | "all">("all");
+  const [status, setStatus] = useState<Status | "all">("all");
+  const currentRequest = useRef(0);
+  const locked = useRef(false);
+  const read = useRef(false);
 
-  // Country + city autocomplete. selectedGeoRef holds the exact coords of a
-  // picked city so the search skips fuzzy geocoding (which mis-resolved some
-  // city names to same-named villages).
-  const [country, setCountry] = useState("ua");
-  const [cityHits, setCityHits] = useState<Array<{ name: string; displayName: string; lat: number; lng: number; country: string }>>([]);
-  const [cityOpen, setCityOpen] = useState(false);
-  const [cityLoading, setCityLoading] = useState(false);
-  const singleCityRef = useRef<string | null>(null);
-  const selectedGeoRef = useRef<{ name: string; lat: number; lng: number; displayName: string } | null>(null);
-  const cityRequestRef = useRef<AbortController | null>(null);
-  const cityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const cancelCityLookup = useCallback(() => {
-    if (cityDebounceRef.current) clearTimeout(cityDebounceRef.current);
-    cityRequestRef.current?.abort();
-  }, []);
-  useEffect(() => cancelCityLookup, [cancelCityLookup]);
-
-  const fetchCities = useCallback((q: string, cc: string) => {
-    cancelCityLookup();
-    setCityHits([]);
-    setCityLoading(false);
-    if (q.trim().length < 2) return;
-
-    const request = new AbortController();
-    cityRequestRef.current = request;
-    cityDebounceRef.current = setTimeout(async () => {
-      setCityLoading(true);
-      try {
-        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&country=${encodeURIComponent(cc)}`, { signal: request.signal });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!request.signal.aborted) setCityHits(data.cities || []);
-      } catch {
-        if (!request.signal.aborted) setCityHits([]);
-      } finally {
-        if (!request.signal.aborted) setCityLoading(false);
-      }
-    }, 350);
-  }, [cancelCityLookup]);
-
-  const pickCity = useCallback((name: string, hit: { name: string; displayName: string; lat: number; lng: number } | null, singleCity = true) => {
-    cancelCityLookup();
-    selectedGeoRef.current = hit;
-    singleCityRef.current = singleCity ? name : null;
-    setCity(name);
-    setCityHits([]);
-    setCityLoading(false);
-    setCityOpen(false);
-  }, [cancelCityLookup]);
-
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [progress, setProgress] = useState(0);
-  const [progressLabel, setProgressLabel] = useState("");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [expandedLead, setExpandedLead] = useState<string | null>(null);
-  const searchActive = useRef(false);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
-
-  const [leads, setLeads] = useState<LeadBusiness[]>([]);
-  const [filterScore, setFilterScore] = useState<LeadScore | "ALL">("ALL");
-  const [filterStatus, setFilterStatus] = useState<LeadStatus | "ALL">("ALL");
-  const [onlyWithIssues, setOnlyWithIssues] = useState(false);
-  const [onlyFavorites, setOnlyFavorites] = useState(false);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("formal-email");
-  const [previewOpen, setPreviewOpen] = useState<Set<number>>(new Set());
-
-  // Search History
-  const [searchHistory, setSearchHistory] = useState<SearchHistoryEntry[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
-
-  // Favorites
-  const [favorites, setFavorites] = useState<LeadBusiness[]>([]);
-  const [geoLocations, setGeoLocations] = useState<Array<{ city: string; displayName: string; lat: number; lng: number }>>([]);
-
-  // Telegram Settings
-  const [tgSettingsOpen, setTgSettingsOpen] = useState(false);
-  const [tgSettings, setTgSettings] = useState<TelegramSettings>({ botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false });
-  const [tgTesting, setTgTesting] = useState(false);
-
-  // i18n — always start with 'ua' to match SSR, load saved locale after hydration
-  const [locale, setLocale] = useState<Locale>('ua');
-
-  // Smart Query Parser
-  const [smartQuery, setSmartQuery] = useState("");
-  const [parsedQuery, setParsedQuery] = useState<ParsedQuery | null>(null);
-
-  // Websites Only filter
-  const [onlyWithWebsite, setOnlyWithWebsite] = useState(false);
-
-  // Pagination
-  const [visibleCount, setVisibleCount] = useState(20);
-
-  // PageSpeed
-  const [pageSpeedResults, setPageSpeedResults] = useState<Record<number, PageSpeedResult>>({});
-  const [psBulkChecking, setPsBulkChecking] = useState(false);
-  const [psBulkProgress, setPsBulkProgress] = useState(0);
-  const [psBulkTotal, setPsBulkTotal] = useState(0);
-  const [psSingleChecking, setPsSingleChecking] = useState<number | null>(null);
-
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Load history, favorites, and saved locale on mount (after hydration)
-  useEffect(() => {
-    setSearchHistory(getSearchHistory());
-    setFavorites(getFavorites());
-    setTgSettings(getTelegramSettings());
-    // Load saved locale after hydration to avoid SSR mismatch
-    const savedLocale = localStorage.getItem('leadfinder_locale') as Locale | null;
-    if (savedLocale && ['ua', 'en', 'ru'].includes(savedLocale)) {
-      setLocale(savedLocale);
-    }
-  }, []);
-
-  // Persist locale
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('leadfinder_locale', locale);
-    }
-  }, [locale]);
-
-  // Translations
-  const t = getTranslations(locale);
-
-  // Reset visibleCount on filter changes
-  useEffect(() => {
-    setVisibleCount(20);
-  }, [filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, leads]);
-
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToastMsg(null), 2000);
-  }, []);
-
-  const copyToClipboard = useCallback((text: string, field: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopiedField(field);
-      showToast("Скопійовано!");
-      setTimeout(() => setCopiedField(null), 1500);
-    });
-  }, [showToast]);
-
-  const CopyBtn = ({ text, label }: { text: string; label: string }) => {
-    if (!text) return null;
-    const isCopied = copiedField === `${label}-${text}`;
-    return (
-      <button onClick={(e) => { e.stopPropagation(); copyToClipboard(text, `${label}-${text}`); }}
-        className="inline-flex items-center text-muted-foreground hover:text-foreground transition-colors ml-1" title={t.copied}>
-        {isCopied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-      </button>
-    );
-  };
-
-  const updateLead = useCallback((idx: number, updates: Partial<LeadBusiness>) => {
-    setLeads((prev) => prev.map((l, i) => i === idx ? { ...l, ...updates } : l));
-  }, []);
-
-  // ─── Toggle favorite ──────────────────────────────────────
-  const handleToggleFavorite = useCallback((lead: LeadBusiness, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    const isNowFav = toggleFavorite(lead);
-    setFavorites((prev) => isNowFav
-      ? [...prev, lead]
-      : prev.filter((favorite) => !matchesFavorite(favorite, lead)));
-    showToast(isNowFav ? "⭐ Додано в обране" : "Видалено з обраного");
-  }, [showToast]);
-
-  // ─── Telegram notification ────────────────────────────────
-  const sendTelegramNotification = useCallback(async (lead: LeadBusiness) => {
-    if (!tgSettings.notifyNewLeads) return;
-    if (tgSettings.hotLeadsOnly && lead.score !== "HOT") return;
-    if (!tgSettings.botToken || !tgSettings.chatId) return;
-
-    const worthiness = getWebsiteEvidence(lead) === "checked" ? isWorthContacting(lead) : null;
-    const issues = getIssuesText(lead);
-    const message = buildLeadNotificationMessage({
-      name: lead.name,
-      website: lead.website,
-      score: lead.score,
-      phone: lead.phone,
-      address: lead.address,
-      issues,
-      worthinessScore: worthiness?.score,
-      worthinessReason: worthiness?.reason,
-    });
-
+  const refresh = useCallback(async () => {
+    if (locked.current || read.current) return;
+    read.current = true;
+    const id = ++currentRequest.current;
     try {
-      await fetch("/api/telegram-notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botToken: tgSettings.botToken, chatId: tgSettings.chatId, message }),
-      });
-    } catch { /* silent fail */ }
-  }, [tgSettings]);
-
-  // ─── Telegram test ────────────────────────────────────────
-  const handleTestTelegram = useCallback(async () => {
-    if (!tgSettings.botToken || !tgSettings.chatId) {
-      showToast("Вкажіть Bot Token та Chat ID");
-      return;
-    }
-    setTgTesting(true);
-    try {
-      const resp = await fetch("/api/telegram-notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          botToken: tgSettings.botToken,
-          chatId: tgSettings.chatId,
-          message: "✅ <b>Lead Finder</b> — тестове повідомлення.\nTelegram бот налаштований успішно! 🚀",
-        }),
-      });
-      const data = await resp.json();
-      if (data.success) {
-        showToast("✅ Тест пройдено успішно!");
-      } else {
-        showToast(`❌ Помилка: ${data.error}`);
-      }
-    } catch {
-      showToast("❌ Не вдалося надіслати повідомлення");
+      const next = await api<Snapshot>();
+      if (id === currentRequest.current) { setData(next); setError(""); }
+    } catch (e) {
+      if (id === currentRequest.current) setError(e instanceof Error ? e.message : "Не вдалося отримати дані.");
     } finally {
-      setTgTesting(false);
+      read.current = false;
+      if (id === currentRequest.current) setLoading(false);
     }
-  }, [tgSettings, showToast]);
-
-  // ─── Export ───────────────────────────────────────────────
-  const handleExport = useCallback(async (format: "excel" | "csv", hotOnly = false) => {
-    const data = hotOnly ? leads.filter((l) => l.score === "HOT") : leads;
-    if (data.length === 0) { showToast("Немає даних для експорту"); return; }
-    const controller = new AbortController();
-    const exportTimeout = setTimeout(() => controller.abort(), 30000);
-    let resp: Response;
-    try {
-      resp = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leads: data, format }), signal: controller.signal });
-    } catch {
-      clearTimeout(exportTimeout);
-      showToast("Таймаут експорту"); return;
-    }
-    clearTimeout(exportTimeout);
-    if (!resp.ok) { showToast("Помилка експорту"); return; }
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url;
-    a.download = format === "excel" ? "leads_output.xlsx" : "leads_output.csv";
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    showToast(`Експортовано ${data.length} лідів`);
-  }, [leads, showToast]);
-
-  // ─── Search ───────────────────────────────────────────────
-  const handleSearch = useCallback(async (overrides: { city?: string; query?: string; maxResults?: string; radius?: string; country?: string; singleCity?: boolean } = {}) => {
-    if (searchActive.current || psBulkChecking || psSingleChecking !== null) return;
-    const c = (overrides.city ?? city).trim();
-    const q = (overrides.query ?? (nicheToken || query)).trim();
-    const mr = Number(overrides.maxResults ?? maxResults) || 20;
-    const r = Number(overrides.radius ?? radius) || 10;
-    const cc = overrides.country ?? country;
-
-    if (!c || !q) { setErrorMessage("Заповніть місто та нішу"); return; }
-    const singleCity = overrides.singleCity ?? (singleCityRef.current === c);
-    const cities = singleCity ? [c] : c.split(",").map((name) => name.trim()).filter(Boolean);
-    if (!cities.length) { setErrorMessage("Вкажіть місто"); return; }
-    const historyEntry = { city: c, query: q, maxResults: mr, radius: r, country: cc, singleCity };
-
-    searchActive.current = true;
-    cancelCityLookup();
-    setCityOpen(false); setCityLoading(false);
-    setErrorMessage(""); setLeads([]); setExpandedLead(null);
-    setPreviewOpen(new Set()); setPageSpeedResults({});
-    setPhase("searching"); setProgress(0);
-    setGeoLocations([]);
-
-    try {
-      const allBusinesses: SearchBusiness[] = [];
-      const seenBusinesses = new Set<string>();
-      const failedCities: string[] = [];
-      let emptyNote = "";
-
-      for (let ci = 0; ci < cities.length; ci++) {
-        const currentCity = cities[ci];
-        setProgressLabel(`Пошук у: ${currentCity} (${ci + 1}/${cities.length})`);
-        setProgress(Math.round((ci / cities.length) * 30));
-
-        const sel = selectedGeoRef.current;
-        const useCoords = !overrides.city && sel && sel.name.toLowerCase() === currentCity.toLowerCase();
-        let searchData;
-        try {
-          searchData = await safeJsonFetch("/api/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              city: currentCity, query: q, country: cc, maxResults: mr, radius: r,
-              ...(useCoords ? { lat: sel.lat, lng: sel.lng, displayName: sel.displayName } : {}),
-            }),
-            timeoutMs: 60000,
-          }, `Помилка пошуку у ${currentCity}`);
-        } catch (error) {
-          if (cities.length === 1) throw error;
-          failedCities.push(currentCity);
-          continue;
-        }
-
-        const businesses = searchData.businesses || [];
-        if (searchData.note) emptyNote = searchData.note;
-
-        // Save geocoded location for display
-        if (searchData.geoLocation) {
-          setGeoLocations((prev) => [
-            ...prev,
-            { city: currentCity, displayName: searchData.geoLocation.displayName, lat: searchData.geoLocation.lat, lng: searchData.geoLocation.lng },
-          ]);
-        }
-
-        for (const b of businesses) {
-          const key = leadKey(b);
-          if (!seenBusinesses.has(key)) {
-            seenBusinesses.add(key);
-            allBusinesses.push(b);
-          }
-        }
-      }
-
-      if (failedCities.length === cities.length) {
-        throw new Error(`Пошук не вдався у містах: ${failedCities.join(", ")}`);
-      }
-      if (failedCities.length) {
-        setErrorMessage(`Результати неповні. Пошук не вдався у містах: ${failedCities.join(", ")}`);
-      }
-
-      if (allBusinesses.length === 0) {
-        setPhase("done"); setProgress(100);
-        setProgressLabel(emptyNote || "Нічого не знайдено.");
-        saveSearchHistory({ ...historyEntry, totalResults: 0 });
-        setSearchHistory(getSearchHistory());
-        return;
-      }
-
-      setPhase("analyzing");
-      // Results kept at their original index so the rendered order stays stable
-      // even though websites are analyzed concurrently (out of order).
-      const analyzed: LeadBusiness[] = new Array(allBusinesses.length);
-      let completed = 0;
-      const CONCURRENCY = 6; // analyze up to 6 sites at once (was strictly serial)
-
-      const analyzeOne = async (i: number) => {
-        const b = allBusinesses[i];
-
-        let copyrightYear: number | null = null, isMobileFriendly = false, hasSsl = false;
-        let finalUrl = "", technologies: string[] = [], designScore: DesignScore = "unknown";
-        let designNotes: string[] = [], pageTitle = "", hasContactForm = false;
-        let hasMetaDescription = false, hasOpenGraph = false;
-        let securityIssues: string[] = [], analysisLimited = true;
-
-        if (b.website && b.website !== "N/A") {
-          try {
-            const d = await safeJsonFetch("/api/analyze", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url: b.website }),
-              timeoutMs: 30000,
-            }, `Помилка аналізу ${b.website}`);
-            copyrightYear = d.copyrightYear; isMobileFriendly = d.isMobileFriendly;
-            hasSsl = d.hasSsl; finalUrl = d.finalUrl || b.website;
-            technologies = d.technologies || []; designScore = d.designScore || "unknown";
-            designNotes = d.designNotes || []; pageTitle = d.pageTitle || "";
-            hasContactForm = d.hasContactForm || false;
-            hasMetaDescription = d.hasMetaDescription || false;
-            hasOpenGraph = d.hasOpenGraph || false;
-            securityIssues = d.securityIssues || [];
-            analysisLimited = d.analysisLimited !== false;
-          } catch { /* skip failed analysis */ }
-        }
-
-        const lead: LeadBusiness = {
-          osmId: b.osmId, name: b.name, phone: b.phone, website: b.website, address: b.address,
-          email: b.email, facebook: b.facebook, instagram: b.instagram, telegram: b.telegram,
-          openingHours: b.openingHours, description: b.description,
-          rating: b.rating, reviews: b.reviews,
-          copyrightYear, isMobileFriendly, hasSsl, finalUrl, technologies,
-          designScore, designNotes, securityIssues, pageTitle, hasContactForm,
-          hasMetaDescription, hasOpenGraph,
-          analysisLimited,
-          score: scoreLead(b.website, copyrightYear, isMobileFriendly, hasSsl, analysisLimited),
-          status: "new", notes: "", contactDate: null,
-        };
-        analyzed[i] = lead;
-        completed++;
-
-        setProgress(30 + Math.round((completed / allBusinesses.length) * 70));
-        setProgressLabel(`Аналіз: ${completed}/${allBusinesses.length}`);
-        setLeads(analyzed.filter(Boolean)); // progressive render, original order
-        sendTelegramNotification(lead).catch(() => {}); // don't block on Telegram
-      };
-
-      // Bounded worker pool: CONCURRENCY workers pull from a shared cursor.
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < allBusinesses.length) {
-          const idx = cursor++;
-          await analyzeOne(idx);
-        }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, allBusinesses.length) }, worker)
-      );
-      setLeads(analyzed.filter(Boolean));
-
-      // Save to search history
-      saveSearchHistory({ ...historyEntry, totalResults: analyzed.length });
-      setSearchHistory(getSearchHistory());
-
-      setPhase("done"); setProgress(100); setProgressLabel(`Готово! ${analyzed.length} лідів з ${cities.length} міст`);
-    } catch (err) {
-      setPhase("error"); setErrorMessage(err instanceof Error ? err.message : "Помилка");
-    } finally {
-      searchActive.current = false;
-    }
-  }, [city, query, nicheToken, maxResults, radius, country, cancelCityLookup, sendTelegramNotification, psBulkChecking, psSingleChecking]);
-
-  // Filtering — memoized so it only recomputes when leads/filters change,
-  // not on every unrelated re-render (toasts, expand toggles, field edits).
-  const filteredLeads = useMemo(
-    () =>
-      leads
-        .filter((l) => filterScore === "ALL" || l.score === filterScore)
-        .filter((l) => filterStatus === "ALL" || l.status === filterStatus)
-        .filter((l) => !onlyWithIssues || hasIssues(l))
-        .filter((l) => !onlyFavorites || favorites.some((favorite) => matchesFavorite(favorite, l)))
-        .filter((l) => !onlyWithWebsite || (l.website && l.website !== "N/A"))
-        .sort((a, b) => {
-          const order: Record<LeadScore, number> = { HOT: 0, WARM: 1, COLD: 2 };
-          return order[a.score] - order[b.score];
-        }),
-    [leads, filterScore, filterStatus, onlyWithIssues, onlyFavorites, onlyWithWebsite, favorites]
-  );
-
-  // Stats — single pass over leads instead of 7 separate filter scans.
-  const { hotCount, warmCount, coldCount, ancientCount, noMobileCount, noSslCount, noWebsiteCount, avgPrice } =
-    useMemo(() => {
-      let hot = 0, warm = 0, cold = 0, ancient = 0, noMobile = 0, noSsl = 0, noWeb = 0;
-      let sumMin = 0, sumMax = 0, priced = 0;
-      for (const l of leads) {
-        if (l.score === "HOT") hot++;
-        else if (l.score === "WARM") warm++;
-        else if (l.score === "COLD") cold++;
-        const evidence = getWebsiteEvidence(l);
-        if (evidence === "not-listed") noWeb++;
-        if (evidence !== "checked") continue;
-        if (l.designScore === "ancient") ancient++;
-        if (!l.isMobileFriendly) noMobile++;
-        if (!l.hasSsl) noSsl++;
-        const p = estimatePrice(l);
-        if (p.max > 0) {
-          priced++;
-          sumMin += p.min;
-          sumMax += p.max;
-        }
-      }
-      return {
-        hotCount: hot, warmCount: warm, coldCount: cold, ancientCount: ancient,
-        noMobileCount: noMobile, noSslCount: noSsl, noWebsiteCount: noWeb,
-        avgPrice: priced > 0
-          ? { min: Math.round(sumMin / priced), max: Math.round(sumMax / priced) }
-          : { min: 0, max: 0 },
-      };
-    }, [leads]);
-
-  const templates = getTemplates();
-  const statusList = getStatusList();
-
-  const togglePreview = useCallback((idx: number) => {
-    setPreviewOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx); else next.add(idx);
-      return next;
-    });
   }, []);
+  const running = data?.campaigns.some(c => !c.paused && activePhases.includes(c.phase));
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, running ? 4000 : 30000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [refresh, running]);
 
-  const handleCopyEmail = useCallback(async (lead: LeadBusiness) => {
-    const tmpl = templates.find((t) => t.id === selectedTemplateId);
-    if (!tmpl) return;
-    const issues = getIssuesText(lead);
-    const filled = fillTemplate(tmpl, { bizName: lead.name, issues, city: city.split(",")[0].trim() });
-    const fullText = `Subject: ${filled.subject}\n\n${filled.body}`;
-    await navigator.clipboard.writeText(fullText);
-    showToast("Email шаблон скопійовано!");
-  }, [selectedTemplateId, templates, city, showToast]);
-
-  const handleMailto = useCallback((lead: LeadBusiness) => {
-    const tmpl = templates.find((t) => t.id === selectedTemplateId);
-    if (!tmpl || !lead.email) return;
-    const issues = getIssuesText(lead);
-    const filled = fillTemplate(tmpl, { bizName: lead.name, issues, city: city.split(",")[0].trim() });
-    const subject = encodeURIComponent(filled.subject);
-    const body = encodeURIComponent(filled.body);
-    window.open(`mailto:${lead.email}?subject=${subject}&body=${body}`, "_blank");
-  }, [selectedTemplateId, templates, city]);
-
-  const handleTelegram = useCallback((lead: LeadBusiness) => {
-    const tmpl = templates.find((t) => t.id === selectedTemplateId);
-    if (!tmpl || !lead.telegram) return;
-    const issues = getIssuesText(lead);
-    const filled = fillTemplate(tmpl, { bizName: lead.name, issues, city: city.split(",")[0].trim() });
-    const tgUrl = lead.telegram.startsWith("http") ? lead.telegram : `https://${lead.telegram}`;
-    const text = encodeURIComponent(filled.body);
-    const username = tgUrl.match(/t\.me\/([^/]+)/)?.[1];
-    if (username) {
-      window.open(`https://t.me/${username}?text=${text}`, "_blank");
-    } else {
-      window.open(tgUrl, "_blank");
-    }
-  }, [selectedTemplateId, templates, city]);
-
-  const handleStatusChange = useCallback((idx: number, newStatus: string) => {
-    updateLead(idx, {
-      status: newStatus as LeadStatus,
-      contactDate: newStatus === "contacted" && !leads[idx].contactDate
-        ? new Date().toISOString()
-        : leads[idx].contactDate,
-    });
-  }, [updateLead, leads]);
-
-  const handleRunHistorySearch = useCallback((entry: SearchHistoryEntry) => {
-    if (searchActive.current || psBulkChecking || psSingleChecking !== null) return;
-    pickCity(entry.city, null, entry.singleCity ?? false);
-    setQuery(entry.query); setNicheToken("");
-    setMaxResults(String(entry.maxResults));
-    setRadius(String(entry.radius));
-    if (entry.country) setCountry(entry.country);
-    handleSearch({
-      city: entry.city, query: entry.query, maxResults: String(entry.maxResults),
-      radius: String(entry.radius), country: entry.country, singleCity: entry.singleCity,
-    });
-  }, [handleSearch, pickCity, psBulkChecking, psSingleChecking]);
-
-  const handleRemoveHistoryItem = useCallback((id: string) => {
-    removeSearchHistoryItem(id);
-    setSearchHistory(getSearchHistory());
-  }, []);
-
-  const handleClearHistory = useCallback(() => {
-    clearSearchHistory();
-    setSearchHistory([]);
-    showToast(t.historyCleared);
-  }, [showToast, t.historyCleared]);
-
-  // ─── Smart Query Handler ───────────────────────────────
-  const handleSmartQuery = useCallback((input: string) => {
-    const trimmed = input.trim();
-    if (!trimmed) {
-      setParsedQuery(null);
-      return;
-    }
-    const parsed = parseQuery(trimmed);
-    setParsedQuery(parsed);
-    if (parsed.city) pickCity(parsed.city, null);
-    if (parsed.query) { setQuery(parsed.query); setNicheToken(""); }
-    if (parsed.city && parsed.query) {
-      handleSearch({ city: parsed.city, query: parsed.query, singleCity: true });
-    }
-  }, [handleSearch, pickCity]);
-
-  // ─── Single PageSpeed check ──────────────────────────────
-  const checkSinglePageSpeed = useCallback(async (lead: LeadBusiness, idx: number) => {
-    if (!lead.website || lead.website === "N/A") return;
-    const urlToCheck = lead.finalUrl || lead.website;
-    setPsSingleChecking(idx);
+  async function mutate(action: Action) {
+    if (locked.current) return false;
+    locked.current = true; ++currentRequest.current; setMutating(true); setError("");
     try {
-      const result = await safeJsonFetch("/api/pagespeed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: urlToCheck, strategy: "mobile" }),
-        timeoutMs: 45000,
-      }, `PageSpeed error for ${lead.name}`);
-      setPageSpeedResults((prev) => ({
-        ...prev,
-        [idx]: {
-          performanceScore: result.performanceScore ?? null,
-          firstContentfulPaint: result.firstContentfulPaint ?? null,
-          largestContentfulPaint: result.largestContentfulPaint ?? null,
-          totalBlockingTime: result.totalBlockingTime ?? null,
-          cumulativeLayoutShift: result.cumulativeLayoutShift ?? null,
-          speedIndex: result.speedIndex ?? null,
-          diagnostics: result.diagnostics || [],
-          error: result.error,
-        },
-      }));
-    } catch (err) {
-      setPageSpeedResults((prev) => ({
-        ...prev,
-        [idx]: {
-          performanceScore: null,
-          firstContentfulPaint: null,
-          largestContentfulPaint: null,
-          totalBlockingTime: null,
-          cumulativeLayoutShift: null,
-          speedIndex: null,
-          diagnostics: [],
-          error: err instanceof Error ? err.message : t.pageSpeedError,
-        },
-      }));
-    } finally {
-      setPsSingleChecking(null);
-    }
-  }, [t.pageSpeedError]);
-
-  // ─── Bulk PageSpeed check ────────────────────────────────
-  const handleBulkPageSpeed = useCallback(async () => {
-    const leadsWithWebsites = leads
-      .map((l, i) => ({ lead: l, idx: i }))
-      .filter(({ lead }) => lead.website && lead.website !== "N/A");
-
-    if (leadsWithWebsites.length === 0) {
-      showToast(t.pageSpeedNoResults);
-      return;
-    }
-
-    setPsBulkChecking(true);
-    setPsBulkProgress(0);
-    setPsBulkTotal(leadsWithWebsites.length);
-
-    for (let i = 0; i < leadsWithWebsites.length; i++) {
-      const { lead, idx } = leadsWithWebsites[i];
-      setPsBulkProgress(i + 1);
-
-      const urlToCheck = lead.finalUrl || lead.website;
-      try {
-        const result = await safeJsonFetch("/api/pagespeed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: urlToCheck, strategy: "mobile" }),
-          timeoutMs: 45000,
-        }, `PageSpeed error for ${lead.name}`);
-
-        setPageSpeedResults((prev) => ({
-          ...prev,
-          [idx]: {
-            performanceScore: result.performanceScore ?? null,
-            firstContentfulPaint: result.firstContentfulPaint ?? null,
-            largestContentfulPaint: result.largestContentfulPaint ?? null,
-            totalBlockingTime: result.totalBlockingTime ?? null,
-            cumulativeLayoutShift: result.cumulativeLayoutShift ?? null,
-            speedIndex: result.speedIndex ?? null,
-            diagnostics: result.diagnostics || [],
-            error: result.error,
-          },
-        }));
-      } catch (err) {
-        setPageSpeedResults((prev) => ({
-          ...prev,
-          [idx]: {
-            performanceScore: null,
-            firstContentfulPaint: null,
-            largestContentfulPaint: null,
-            totalBlockingTime: null,
-            cumulativeLayoutShift: null,
-            speedIndex: null,
-            diagnostics: [],
-            error: err instanceof Error ? err.message : t.pageSpeedError,
-          },
-        }));
-      }
-
-      // 3-second delay between checks to avoid rate limits
-      if (i < leadsWithWebsites.length - 1) {
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-    }
-
-    setPsBulkChecking(false);
-    showToast(`${t.pageSpeedDone} (${leadsWithWebsites.length})`);
-  }, [leads, showToast, t.pageSpeedError, t.pageSpeedNoResults, t.pageSpeedDone]);
-
-  return (
-    <div className="lead-workspace min-h-screen">
-      {/* Toast */}
-      {toastMsg && (
-        <div className="fixed top-4 right-4 z-[100] animate-in fade-in slide-in-from-top-2">
-          <div className="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg flex items-center gap-2">
-            <Check className="w-4 h-4" /> {toastMsg}
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <header className="lead-topbar">
-        <div className="lead-shell lead-brand-row">
-          <div className="lead-brand">
-            <span className="lead-brand-mark"><Target aria-hidden="true" /></span>
-            <span>{t.appTitle}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {/* Language Switcher */}
-            <div className="flex items-center gap-0.5 mr-1">
-              {AVAILABLE_LOCALES.map((loc) => (
-                <button
-                  key={loc.value}
-                  onClick={() => setLocale(loc.value)}
-                  className={`text-sm px-1 py-0.5 rounded transition-colors ${locale === loc.value ? 'bg-muted ring-1 ring-border' : 'hover:bg-muted/50 opacity-60 hover:opacity-100'}`}
-                  aria-label={loc.label}
-                  aria-pressed={locale === loc.value}
-                  title={loc.label}
-                >
-                  {loc.flag}
-                </button>
-              ))}
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setTgSettingsOpen(true)} aria-label={t.settings} title={t.settings}>
-              <Settings className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <main className="lead-shell lead-main">
-        <section className="lead-intro" aria-labelledby="workspace-title">
-          <h1 id="workspace-title">{t.workspaceTitle}</h1>
-          <p>{t.workspaceHint}</p>
-        </section>
-        <section className="lead-panel lead-search" aria-label={t.workspaceTitle}>
-            <div className="lead-fields">
-              <div className="space-y-1">
-                <label htmlFor="lead-country" className="lead-label">{t.countryLabel}</label>
-                <Select value={country} onValueChange={(v) => { setCountry(v); selectedGeoRef.current = null; if (city.trim().length >= 2) fetchCities(city, v); }}
-                  disabled={phase === "searching" || phase === "analyzing"}>
-                  <SelectTrigger id="lead-country" className="lead-field"><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {COUNTRIES.map((co) => (
-                      <SelectItem key={co.code} value={co.code}>{flagEmoji(co.code)} {co.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1 relative" onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) setCityOpen(false);
-              }}>
-                <label htmlFor="lead-city" className="lead-label">{t.cityLabel}</label>
-                <Input id="lead-city" className="lead-field pr-8" placeholder={t.cityPlaceholder} value={city} autoComplete="off"
-                  onChange={(e) => { setCity(e.target.value); setCityOpen(true); selectedGeoRef.current = null; singleCityRef.current = null; fetchCities(e.target.value, country); }}
-                  onFocus={() => setCityOpen(true)}
-                  disabled={phase === "searching" || phase === "analyzing"}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") setCityOpen(false);
-                    if (e.key === "Enter") handleSearch();
-                  }} />
-                {cityLoading
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-2 top-[35px] text-muted-foreground" />
-                  : <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-[35px] text-muted-foreground pointer-events-none" />}
-                {cityOpen && cityHits.length > 0 && (
-                  <div className="absolute z-50 left-0 right-0 top-[69px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
-                    {cityHits.map((hit, i) => (
-                      <button key={`${hit.lat}-${hit.lng}-${i}`} type="button"
-                        onMouseDown={(e) => e.preventDefault()} onClick={() => pickCity(hit.name, hit)}
-                        className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-start gap-1.5">
-                        <MapPin className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
-                        <span><span className="font-medium">{hit.name}</span>
-                          <span className="text-[11px] text-muted-foreground block leading-tight">{hit.displayName}</span></span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {cityOpen && cityHits.length === 0 && city.trim().length < 2 && citiesForCountry(country).length > 0 && (
-                  <div className="absolute z-50 left-0 right-0 top-[69px] bg-popover border rounded-md shadow-lg max-h-60 overflow-auto">
-                    {citiesForCountry(country).map((name) => (
-                      <button key={name} type="button"
-                        onMouseDown={(e) => e.preventDefault()} onClick={() => pickCity(name, null)}
-                        className="w-full text-left px-2.5 py-1.5 text-sm hover:bg-accent flex items-center gap-1.5">
-                        <MapPin className="w-3 h-3 shrink-0 text-muted-foreground" />
-                        <span className="font-medium">{name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="space-y-1">
-                <label htmlFor="lead-category" className="lead-label">{t.nicheLabel}</label>
-                <Input id="lead-category" className="lead-field" placeholder={t.nichePlaceholder} value={query} onChange={(e) => { setQuery(e.target.value); setNicheToken(""); }}
-                  disabled={phase === "searching" || phase === "analyzing"} onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
-              </div>
-              <div className="space-y-1">
-                <label htmlFor="lead-limit" className="lead-label">{t.countLabel}</label>
-                <Select value={maxResults} onValueChange={setMaxResults} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
-                  <SelectTrigger id="lead-limit" className="lead-field"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="10">10</SelectItem><SelectItem value="20">20</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <label htmlFor="lead-radius" className="lead-label">{t.radiusLabel}</label>
-                <Select value={radius} onValueChange={setRadius} disabled={phase !== "idle" && phase !== "done" && phase !== "error"}>
-                  <SelectTrigger id="lead-radius" className="lead-field"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5">5 {t.km}</SelectItem><SelectItem value="10">10 {t.km}</SelectItem>
-                    <SelectItem value="15">15 {t.km}</SelectItem><SelectItem value="25">25 {t.km}</SelectItem>
-                    <SelectItem value="50">50 {t.km}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button onClick={() => handleSearch()} disabled={phase === "searching" || phase === "analyzing" || psBulkChecking || psSingleChecking !== null || !city.trim() || !query.trim()}
-                className="lead-search-submit">
-                {phase === "searching" || phase === "analyzing" ? <Loader2 className="animate-spin" /> : <Search />}
-                {phase === "searching" ? t.searching : phase === "analyzing" ? t.analyzing : t.searchButton}
-              </Button>
-            </div>
-            <div className="lead-niches">
-              <span className="text-xs text-muted-foreground">{t.quickKeywords}</span>
-              {(() => {
-                const chips = nicheChipsForCountry(country, locale);
-                const hasLocalLang = chips.some((c) => c.local.toLowerCase() !== c.en.toLowerCase());
-                return (
-                  <>
-                    {hasLocalLang && (
-                      <div className="inline-flex rounded-full border overflow-hidden text-[10px] mr-1">
-                        <button type="button" onClick={() => setChipLang("local")}
-                          className={`px-1.5 py-0.5 ${chipLang === "local" ? "bg-accent font-medium" : "hover:bg-accent/50"}`}>
-                          {flagEmoji(country)}
-                        </button>
-                        <button type="button" onClick={() => setChipLang("en")}
-                          className={`px-1.5 py-0.5 border-l ${chipLang === "en" ? "bg-accent font-medium" : "hover:bg-accent/50"}`}>
-                          EN
-                        </button>
-                      </div>
-                    )}
-                    {chips.map((chip) => {
-                      const display = chipLang === "en" ? chip.en : chip.local;
-                      const showTr = chipLang === "local" && chip.label.toLowerCase() !== chip.local.toLowerCase();
-                      return (
-                        <button key={chip.token}
-                          onClick={() => { setQuery(display); setNicheToken(chip.token); }}
-                          disabled={phase !== "idle" && phase !== "done" && phase !== "error"}
-                          title={chip.en}
-                          aria-pressed={nicheToken === chip.token}
-                          className="lead-niche">
-                          {display}{showTr && <span className="text-muted-foreground"> · {chip.label}</span>}
-                        </button>
-                      );
-                    })}
-                  </>
-                );
-              })()}
-            </div>
-            {errorMessage && (
-              <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 rounded-lg p-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />{errorMessage}
-              </div>
-            )}
-            <details className="lead-quick-search">
-              <summary><Search aria-hidden="true" />{t.quickSearch}<ChevronDown aria-hidden="true" /></summary>
-              <form className="lead-quick-form" onSubmit={(event) => { event.preventDefault(); handleSmartQuery(smartQuery); }}>
-                <div className="relative min-w-0">
-                  <Input
-                    id="lead-quick-query"
-                    aria-label={t.quickSearch}
-                    placeholder={locale === "ua" ? "Наприклад, стоматології у Львові" : t.nichePlaceholder}
-                    value={smartQuery}
-                    onChange={(e) => { setSmartQuery(e.target.value); setParsedQuery(null); }}
-                    disabled={phase === "searching" || phase === "analyzing"}
-                    className="lead-field pr-10"
-                  />
-                  {smartQuery && (
-                    <button type="button" aria-label={t.clearQuery}
-                      onClick={() => { setSmartQuery(""); setParsedQuery(null); }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground">
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-                <Button type="submit" variant="outline" className="h-[2.65rem]"
-                  disabled={!smartQuery.trim() || phase === "searching" || phase === "analyzing" || psBulkChecking || psSingleChecking !== null}>
-                  {t.searchButton}
-                </Button>
-              </form>
-              {parsedQuery && smartQuery && (
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {parsedQuery.city && (
-                    <Badge variant="outline" className="text-[10px]">
-                      <MapPin className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.city}
-                    </Badge>
-                  )}
-                  {parsedQuery.query && (
-                    <Badge variant="outline" className="text-[10px]">
-                      <Target className="w-2.5 h-2.5 mr-0.5" />{parsedQuery.query}
-                    </Badge>
-                  )}
-                  <Badge variant="secondary" className="text-[10px]">
-                    {parsedQuery.language === 'ua' ? '🇺🇦' : parsedQuery.language === 'en' ? '🇬🇧' : parsedQuery.language === 'ru' ? '🇷🇺' : '🌐'}
-                  </Badge>
-                </div>
-              )}
-
-            </details>
-        </section>
-
-        {/* Search History */}
-        {searchHistory.length > 0 && (
-          <Card className="lead-panel shadow-none py-0 gap-0">
-            <button type="button" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}
-              className="w-full text-left px-4 py-3 flex items-center justify-between cursor-pointer">
-              <span className="flex items-center gap-2 text-sm font-medium">
-                <History className="w-4 h-4 text-muted-foreground" /> {t.searchHistory} ({searchHistory.length})
-              </span>
-              {historyOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
-            </button>
-            {historyOpen && (
-              <div className="border-t max-h-60 overflow-y-auto">
-                <div className="flex justify-end p-2">
-                  <Button variant="ghost" size="sm" onClick={handleClearHistory} className="text-xs text-red-600">
-                    <Trash2 className="w-3 h-3 mr-1" />{t.clearAll}
-                  </Button>
-                </div>
-                {searchHistory.map((entry) => (
-                  <div key={entry.id} className="flex items-center justify-between px-3 py-2 hover:bg-muted/50 border-b last:border-b-0 group">
-                    <button onClick={() => handleRunHistorySearch(entry)} className="flex-1 text-left min-w-0">
-                      <div className="text-xs font-medium truncate">
-                        {entry.city} → {entry.query}
-                        <span className="text-muted-foreground ml-1.5">({entry.totalResults})</span>
-                      </div>
-                      <div className="text-[10px] text-muted-foreground">
-                        {new Date(entry.timestamp).toLocaleString("uk-UA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                        <span className="ml-2">{entry.maxResults} {t.results} • {entry.radius} {t.km}</span>
-                      </div>
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleRemoveHistoryItem(entry.id); }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-red-500 transition-all" title={t.delete}>
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        )}
-
-        {/* Geo Locations Found */}
-        {geoLocations.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <MapPin className="w-3.5 h-3.5" />
-              <span className="font-medium">{t.foundLocations}:</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {geoLocations.map((geo, i) => (
-                <a
-                  key={`${geo.city}-${i}`}
-                  href={`https://www.openstreetmap.org/?mlat=${geo.lat}&mlon=${geo.lng}#map=13/${geo.lat}/${geo.lng}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
-                >
-                  <MapPin className="w-3 h-3" />
-                  {geo.displayName}
-                  <span className="text-[10px] text-muted-foreground">({geo.lat.toFixed(2)}, {geo.lng.toFixed(2)})</span>
-                  <ExternalLink className="w-2.5 h-2.5 opacity-50" />
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Progress */}
-        {(phase === "searching" || phase === "analyzing") && (
-          <Card className="shadow-md border-0"><CardContent className="py-3">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium">{progressLabel}</span>
-              <span className="text-sm text-muted-foreground">{progress}%</span>
-            </div>
-            <Progress value={progress} className="h-2" />
-          </CardContent></Card>
-        )}
-
-        {/* PageSpeed Bulk Progress */}
-        {psBulkChecking && (
-          <Card className="shadow-md border-0 border-l-4 border-l-blue-500"><CardContent className="py-3">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium flex items-center gap-1.5">
-                <Gauge className="w-4 h-4 text-blue-600" />
-                {t.pageSpeedProgress}: {psBulkProgress}/{psBulkTotal}
-              </span>
-              <span className="text-sm text-muted-foreground">{psBulkTotal > 0 ? Math.round((psBulkProgress / psBulkTotal) * 100) : 0}%</span>
-            </div>
-            <Progress value={psBulkTotal > 0 ? (psBulkProgress / psBulkTotal) * 100 : 0} className="h-2" />
-          </CardContent></Card>
-        )}
-
-        <section className="lead-panel lead-results" aria-labelledby="results-title">
-          <div className="lead-results-heading">
-            <h2 id="results-title">{t.resultsTitle}{leads.length > 0 && <span>{filteredLeads.length} / {leads.length}</span>}</h2>
-            <div className="lead-result-actions">
-            {leads.length > 0 && (
-              <>
-                <Button variant="outline" size="sm" onClick={() => handleExport("csv")} title="CSV">
-                  <FileText className="w-4 h-4" /><span className="ml-1">{t.exportCsv}</span>
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => handleExport("excel")} title="Excel">
-                  <FileSpreadsheet className="w-4 h-4" /><span className="ml-1">{t.exportExcel}</span>
-                </Button>
-                {hotCount > 0 && (
-                  <Button size="sm" onClick={() => handleExport("excel", true)} variant="outline" title="Тільки HOT">
-                    <Flame className="w-4 h-4" /><span className="ml-1">HOT</span>
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleBulkPageSpeed}
-                  disabled={phase !== "done" || psBulkChecking || psSingleChecking !== null}
-                  title={t.bulkPageSpeedDesc}
-                  className="border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
-                >
-                  {psBulkChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
-                  <span className="ml-1">{t.pageSpeed}</span>
-                </Button>
-              </>
-            )}
-            </div>
-          </div>
-
-          {leads.length > 0 && phase === "done" && (
-            <div className="lead-metrics">
-              <MiniStat label={t.totalLeads} value={leads.length} />
-              <MiniStat label={t.hot} value={hotCount} color="text-red-700 dark:text-red-400" />
-              <MiniStat label={t.noWebsite} value={noWebsiteCount} />
-              <MiniStat label={t.notMobile} value={noMobileCount} />
-              <MiniStat label={t.noSsl} value={noSslCount} />
-              <MiniStat label={t.veryOldSites} value={ancientCount} />
-              <MiniStat label={t.avgEstimate} value={avgPrice.max ? `$${avgPrice.min}–${avgPrice.max}` : "—"} />
-            </div>
-          )}
-
-        {/* Filters */}
-        {leads.length > 0 && (phase === "done" || phase === "analyzing") && (
-          <div className="lead-filter-bar">
-            <div className="flex flex-wrap items-center gap-2">
-              <Filter className="w-4 h-4 text-muted-foreground" />
-              {(["ALL", "HOT", "WARM", "COLD"] as const).map((s) => (
-                <Button key={s} variant={filterScore === s ? "default" : "outline"} size="sm" onClick={() => setFilterScore(s)}
-                  className={filterScore === s && s !== "ALL"
-                    ? s === "HOT" ? "bg-red-600 hover:bg-red-700 text-white" : s === "WARM" ? "bg-yellow-500 hover:bg-yellow-600 text-black" : "bg-green-600 hover:bg-green-700 text-white" : ""}>
-                  {s === "ALL" ? `${t.allFilter} (${leads.length})` : s === "HOT" ? `🔥 ${t.hot} (${hotCount})` : s === "WARM" ? `⚡ ${t.warm} (${warmCount})` : `❄️ ${t.cold} (${coldCount})`}
-                </Button>
-              ))}
-              <div className="h-4 w-px bg-border mx-1" />
-              <Select value={filterStatus} onValueChange={(v) => setFilterStatus(v as LeadStatus | "ALL")}>
-                <SelectTrigger aria-label={t.status} className="h-8 w-auto text-xs min-w-[120px]">
-                  <SelectValue placeholder={t.status} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">{t.allStatuses}</SelectItem>
-                  {statusList.map((s) => (
-                    <SelectItem key={s.value} value={s.value}>{s.emoji} {s.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
-                <div className="flex items-center gap-1.5">
-                  <label htmlFor="lead-filter-favorites" className="text-xs text-muted-foreground">{t.onlyFavorites}</label>
-                  <Switch id="lead-filter-favorites" checked={onlyFavorites} onCheckedChange={setOnlyFavorites} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <label htmlFor="lead-filter-issues" className="text-xs text-muted-foreground">{t.onlyWithIssues}</label>
-                  <Switch id="lead-filter-issues" checked={onlyWithIssues} onCheckedChange={setOnlyWithIssues} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <label htmlFor="lead-filter-website" className="text-xs text-muted-foreground">{t.websitesOnly}</label>
-                  <Switch id="lead-filter-website" checked={onlyWithWebsite} onCheckedChange={setOnlyWithWebsite} />
-              </div>
-            </div>
-          </div>
-        </div>
-        )}
-
-        {/* Lead Cards */}
-        {filteredLeads.length > 0 && (
-          <div className="lead-column-head" aria-hidden="true">
-            <span>{t.businessColumn}</span><span>{t.websiteColumn}</span><span>{t.priorityColumn}</span><span>{t.status}</span><span />
-          </div>
-        )}
-        <div className="lead-list">
-          {filteredLeads.slice(0, visibleCount).map((lead) => {
-            const realIdx = leads.indexOf(lead);
-            const sc = getScoreColor(lead.score);
-            const dc = getDesignColor(lead.designScore);
-            const stc = getStatusColor(lead.status);
-            const identity = leadKey(lead);
-            const isExpanded = expandedLead === identity;
-            const evidence = getWebsiteEvidence(lead);
-            const screenshotUrl = getScreenshotUrl(lead.finalUrl || lead.website);
-            const mobileScreenshotUrl = getMobileScreenshotUrl(lead.finalUrl || lead.website);
-            const websiteUrl = formatUrl(lead.finalUrl || lead.website);
-            const price = estimatePrice(lead);
-            const issues = getIssuesText(lead);
-            const selectedTmpl = templates.find((t) => t.id === selectedTemplateId);
-            const isPreviewOpen = previewOpen.has(realIdx);
-            const isFav = favorites.some((favorite) => matchesFavorite(favorite, lead));
-            const problems = getProblemsForLead(lead);
-
-            return (
-              <article key={identity} className="lead-record">
-                <div className="lead-row">
-                  <button type="button" aria-expanded={isExpanded} aria-controls={isExpanded ? `lead-details-${realIdx}` : undefined}
-                    onClick={() => setExpandedLead(isExpanded ? null : identity)} className="lead-row-content" disabled={phase === "analyzing"}>
-                    <div className="lead-company">
-                      <span className="lead-company-mark" aria-hidden="true">{lead.name.trim().slice(0, 1).toLocaleUpperCase() || "•"}</span>
-                      <span className="min-w-0">
-                        <span className="lead-company-name">{lead.name}</span>
-                        {lead.address && lead.address !== "N/A" && <span className="lead-row-caption">{lead.address}</span>}
-                        {(!lead.address || lead.address === "N/A") && lead.phone && lead.phone !== "N/A" && <span className="lead-row-caption">{lead.phone}</span>}
-                      </span>
-                    </div>
-                    <div className="min-w-0">
-                      <span className="lead-row-domain">{lead.website && lead.website !== "N/A" ? lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "") : t.noWebsite}</span>
-                      {evidence !== "not-listed" && <span className="lead-row-caption">{evidence === "limited" ? t.analysisLimitedLabel : dc.label}</span>}
-                    </div>
-                    <div className="lead-row-priority">
-                      <span className={`lead-priority lead-priority-${lead.score.toLowerCase()}`}>{sc.label}</span>
-                      {price.max > 0 && <span className="lead-row-caption">${price.min}–${price.max}</span>}
-                    </div>
-                    <div className="lead-row-status"><span className="lead-status">{stc.label}</span></div>
-                  </button>
-                  <div className="lead-row-actions">
-                    <button type="button" aria-pressed={isFav} onClick={(e) => handleToggleFavorite(lead, e)} className="lead-favorite"
-                      aria-label={isFav ? t.removeFromFavorites : t.addToFavorites} title={isFav ? t.removeFromFavorites : t.addToFavorites}>
-                      {isFav ? <Star className="fill-amber-500 text-amber-600" /> : <Star />}
-                    </button>
-                    {isExpanded ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
-                  </div>
-                </div>
-
-                {/* Expanded Content */}
-                {isExpanded && (
-                  <div id={`lead-details-${realIdx}`} className="lead-inspector">
-                    <div className={`grid grid-cols-1 gap-5 p-4 sm:p-6 ${evidence === "not-listed" ? "" : "lg:grid-cols-2"}`}>
-                      {/* LEFT: Screenshots */}
-                      {evidence !== "not-listed" && <div className="space-y-3">
-                        {screenshotUrl && (
-                          <div>
-                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" />{t.desktop}</p>
-                            <div className="rounded-xl overflow-hidden border shadow-inner bg-white relative group">
-                              <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
-                                <img src={screenshotUrl} alt={`Скріншот ${lead.name}`} className="w-full h-auto block" loading="lazy" />
-                              </a>
-                              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 bg-black/70 text-white text-xs px-2 py-1 rounded-lg hover:bg-black/90 backdrop-blur-sm">
-                                  <ExternalLink className="w-3 h-3" /> {t.openSite}
-                                </a>
-                              </div>
-                              {lead.pageTitle && (
-                                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-3 py-2">
-                                  <p className="text-white text-xs truncate">{lead.pageTitle}</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {mobileScreenshotUrl && (
-                          <div>
-                            <p className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1"><Smartphone className="w-3 h-3" />{t.mobile}</p>
-                            <div className="rounded-xl overflow-hidden border shadow-inner bg-white relative group max-w-[200px] mx-auto">
-                              <a href={websiteUrl} target="_blank" rel="noopener noreferrer">
-                                <img src={mobileScreenshotUrl} alt={`Мобільний скріншот ${lead.name}`} className="w-full h-auto block" loading="lazy" />
-                              </a>
-                              <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-md hover:bg-black/90 backdrop-blur-sm">
-                                  <ExternalLink className="w-2.5 h-2.5" />
-                                </a>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-
-                        {/* PageSpeed Check Button */}
-                        {lead.website !== "N/A" && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={(e) => { e.stopPropagation(); checkSinglePageSpeed(lead, realIdx); }}
-                            disabled={phase !== "done" || psSingleChecking !== null || psBulkChecking}
-                            className="w-full text-xs border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
-                          >
-                            {psSingleChecking === realIdx
-                              ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />{t.pageSpeedChecking}</>
-                              : <><Gauge className="w-3.5 h-3.5 mr-1.5" />{t.checkPageSpeed}</>}
-                          </Button>
-                        )}
-                      </div>}
-
-                      {/* RIGHT: Details */}
-                      <div className="space-y-4">
-                        {evidence !== "checked" && (
-                          <div className="rounded-lg border bg-card px-4 py-3 text-sm">
-                            <strong>{evidence === "limited" ? t.analysisLimitedLabel : t.noWebsite}</strong>
-                            <p className="mt-1 text-muted-foreground">{issues}</p>
-                          </div>
-                        )}
-
-                        {/* Design Issues Section */}
-                        {evidence === "checked" && <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-3 border border-red-200 dark:border-red-900/50">
-                          <h4 className="text-xs font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5">
-                            <AlertTriangle className="w-3.5 h-3.5" />
-                            {t.problems} ({(() => {
-                              const lines = issues.split("\n").filter((l) => l && !l.startsWith("✅"));
-                              return lines.length;
-                            })()})
-                          </h4>
-                          <div className="space-y-1">
-                            {issues.split("\n").filter(Boolean).map((line, li) => (
-                              <p key={li} className={`text-xs ${line.startsWith("✅") ? "text-green-600 dark:text-green-400" : "text-red-700 dark:text-red-300"}`}>
-                                {line}
-                              </p>
-                            ))}
-                          </div>
-                        </div>}
-
-                        {/* Problem Library Details */}
-                        {problems.length > 0 && (
-                          <div className="bg-amber-50 dark:bg-amber-950/20 rounded-lg p-3 border border-amber-200 dark:border-amber-900/50">
-                            <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-2 flex items-center gap-1.5">
-                              <Zap className="w-3.5 h-3.5" />
-                              {t.detailedAnalysis}
-                            </h4>
-                            <div className="space-y-2 max-h-48 overflow-y-auto">
-                              {problems.map((prob) => (
-                                <div key={prob.id} className="bg-white dark:bg-slate-900/50 rounded-md p-2 border">
-                                  <div className="flex items-center gap-1.5 mb-1">
-                                    <span>{prob.icon}</span>
-                                    <span className="text-xs font-semibold">{prob.problem}</span>
-                                    <Badge variant="outline" className="text-[9px] ml-auto">${prob.priceRange.min}-${prob.priceRange.max}</Badge>
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground mb-1">{prob.solution}</p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {prob.benefits.slice(0, 3).map((b, bi) => (
-                                      <span key={bi} className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800">
-                                        {b}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Technologies & Badges */}
-                        {evidence === "checked" && (
-                          <div>
-                            <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                              <Layout className="w-3.5 h-3.5" /> {t.technologies}
-                            </h4>
-                            <div className="flex flex-wrap gap-1.5">
-                              {lead.technologies.length > 0 && lead.technologies.map((t) => (
-                                <Badge key={t} variant="outline" className="text-[10px]"><Layout className="w-3 h-3 mr-1" />{t}</Badge>
-                              ))}
-                              {lead.hasSsl ? (
-                                <Badge variant="outline" className="text-[10px] text-green-600 border-green-300 dark:border-green-700"><ShieldCheck className="w-3 h-3 mr-1" />HTTPS</Badge>
-                              ) : (
-                                <Badge variant="outline" className="text-[10px] text-red-600 border-red-300 dark:border-red-700"><ShieldOff className="w-3 h-3 mr-1" />No SSL</Badge>
-                              )}
-                              {lead.isMobileFriendly ? (
-                                <Badge variant="outline" className="text-[10px] text-green-600 border-green-300 dark:border-green-700"><Smartphone className="w-3 h-3 mr-1" />Mobile OK</Badge>
-                              ) : (
-                                <Badge variant="outline" className="text-[10px] text-red-600 border-red-300 dark:border-red-700"><MonitorX className="w-3 h-3 mr-1" />No Mobile</Badge>
-                              )}
-                              {lead.hasContactForm && (
-                                <Badge variant="outline" className="text-[10px] text-blue-600 border-blue-300 dark:border-blue-700"><Mail className="w-3 h-3 mr-1" />{t.formBadge}</Badge>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Security findings (header-derived, factual) */}
-                        {evidence === "checked" && lead.securityIssues && lead.securityIssues.length > 0 && (
-                          <div>
-                            <h4 className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-                              <ShieldOff className="w-3.5 h-3.5 text-red-500" /> {t.securityTitle}
-                            </h4>
-                            <ul className="space-y-1">
-                              {lead.securityIssues.map((issue, ii) => (
-                                <li key={ii} className="flex items-start gap-1.5 text-[11px] text-red-600 dark:text-red-400">
-                                  <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-                                  <span>{issue}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {/* PageSpeed Results */}
-                        {pageSpeedResults[realIdx] && (() => {
-                          const ps = pageSpeedResults[realIdx];
-                          const scoreColor = ps.performanceScore !== null
-                            ? ps.performanceScore >= 90 ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800"
-                              : ps.performanceScore >= 50 ? "text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800"
-                              : "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800"
-                            : "";
-
-                          const formatMs = (val: number | null) => {
-                            if (val === null) return "—";
-                            if (val >= 1000) return `${(val / 1000).toFixed(1)}s`;
-                            return `${Math.round(val)}ms`;
-                          };
-
-                          return (
-                            <div className={`rounded-lg p-3 border ${scoreColor || "bg-muted/50"}`}>
-                              <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-                                <Gauge className="w-3.5 h-3.5" /> {t.pageSpeedScore}
-                              </h4>
-                              {ps.error ? (
-                                <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
-                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                  <span>{ps.error}</span>
-                                </div>
-                              ) : (
-                                <>
-                                  {/* Score Badge */}
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full font-bold text-lg border-2 ${
-                                      ps.performanceScore !== null
-                                        ? ps.performanceScore >= 90 ? "border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/50"
-                                          : ps.performanceScore >= 50 ? "border-orange-500 text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/50"
-                                          : "border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/50"
-                                        : "border-muted text-muted-foreground bg-muted/50"
-                                    }`}>
-                                      {ps.performanceScore !== null ? ps.performanceScore : "—"}
-                                    </div>
-                                    {ps.performanceScore !== null && (
-                                      <span className="text-[10px] text-muted-foreground">/ 100</span>
-                                    )}
-                                  </div>
-
-                                  {/* Core Web Vitals Grid */}
-                                  <div className="grid grid-cols-2 gap-1.5">
-                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
-                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedFcp}</div>
-                                      <div className="text-xs font-semibold">{formatMs(ps.firstContentfulPaint)}</div>
-                                    </div>
-                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
-                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedLcp}</div>
-                                      <div className="text-xs font-semibold">{formatMs(ps.largestContentfulPaint)}</div>
-                                    </div>
-                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
-                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedTbt}</div>
-                                      <div className="text-xs font-semibold">{formatMs(ps.totalBlockingTime)}</div>
-                                    </div>
-                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5">
-                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedCls}</div>
-                                      <div className="text-xs font-semibold">{ps.cumulativeLayoutShift !== null ? ps.cumulativeLayoutShift.toFixed(2) : "—"}</div>
-                                    </div>
-                                    <div className="bg-white/60 dark:bg-slate-900/40 rounded-md px-2 py-1.5 col-span-2">
-                                      <div className="text-[9px] text-muted-foreground">{t.pageSpeedSi}</div>
-                                      <div className="text-xs font-semibold">{formatMs(ps.speedIndex)}</div>
-                                    </div>
-                                  </div>
-
-                                  {/* Diagnostics */}
-                                  {ps.diagnostics.length > 0 && (
-                                    <div className="mt-2 space-y-1">
-                                      <div className="text-[10px] font-medium text-muted-foreground">{t.pageSpeedDiagnostics}:</div>
-                                      {ps.diagnostics.map((d, di) => (
-                                        <div key={di} className="flex items-start gap-1 text-[10px] text-muted-foreground">
-                                          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0 text-amber-500" />
-                                          <span>{d}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          );
-                        })()}
-
-                        {/* Price estimation */}
-                        {price.max > 0 && <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-900/50">
-                          <h4 className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 mb-1 flex items-center gap-1.5">
-                            <DollarSign className="w-3.5 h-3.5" /> {t.priceEstimate}
-                          </h4>
-                          <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400">${price.min} — ${price.max}</div>
-                          <div className="text-[10px] text-muted-foreground">{price.note}</div>
-                        </div>}
-
-                        {/* Scoring Breakdown — Why HOT? */}
-                        {evidence === "checked" && (() => {
-                          const breakdown = calculateLeadScoreDetailed(lead);
-                          const dsc = getDetailedScoreColor(breakdown.rating);
-                          const severityColors: Record<string, string> = { critical: "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30", warning: "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30", info: "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30" };
-                          return (
-                            <div className={`rounded-lg p-3 border ${dsc.bg} ${dsc.text}`}>
-                              <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-                                <Flame className="w-3.5 h-3.5" /> {t.whyHot} — {t.scoringBreakdown}
-                              </h4>
-                              <div className="flex items-center gap-2 mb-2">
-                                <div className="flex-1">
-                                  <div className="h-2 rounded-full bg-muted overflow-hidden">
-                                    <div className={`h-full rounded-full transition-all ${breakdown.rating === "HOT" ? "bg-red-500" : breakdown.rating === "WARM" ? "bg-yellow-500" : breakdown.rating === "COLD" ? "bg-green-500" : "bg-emerald-500"}`} style={{ width: `${breakdown.score}%` }} />
-                                  </div>
-                                </div>
-                                <Badge className={`${dsc.bg} ${dsc.text} text-[10px] font-bold`}>{dsc.emoji} {dsc.label} ({breakdown.score}/100)</Badge>
-                              </div>
-                              <div className="space-y-1">
-                                {breakdown.factors.map((f, fi) => (
-                                  <div key={fi} className={`flex items-center gap-1.5 text-[10px] px-1.5 py-0.5 rounded ${severityColors[f.severity] || ""}`}>
-                                    <span>{f.icon}</span>
-                                    <span className="font-medium">{f.name}</span>
-                                    <span className="ml-auto">+{f.points}</span>
-                                  </div>
-                                ))}
-                              </div>
-                              {breakdown.opportunityText && (
-                                <p className="text-[10px] mt-2 leading-relaxed opacity-80">{breakdown.opportunityText}</p>
-                              )}
-                            </div>
-                          );
-                        })()}
-
-                        {/* Contacts */}
-                        <div className="space-y-2">
-                          <h4 className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-                            <PhoneCall className="w-3.5 h-3.5" /> {t.contacts}
-                          </h4>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <ContactField icon={<Phone className="w-3.5 h-3.5" />} label={t.phone} value={lead.phone} copyable={lead.phone !== "N/A"} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
-                            <ContactField icon={<Mail className="w-3.5 h-3.5" />} label={t.email} value={lead.email} copyable={!!lead.email} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
-                            <ContactField icon={<MapPin className="w-3.5 h-3.5" />} label={t.address} value={lead.address} copyable={lead.address !== "N/A"} CopyBtn={CopyBtn} notAvailableText={t.notAvailable} />
-                            <div className="flex items-start gap-2">
-                              <Globe className="w-3.5 h-3.5 mt-0.5 text-muted-foreground" />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-[10px] text-muted-foreground">{t.website}</div>
-                                {lead.website !== "N/A" ? (
-                                  <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
-                                    className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 flex items-center gap-1 break-all">
-                                    {websiteUrl.replace(/^https?:\/\//, "")} <ExternalLink className="w-3 h-3 shrink-0" />
-                                  </a>
-                                ) : <span className="text-xs text-muted-foreground">{t.noWebsite}</span>}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Social */}
-                          {(lead.facebook || lead.instagram || lead.telegram) && (
-                            <div className="flex flex-wrap gap-1.5 mt-1">
-                              {lead.facebook && (
-                                <a href={formatUrl(lead.facebook)} target="_blank" rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300">
-                                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>Facebook</a>
-                              )}
-                              {lead.instagram && (
-                                <a href={formatUrl(lead.instagram)} target="_blank" rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-pink-50 text-pink-700 hover:bg-pink-100 dark:bg-pink-900/30 dark:text-pink-300">
-                                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>Instagram</a>
-                              )}
-                              {lead.telegram && (
-                                <a href={formatUrl(lead.telegram)} target="_blank" rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 dark:bg-sky-900/30 dark:text-sky-300">
-                                  <Send className="w-3.5 h-3.5" />Telegram</a>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Hours */}
-                          {lead.openingHours && (
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <Clock className="w-3 h-3" />{lead.openingHours}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Outreach Section */}
-                    <div className="border-t px-3 sm:px-4 py-3 bg-blue-50/50 dark:bg-blue-950/10">
-                      <h4 className="text-xs font-semibold text-blue-700 dark:text-blue-400 mb-2 flex items-center gap-1.5">
-                        <Send className="w-3.5 h-3.5" /> {t.writeToOwner}
-                      </h4>
-                      <div className="flex flex-wrap gap-2 mb-2">
-                        <Button size="sm" variant="outline" onClick={() => handleCopyEmail(lead)} className="text-xs">
-                          <Copy className="w-3 h-3 mr-1" /> {t.copyEmail}
-                        </Button>
-                        {lead.telegram && (
-                          <Button size="sm" variant="outline" onClick={() => handleTelegram(lead)} className="text-xs">
-                            <MessageCircle className="w-3 h-3 mr-1" /> {t.openTelegram}
-                          </Button>
-                        )}
-                        {lead.email && (
-                          <Button size="sm" variant="outline" onClick={() => handleMailto(lead)} className="text-xs">
-                            <Mail className="w-3 h-3 mr-1" /> mailto:
-                          </Button>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <label className="text-[10px] text-muted-foreground">{t.template}</label>
-                        <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
-                          <SelectTrigger className="h-7 w-auto text-[11px] min-w-[180px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {templates.map((tmpl) => (
-                              <SelectItem key={tmpl.id} value={tmpl.id}>
-                                <span className="flex items-center gap-1.5">
-                                  {tmpl.channel === "email" ? "📧" : tmpl.channel === "telegram" ? "💬" : "✉️"}
-                                  {tmpl.name}
-                                  <span className="text-muted-foreground">({tmpl.tone === "formal" ? t.formal : tmpl.tone === "friendly" ? t.friendly : t.direct})</span>
-                                </span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button variant="ghost" size="sm" onClick={() => togglePreview(realIdx)} className="text-[11px] h-7 px-2">
-                          {isPreviewOpen ? <ChevronUp className="w-3 h-3 mr-0.5" /> : <ChevronDown className="w-3 h-3 mr-0.5" />}
-                          {isPreviewOpen ? t.hide : t.preview}
-                        </Button>
-                      </div>
-                      {isPreviewOpen && selectedTmpl && (
-                        <div className="mt-2 bg-white dark:bg-slate-900 rounded-lg border p-3 text-xs space-y-2 max-h-60 overflow-y-auto">
-                          {selectedTmpl.subject && (
-                            <div>
-                              <span className="font-semibold text-muted-foreground">{t.theme} </span>
-                              <span>{selectedTmpl.subject.replace(/{BIZ_NAME}/g, lead.name).replace(/{CITY}/g, city.split(",")[0].trim())}</span>
-                            </div>
-                          )}
-                          <pre className="whitespace-pre-wrap font-sans text-xs text-muted-foreground leading-relaxed">
-                            {selectedTmpl.body
-                              .replace(/{BIZ_NAME}/g, lead.name)
-                              .replace(/{ISSUES}/g, issues)
-                              .replace(/{CITY}/g, city.split(",")[0].trim())}
-                          </pre>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Lead Management Section */}
-                    <div className="border-t px-3 sm:px-4 py-3 bg-amber-50/50 dark:bg-amber-950/10">
-                      <h4 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-2 flex items-center gap-1.5">
-                        <StickyNote className="w-3.5 h-3.5" /> {t.leadManagement}
-                      </h4>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <label className="text-[10px] text-muted-foreground">{t.status}</label>
-                          <Select value={lead.status} onValueChange={(v) => handleStatusChange(realIdx, v)}>
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {statusList.map((s) => (
-                                <SelectItem key={s.value} value={s.value}>{s.emoji} {s.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-[10px] text-muted-foreground">{t.contactDate}</label>
-                          <div className="text-xs py-1.5 px-2 rounded-md border bg-muted/50">
-                            {lead.contactDate
-                              ? new Date(lead.contactDate).toLocaleDateString("uk-UA", { day: "numeric", month: "short", year: "numeric" })
-                              : "—"}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-2 space-y-1">
-                        <label className="text-[10px] text-muted-foreground">{t.notes}</label>
-                        <Textarea
-                          placeholder={t.notesPlaceholder}
-                          value={lead.notes}
-                          onChange={(e) => updateLead(realIdx, { notes: e.target.value })}
-                          className="text-xs min-h-[60px] resize-y"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </article>
-            );
-          })}
-        </div>
-
-            {visibleCount < filteredLeads.length && (
-          <div className="text-center py-4">
-            <Button variant="outline" onClick={() => setVisibleCount((prev) => prev + 20)} className="gap-2">
-              <ChevronDown className="w-4 h-4" />
-              {t.loadMore} ({filteredLeads.length - visibleCount})
-            </Button>
-          </div>
-        )}
-
-        {/* Empty state */}
-        {phase === "idle" && (
-          <div className="lead-empty">
-            <div className="lead-empty-symbol">
-              <Search aria-hidden="true" />
-            </div>
-            <h2 className="text-lg font-bold">{t.emptyTitle}</h2>
-            <p className="text-muted-foreground max-w-md text-sm">
-              {t.emptyDescription}
-            </p>
-          </div>
-        )}
-
-        {phase === "done" && leads.length === 0 && (
-          <div className="text-center py-12 text-sm text-muted-foreground">{progressLabel || t.noResults}</div>
-        )}
-
-        {phase === "done" && filteredLeads.length === 0 && leads.length > 0 && (
-          <div className="text-center py-12 text-sm text-muted-foreground">
-            <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            {t.noFiltersResults}
-          </div>
-        )}
-        </section>
-      </main>
-
-      <footer className="border-t mt-auto">
-        <div className="lead-shell py-4 text-xs text-muted-foreground">
-          <span>{t.appTitle}</span><span aria-hidden="true"> · </span><a className="underline underline-offset-2" href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>
-        </div>
-      </footer>
-
-      {/* Telegram Settings Dialog */}
-      <Dialog open={tgSettingsOpen} onOpenChange={setTgSettingsOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Bot className="w-5 h-5" />
-              {t.telegramSettings}
-            </DialogTitle>
-            <DialogDescription>
-              {t.telegramSettingsDesc}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 mt-4">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">Bot Token</label>
-              <Input
-                placeholder="123456789:ABCdefGhIjKlMnOpQrStUvWxYz"
-                value={tgSettings.botToken}
-                onChange={(e) => setTgSettings((s) => ({ ...s, botToken: e.target.value }))}
-                type="password"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium">Chat ID</label>
-              <Input
-                placeholder="123456789"
-                value={tgSettings.chatId}
-                onChange={(e) => setTgSettings((s) => ({ ...s, chatId: e.target.value }))}
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-medium">{t.notifyNewLeads}</div>
-                <div className="text-[10px] text-muted-foreground">{t.notifyNewLeadsDesc}</div>
-              </div>
-              <Switch
-                checked={tgSettings.notifyNewLeads}
-                onCheckedChange={(v) => setTgSettings((s) => ({ ...s, notifyNewLeads: v }))}
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs font-medium">{t.hotLeadsOnly}</div>
-                <div className="text-[10px] text-muted-foreground">{t.hotLeadsOnlyDesc}</div>
-              </div>
-              <Switch
-                checked={tgSettings.hotLeadsOnly}
-                onCheckedChange={(v) => setTgSettings((s) => ({ ...s, hotLeadsOnly: v }))}
-                disabled={!tgSettings.notifyNewLeads}
-              />
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <Button
-                onClick={handleTestTelegram}
-                disabled={tgTesting || !tgSettings.botToken || !tgSettings.chatId}
-                variant="outline"
-                className="flex-1"
-              >
-                {tgTesting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Bot className="w-4 h-4 mr-2" />}
-                {t.test}
-              </Button>
-              <Button
-                onClick={() => {
-                  saveTelegramSettings(tgSettings);
-                  showToast(t.settingsSaved);
-                  setTgSettingsOpen(false);
-                }}
-                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
-              >
-                <Check className="w-4 h-4 mr-2" />
-                {t.save}
-              </Button>
-            </div>
-
-            {/* Setup instructions */}
-            <details className="mt-2">
-              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
-                <RotateCcw className="w-3 h-3" />
-                {t.howToSetupBot}
-              </summary>
-              <div className="mt-2 text-[11px] text-muted-foreground space-y-1 pl-4 border-l-2 border-muted">
-                <p>1. {t.botSetupStep1}</p>
-                <p>2. {t.botSetupStep2}</p>
-                <p>3. {t.botSetupStep3}</p>
-                <p>4. {t.botSetupStep4}</p>
-                <p className="break-all"><code className="bg-muted px-1 rounded text-[10px]">https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></p>
-                <p>5. {t.botSetupStep5}</p>
-              </div>
-            </details>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function MiniStat({ label, value, color }: { label: string; value: number | string; color?: string }) {
-  return (
-    <div className="lead-metric">
-      <div className={`lead-metric-value ${color || ""}`}>{value}</div>
-      <div className="lead-metric-label">{label}</div>
-    </div>
-  );
-}
-
-function ContactField({ icon, label, value, copyable, CopyBtn, notAvailableText }: {
-  icon: React.ReactNode; label: string; value: string;
-  copyable: boolean; CopyBtn: (props: { text: string; label: string }) => React.ReactNode | null;
-  notAvailableText?: string;
-}) {
-  return (
-    <div className="flex items-start gap-2">
-      <div className="mt-0.5 text-muted-foreground">{icon}</div>
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] text-muted-foreground">{label}</div>
-        {value && value !== "N/A" ? (
-          <span className="text-xs break-all">{value} {copyable && <CopyBtn text={value} label={label} />}</span>
-        ) : <span className="text-xs text-muted-foreground italic">{notAvailableText || "—"}</span>}
+      const next = await api<Snapshot>(action);
+      setData(next);
+      if (action.action === "create") { setShowForm(false); setSelected(""); setPriority("all"); setStatus("all"); }
+      if (action.action === "restore" || (action.action === "delete" && action.id === selected)) setSelected("");
+      return true;
+    } catch (e) { setError(e instanceof Error ? e.message : "Не вдалося зберегти зміни."); return false; }
+    finally { locked.current = false; setMutating(false); setLoading(false); }
+  }
+  async function transfer() {
+    if (locked.current) return null;
+    locked.current = true; ++currentRequest.current; setMutating(true); setError("");
+    try { return (await api<{ code: string }>({ action: "transfer" })).code; }
+    catch (e) { setError(e instanceof Error ? e.message : "Не вдалося отримати код."); return null; }
+    finally { locked.current = false; setMutating(false); }
+  }
+  const campaigns = data?.campaigns ?? [];
+  const leads = data?.leads ?? [];
+  const scoped = leads.filter(l => !selected || l.campaignId === selected);
+  const byStatus = scoped.filter(l => status === "all" || l.status === status);
+  const ranks: Record<Priority, number> = { high: 0, review: 1, low: 2 };
+  const visible = byStatus.filter(l => priority === "all" || priority === l.priority).sort((a, b) => ranks[a.priority] - ranks[b.priority] || b.checkedAt.localeCompare(a.checkedAt));
+  const chosen = campaigns.find(c => c.id === selected);
+  const checkingSelection = chosen ? !chosen.paused && activePhases.includes(chosen.phase) : running;
+  const formVisible = showForm || !campaigns.length;
+  return <div className="lf-app">
+    <header className="lf-header"><div className="lf-container lf-head-inner">
+      <a href="/" className="lf-brand"><span><Radar size={22} /></span>Lead Finder</a>
+      <nav aria-label="Навігація"><a href="/" aria-current="page">Кабінет</a><a href="/manual">Разовий пошук <ArrowUpRight size={14}/></a></nav>
+    </div></header>
+    <main className="lf-container lf-main">
+      <div className="lf-title-row"><div><h1>Пошук клієнтів</h1><p>Задайте нішу та місто. Перевірки продовжаться, коли ви закриєте сайт.</p></div><button className="lf-btn" disabled={mutating || loading} onClick={() => void refresh()}><RefreshCw size={15}/> Оновити</button></div>
+      <div className="lf-metrics" aria-label="Зведення кабінету">
+        <div><span><CalendarClock /> Збережені пошуки</span><strong>{data ? campaigns.length : "—"}</strong></div>
+        <div><span><ClipboardList /> Компанії в кабінеті</span><strong>{data ? leads.length : "—"}</strong></div>
+        <div><span><Activity /> Високий пріоритет</span><strong>{data ? leads.filter(l => l.priority === "high").length : "—"}</strong></div>
       </div>
-    </div>
-  );
+      {error && <div className="lf-error" role="alert"><span>{error}</span><button onClick={() => void refresh()}>Повторити</button></div>}
+      {leads.length > 0 && <a className="lf-skip" href="#lf-results-title">До списку компаній ({leads.length})</a>}
+      <div className="lf-columns">
+        <aside className="lf-sidebar"><section className="lf-panel">
+          <div className="lf-panel-head"><div><h2>Мої пошуки</h2>{data && <p className="lf-limit">До {data.limits.perRun} компаній за запуск · {campaigns.length}/{data.limits.campaigns} пошуків</p>}</div>{campaigns.length > 0 && <button className="lf-icon-btn" aria-label={showForm ? "Закрити форму пошуку" : "Додати пошук"} title={showForm ? "Закрити" : "Додати пошук"} disabled={!showForm && !!data && campaigns.length >= data.limits.campaigns} onClick={() => setShowForm(!showForm)}>{showForm ? <X size={18}/> : <Plus size={18}/>}</button>}</div>
+          {formVisible && <SearchForm onCreate={form => void mutate({ action: "create", ...form })} busy={mutating || !data}/>}
+          {campaigns.length > 0 && <div className="lf-campaigns">
+            <button className={'lf-all ' + (!selected ? "selected" : "")} onClick={() => setSelected("")} aria-pressed={!selected}>Усі пошуки <span>{campaigns.length}</span></button>
+            {campaigns.map(c => <CampaignItem key={c.id} item={c} selected={selected === c.id} select={() => setSelected(c.id)} busy={mutating} act={action => void mutate({ action, id: c.id })} />)}
+          </div>}
+        </section>{data && <AccessPanel busy={mutating} transfer={transfer} restore={code => mutate({ action: "restore", code })}/>}</aside>
+        <section className="lf-panel lf-results" aria-labelledby="lf-results-title">
+          <div className="lf-panel-head"><div><h2 id="lf-results-title">Компанії <span className="lf-count">{scoped.length}</span></h2>{chosen && <p>{chosen.query} · {chosen.city}</p>}</div><label className="lf-status-filter"><ListFilter size={16}/><span className="sr-only">Фільтр за статусом</span><select value={status} onChange={e => setStatus(e.target.value as Status | "all")}><option value="all">Усі статуси</option>{Object.entries(statuses).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label></div>
+          <div className="lf-tabs" aria-label="Пріоритет компаній">{(["all", "high", "review", "low"] as const).map(id => <button key={id} aria-pressed={priority === id} onClick={() => setPriority(id)}>{id === "all" ? "Усі" : id === "high" ? "Високий" : id === "review" ? "Уточнити" : "Низький"} <span>{id === "all" ? byStatus.length : byStatus.filter(l => l.priority === id).length}</span></button>)}</div>
+          {visible.length ? <div className="lf-lead-list">{visible.map(l => <LeadCard key={l.id} lead={l} campaign={campaigns.find(c => c.id === l.campaignId)} busy={mutating} save={(value, notes) => void mutate({ action: "status", id: l.id, status: value, ...(notes !== undefined && { notes }) })}/>)}</div> :
+            <div className="lf-empty" aria-live="polite"><span className="lf-empty-icon">{loading || checkingSelection ? <LoaderCircle className="animate-spin"/> : <Search/>}</span>
+              <h3>{loading ? "Відкриваємо кабінет" : !data ? "Не вдалося відкрити кабінет" : scoped.length ? "За цими фільтрами компаній немає" : checkingSelection ? "Пошук триває" : campaigns.length ? "Для цього пошуку ще немає компаній" : "Тут з’являться знайдені компанії"}</h3>
+              <p>{loading ? "Завантажуємо збережені пошуки та результати." : !data ? "Спробуйте оновити дані." : scoped.length ? "Змініть пріоритет або статус, щоб побачити інші результати." : checkingSelection ? "Результати з’являтимуться в міру перевірки сайтів." : campaigns.length ? "Стан останньої перевірки вказано в картці пошуку." : "Створіть перший пошук. У кожній картці будуть висновок перевірки, його джерела та статус роботи."}</p>
+              {scoped.length > 0 && <button className="lf-btn lf-small" onClick={() => { setPriority("all"); setStatus("all"); }}>Скинути фільтри</button>}
+            </div>}
+          <details className="lf-ranking"><summary><CircleHelp size={16}/> Як визначається пріоритет <ChevronDown size={15}/></summary><p>Високий пріоритет отримують компанії з підтвердженим контактом і конкретною проблемою, пов’язаною з вашою послугою. Неповні відомості потрапляють на уточнення. Відкрийте «Докази й контакти», щоб перевірити висновок.</p></details>
+        </section>
+      </div>
+    </main><footer className="lf-foot"><div className="lf-container">Lead Finder <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></div></footer>
+  </div>;
 }

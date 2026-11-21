@@ -1,0 +1,53 @@
+name: Refresh city business directories
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '24 4 * * 0'
+
+concurrency:
+  group: refresh-osm-directories
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build both regional directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check osmium==4.3.2
+          data="$RUNNER_TEMP/leadfinder-osm"
+          mkdir -p "$data"
+          for city in lviv kyiv; do
+            region=lviv_oblast
+            if [[ "$city" == kyiv ]]; then region=kiev; fi
+            curl --fail --location --retry 2 --connect-timeout 15 --max-time 300 \
+              --output "$data/$city.osm.pbf" "https://download.openstreetmap.fr/extracts/europe/ukraine/$region-latest.osm.pbf"
+            python scripts/build-osm-snapshot.py "$city" "$data/$city.osm.pbf"
+            cp "public/osm/$city-osm.json" "$data/"
+          done
+      - name: Publish completed directories on the data branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/leadfinder-osm"
+          remote=$(git ls-remote --heads origin refs/heads/osm-data)
+          if [[ -n "$remote" ]]; then
+            git fetch --no-tags --depth=1 origin refs/heads/osm-data
+            git switch -C osm-data FETCH_HEAD --discard-changes
+          else
+            git switch --orphan osm-data --discard-changes
+          fi
+          cp "$data/lviv-osm.json" "$data/kyiv-osm.json" .
+          git add -- lviv-osm.json kyiv-osm.json
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Refresh OSM business directories"
+          git push origin HEAD:refs/heads/osm-data

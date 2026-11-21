@@ -148,5 +148,5 @@ test("unknown website evidence cannot create a HOT ranking or defect scores", ()
     assert.equal(result.score, 0);
     assert.deepEqual(result.factors, []);
   }
-  assert.equal(scoreLead("https://example.org", 2015, false, true, false), "HOT");
+  assert.equal(scoreLead("https://example.org", 2015, false, true, false), "WARM");
 });

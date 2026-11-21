@@ -113,32 +113,3 @@ export function toggleFavorite(lead: LeadBusiness): boolean {
   setFavoritesRaw(added ? [...favorites, lead] : remaining);
   return added;
 }
-
-// ─── Telegram Settings ──────────────────────────────────────
-
-const TELEGRAM_SETTINGS_KEY = "leadfinder_telegram_settings";
-
-export interface TelegramSettings {
-  botToken: string;
-  chatId: string;
-  notifyNewLeads: boolean;
-  hotLeadsOnly: boolean;
-}
-
-export function getTelegramSettings(): TelegramSettings {
-  if (typeof window === "undefined") return { botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false };
-  try {
-    const raw = localStorage.getItem(TELEGRAM_SETTINGS_KEY);
-    if (!raw) return { botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false };
-    return JSON.parse(raw) as TelegramSettings;
-  } catch {
-    return { botToken: "", chatId: "", notifyNewLeads: false, hotLeadsOnly: false };
-  }
-}
-
-export function saveTelegramSettings(settings: TelegramSettings): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(TELEGRAM_SETTINGS_KEY, JSON.stringify(settings));
-  } catch { /* storage full */ }
-}

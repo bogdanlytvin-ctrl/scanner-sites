@@ -3,8 +3,8 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: "Lead Finder — Site Scanner & Lead Generator",
-  description: "Find business leads via OpenStreetMap. Analyze websites, score leads (HOT/WARM/COLD), export to Excel & CSV.",
+  title: "Lead Finder — Пошук клієнтів",
+  description: "Збережені пошуки бізнесів, перевірка сайтів і робота з потенційними клієнтами в одному кабінеті.",
   icons: {
     icon: "/logo.svg",
   },

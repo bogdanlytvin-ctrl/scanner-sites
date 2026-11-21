@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchOverpassAt, geocodeCity, validCoordinates } from "@/lib/osm-search";
+import { discoverBusinessesAt, geocodeCity, validCoordinates } from "@/lib/osm-search";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const maxDuration = 60; // Vercel: Overpass API can take 30+ seconds
@@ -47,7 +47,20 @@ export async function POST(request: NextRequest) {
       ? { lat: numLat, lng: numLng, displayName: String(displayName || trimmedCity) }
       : await geocodeCity(trimmedCity, trimmedCountry);
 
-    const results = await searchOverpassAt(geo.lat, geo.lng, trimmedQuery, parsedMax, parsedRadius);
+    async function readAsset(path: string) {
+      const canonical = new URL(path, "https://scanner-sites.b-litvin2023.workers.dev");
+      try {
+        const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+        const { env } = getCloudflareContext();
+        const assets = (env as { ASSETS?: { fetch: typeof fetch } }).ASSETS;
+        if (assets) return await assets.fetch(new Request(canonical));
+      } catch { /* A standalone Next.js server has no Cloudflare bindings. */ }
+      const local = new URL(request.url);
+      const base = ["localhost", "127.0.0.1", "[::1]"].includes(local.hostname) ? local.origin : canonical.origin;
+      return fetch(new URL(path, base), { redirect: "error", signal: AbortSignal.timeout(4000) });
+    }
+    const discovery = await discoverBusinessesAt(geo.lat, geo.lng, trimmedQuery, parsedMax, parsedRadius, false, readAsset);
+    const results = discovery.businesses;
 
     const businesses = results.slice(0, parsedMax).map((r) => ({
       osmId: r.osmId,
@@ -73,14 +86,15 @@ export async function POST(request: NextRequest) {
       businesses.length === 0
         ? `Не знайдено збігів для «${trimmedQuery}» у радіусі ${parsedRadius} км. ` +
           "Дані OpenStreetMap можуть бути неповними. Спробуйте іншу назву категорії або більший радіус."
-        : undefined;
+        : discovery.note;
 
     return NextResponse.json({
       businesses,
       total: businesses.length,
       note,
       query: `${trimmedQuery} in ${trimmedCity}`,
-      source: "OpenStreetMap (Overpass)",
+      source: discovery.source,
+      asOf: discovery.asOf,
       geoLocation: {
         lat: geo.lat,
         lng: geo.lng,
@@ -90,6 +104,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Невідома помилка";
     console.error("[Search API] Error:", message);
-    return NextResponse.json({ error: message, businesses: [], total: 0 }, { status: 500 });
+    return NextResponse.json({ error: message, businesses: [], total: 0 }, { status: 503, headers: { "Retry-After": "60" } });
   }
 }

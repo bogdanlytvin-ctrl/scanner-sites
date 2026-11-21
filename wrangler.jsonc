@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "scanner-sites",
-  "main": ".open-next/worker.js",
+  "main": "worker/index.js",
+  "durable_objects": { "bindings": [{ "name": "WORKSPACES", "class_name": "LeadWorkspace" }] },
+  "migrations": [{ "tag": "workspace-v1", "new_sqlite_classes": ["LeadWorkspace"] }],
   "compatibility_date": "2025-03-25",
   // nodejs_compat is REQUIRED: the analyze route uses cheerio/slim (htmlparser2
   // -> node:stream, node:string_decoder). The SSRF guard (src/lib/ssrf.ts) is

@@ -35,11 +35,8 @@ export interface OSMResult {
 // ─── Overpass endpoints (fallback chain) ────────────────────
 
 const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-  "https://overpass.openstreetmap.ru/api/interpreter",
-  "https://overpass.tru.vn.ua/api/interpreter",
-  "https://overpass-api.de/api/interpreter", // most unreliable — last resort
 ];
 
 // ─── Keyword → OSM tag mapping ───────────────────────────────
@@ -840,6 +837,8 @@ function dubaiDistrictQuery(city: string): string | null {
 
 export async function geocodeCity(city: string, countryCode?: string): Promise<GeoCoords> {
   const cc = (countryCode || "").toLowerCase().trim();
+  const region = regionalCity(city, cc);
+  if (region) return { lat: region.lat, lng: region.lng, displayName: `${region.city}, Україна` };
   const cacheKey = `${cc}|${city.toLowerCase().trim()}`;
   const cached = geoCache.get(cacheKey);
   if (cached && Date.now() - (cached as any)._ts < GEO_CACHE_TTL) {
@@ -990,7 +989,7 @@ async function geocodeNominatim(city: string, countryCode: string): Promise<GeoC
 
     const resp = await fetch(url, {
       headers: {
-        "User-Agent": "LeadFinder/1.0 (educational tool; +https://github.com)",
+        "User-Agent": "LeadFinder/1.1 (+https://github.com/bogdanlytvin-ctrl/scanner-sites)",
       },
       signal: AbortSignal.timeout(5000),
     });
@@ -1101,6 +1100,178 @@ export async function searchOverpass(
 
 // Coordinate-based search — used when the caller already has exact coordinates
 // (e.g. from the city autocomplete), so no geocoding guess is involved.
+export interface DiscoveryResult {
+  businesses: OSMResult[];
+  source: string;
+  note?: string;
+  asOf?: string;
+}
+
+const SNAPSHOT_REGIONS = [
+  { key: "lviv", city: "Львів", lat: 49.84195, lng: 24.03159, aliases: ["львів", "lviv", "львов", "lwów"] },
+  { key: "kyiv", city: "Київ", lat: 50.45003, lng: 30.52414, aliases: ["київ", "kyiv", "kiev", "киев"] },
+];
+
+export function regionalCity(city: string, country?: string) {
+  if (country && country.toLowerCase() !== "ua") return undefined;
+  const [name, ...parts] = city.toLowerCase().split(",").map(x => x.trim());
+  if (parts.some(x => !["ukraine", "україна", "украина", "ua"].includes(x))) return undefined;
+  return SNAPSHOT_REGIONS.find(region => region.aliases.includes(name));
+}
+
+type ReadAsset = (path: string) => Promise<Response>;
+const readPublishedAsset: ReadAsset = path => fetch(new URL(path, "https://scanner-sites.b-litvin2023.workers.dev"), {
+  signal: AbortSignal.timeout(4000), redirect: "error",
+});
+
+type SnapshotRow = ["n" | "w", number, number, number, Record<string, string>];
+
+function matchesSelector(tags: Record<string, string>, selector: string): boolean {
+  return selector.split("&").every(part => {
+    const [key, value] = part.split("=");
+    if (!value) return !!tags[key];
+    if (key === "cuisine") return tags[key]?.toLowerCase().split(";").some(item => item.trim() === value);
+    return tags[key] === value;
+  });
+}
+
+interface CitySnapshot {
+  city: string;
+  asOf: string;
+  groups: Record<string, string>;
+}
+
+type SnapshotRegion = typeof SNAPSHOT_REGIONS[number];
+const updatedSnapshots = new Map<string, { snapshot?: CitySnapshot; expires: number }>();
+
+async function parseSnapshot(response: Response, region: SnapshotRegion): Promise<CitySnapshot> {
+  if (!response.ok) throw new Error("Регіональні дані тимчасово недоступні.");
+  const data = await response.json() as CitySnapshot;
+  if (data.city !== region.city || !Number.isFinite(Date.parse(data.asOf)) || !data.groups || !Object.keys(data.groups).length) {
+    throw new Error("Некоректний регіональний файл.");
+  }
+  return data;
+}
+
+async function updatedSnapshot(region: SnapshotRegion): Promise<CitySnapshot | undefined> {
+  const cached = updatedSnapshots.get(region.key);
+  if (cached && cached.expires > Date.now()) return cached.snapshot;
+  const url = `https://raw.githubusercontent.com/bogdanlytvin-ctrl/scanner-sites/osm-data/${region.key}-osm.json`;
+  try {
+    const options = {
+      redirect: "error" as const, signal: AbortSignal.timeout(3500),
+      cf: { cacheTtl: 3600, cacheEverything: true },
+    };
+    const response = await fetch(url, options);
+    const snapshot = await parseSnapshot(response, region);
+    updatedSnapshots.set(region.key, { snapshot, expires: Date.now() + 3600_000 });
+    return snapshot;
+  } catch {
+    updatedSnapshots.set(region.key, { expires: Date.now() + 600_000 });
+    return undefined;
+  }
+}
+
+async function readSnapshot(
+  region: typeof SNAPSHOT_REGIONS[number], selectors: string[], namePattern: string | undefined,
+  lat: number, lng: number, radius: number, readAsset: ReadAsset,
+) {
+  let bundled: CitySnapshot | undefined;
+  try {
+    bundled = await parseSnapshot(await readAsset(`/osm/${region.key}-osm.json`), region);
+  } catch { /* The independent data branch can serve a missing bundled asset. */ }
+  const extract = (snapshot: CitySnapshot) => filterSnapshot(snapshot, selectors, namePattern, lat, lng, radius);
+  if (!bundled || Date.now() - Date.parse(bundled.asOf) > 5 * 86_400_000) {
+    const updated = await updatedSnapshot(region);
+    if (updated && (!bundled || Date.parse(updated.asOf) > Date.parse(bundled.asOf))) {
+      try {
+        return await extract(updated);
+      } catch {
+        updatedSnapshots.set(region.key, { expires: Date.now() + 600_000 });
+      }
+    }
+  }
+  if (!bundled) throw new Error("Немає доступної регіональної вибірки.");
+  return extract(bundled);
+}
+
+async function filterSnapshot(
+  snapshot: CitySnapshot, selectors: string[], namePattern: string | undefined,
+  lat: number, lng: number, radius: number,
+) {
+  const elements: Array<{type: string; id: number; lat: number; lon: number; tags: Record<string,string>}> = [];
+  // Each compressed group contains exactly the specified set of category tags.
+  // Other tags (cuisine, names, contacts) are checked on the individual place.
+  const indexedKeys = new Set(["shop", "amenity", "healthcare", "craft", "office", "tourism", "leisure"]);
+  for (const [key, encoded] of Object.entries(snapshot.groups)) {
+    const index = JSON.parse(key) as Record<string,string>;
+    const relevant = selectors.some(selector => selector.split("&").every(part => {
+      const key = part.split("=")[0];
+      return !indexedKeys.has(key) || matchesSelector(index, part);
+    }));
+    if (!relevant) continue;
+    const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    const rows = await new Response(stream).json() as SnapshotRow[];
+    for (const [kind, id, y, x, tags] of rows) {
+      if ((!namePattern || normalizeKeyword(tags.name).includes(namePattern))
+          && selectors.some(selector => matchesSelector(tags, selector))
+          && distanceKm(lat, lng, y, x) <= radius) {
+        elements.push({ type: kind === "n" ? "node" : "way", id, lat: y, lon: x, tags });
+      }
+    }
+  }
+  return { elements, asOf: snapshot.asOf };
+}
+
+export async function discoverBusinessesAt(
+  lat: number, lng: number, keyword: string, maxResults = 20, radiusKm = 10,
+  preferSites = false, readAsset: ReadAsset = readPublishedAsset,
+): Promise<DiscoveryResult> {
+  const normalized = normalizeKeyword(keyword);
+  if (!normalized) return { businesses: [], source: "OpenStreetMap" };
+  const tags = resolveKeyword(keyword);
+  const stem = ukStem(normalized);
+  const namePattern = tags ? undefined : (stem.length >= 4 ? stem : normalized);
+  const selectors = tags || BROAD_BUSINESS_TAGS;
+  const radius = Math.min(50, radiusKm);
+  const pool = Math.min(Math.max(maxResults * 6, 120), 400);
+  const select = (elements: any[]) => {
+    const ranked = rankLeads(parseOverpassResults(elements), lat, lng, radius);
+    if (!preferSites) return pageLeads(ranked, maxResults);
+    const priority = (item: OSMResult) => {
+      const site = item.website !== "N/A" && !!item.website;
+      const contact = (!!item.phone && item.phone !== "N/A") || !!(item.email || item.facebook || item.instagram);
+      return (site ? 2 : 0) + (contact ? 1 : 0);
+    };
+    return ranked.sort((a, b) => priority(b) - priority(a)).slice(0, maxResults);
+  };
+  const region = SNAPSHOT_REGIONS.find(region => distanceKm(lat, lng, region.lat, region.lng) <= 20);
+  let regional: DiscoveryResult | undefined;
+  if (region) {
+    try {
+      const snapshot = await readSnapshot(region, selectors, namePattern, lat, lng, radius, readAsset);
+      regional = {
+        businesses: select(snapshot.elements),
+        source: `OpenStreetMap · ${region.city} · ${snapshot.asOf.slice(0,10)}`, asOf: snapshot.asOf,
+        note: `Регіональна вибірка відкритих даних на ${snapshot.asOf.slice(0,10)}. Покриття — вибрані категорії в межах 20 км від центру (${region.city}); позначки на мапі можуть бути неповними.`,
+      };
+      const fullyInside = distanceKm(lat, lng, region.lat, region.lng) + radius <= 20;
+      if (regional.businesses.length && fullyInside && Date.now() - Date.parse(snapshot.asOf) < 7 * 86_400_000) return regional;
+    } catch {
+      // Cloudflare serves snapshots as static assets. If one is unavailable,
+      // continue to the live source rather than treating this as an empty result.
+    }
+  }
+  try {
+    const elements = await executeQuery(buildSearchQuery(selectors, lat, lng, radius, pool, namePattern));
+    return { businesses: select(elements), source: "OpenStreetMap (Overpass)" };
+  } catch (err) {
+    if (regional?.businesses.length) return regional;
+    throw err;
+  }
+}
+
 export async function searchOverpassAt(
   lat: number,
   lng: number,
@@ -1108,19 +1279,7 @@ export async function searchOverpassAt(
   maxResults: number = 20,
   radiusKm: number = 10
 ): Promise<OSMResult[]> {
-  const normalized = normalizeKeyword(keyword);
-  if (!normalized) return [];
-
-  // Over-fetch names across all mapped geometry types before ranking. A full
-  // batch of nodes should not hide businesses mapped as buildings or relations.
-  const pool = Math.min(Math.max(maxResults * 6, 120), 400);
-  const tags = resolveKeyword(keyword);
-  const stem = ukStem(normalized);
-  const namePattern = tags ? undefined : (stem.length >= 4 ? stem : normalized);
-  const elements = await executeQuery(
-    buildSearchQuery(tags || BROAD_BUSINESS_TAGS, lat, lng, radiusKm, pool, namePattern),
-  );
-  return pageLeads(rankLeads(parseOverpassResults(elements), lat, lng, Math.min(radiusKm, 50)), maxResults);
+  return (await discoverBusinessesAt(lat, lng, keyword, maxResults, radiusKm)).businesses;
 }
 
 // Build the final page from ranked leads. No-site HOT leads stay on top, but a
@@ -1208,87 +1367,27 @@ function buildSearchQuery(
   return `[out:json][timeout:25];\n(\n  ${selectors.join("\n  ")}\n);\nout center qt ${pool};`;
 }
 
-// ─── Retry helpers ──────────────────────────────────────────
+// Two independent full-planet services, one attempt each with a bounded wait.
+const PER_REQUEST_TIMEOUT_MS = 7000;
 
-/** Sleep for a given number of milliseconds */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ─── Query execution: parallel mirror racing ─────────────────
-
-const OVERALL_TIMEOUT_MS = 50000; // Hard deadline: 50s (Vercel limit is 60s)
-const PER_REQUEST_TIMEOUT_MS = 23000; // Each parallel fetch: 23s — two race rounds fit inside the 50s budget
-const MAX_RACE_ROUNDS = 2; // How many times to re-race all mirrors before giving up
-const RACE_ROUND_BACKOFF_MS = 1200; // Short pause between race rounds
-
-/** Thrown by fetchFromEndpoint so Promise.any treats a bad response as a rejection. */
-class EndpointError extends Error {
-  constructor(public endpoint: string, message: string) {
-    super(message);
+async function fetchFromEndpoint(endpoint: string, query: string): Promise<any[]> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "LeadFinder/1.1 (+https://github.com/bogdanlytvin-ctrl/scanner-sites)",
+    },
+    body: `data=${encodeURIComponent(query)}`,
+    signal: AbortSignal.timeout(PER_REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok || !response.headers.get("content-type")?.includes("json")) {
+    throw new Error("Сервіс Overpass тимчасово недоступний.");
   }
-}
-
-/**
- * Query a single Overpass mirror. Resolves with the elements array (possibly
- * empty — an empty result is still a valid answer) or throws an EndpointError.
- * Since every mirror serves the same OSM data, the first valid response wins.
- */
-async function fetchFromEndpoint(
-  endpoint: string,
-  query: string,
-  roundSignal: AbortSignal,
-): Promise<any[]> {
-  const reqController = new AbortController();
-  const reqTimeout = setTimeout(() => reqController.abort(), PER_REQUEST_TIMEOUT_MS);
-  // Abort this fetch if the round is aborted (another mirror already won).
-  const onRoundAbort = () => reqController.abort();
-  roundSignal.addEventListener("abort", onRoundAbort, { once: true });
-
-  try {
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "LeadFinder/1.0 (lead-generator-tool)",
-      },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: reqController.signal,
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new EndpointError(endpoint, extractOverpassError(text, resp.status));
-    }
-
-    const contentType = resp.headers.get("content-type") || "";
-    if (!contentType.includes("json")) {
-      const text = await resp.text().catch(() => "");
-      throw new EndpointError(endpoint, extractOverpassError(text, resp.status));
-    }
-
-    let data: any;
-    try {
-      data = await resp.json();
-    } catch (parseErr) {
-      throw new EndpointError(
-        endpoint,
-        `JSON parse error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
-      );
-    }
-
-    if (typeof data?.remark === "string" && /error|timeout|timed out/i.test(data.remark)) {
-      throw new EndpointError(endpoint, data.remark);
-    }
-    if (!Array.isArray(data?.elements)) {
-      throw new EndpointError(endpoint, "Некоректна відповідь Overpass");
-    }
-
-    return data.elements;
-  } finally {
-    clearTimeout(reqTimeout);
-    roundSignal.removeEventListener("abort", onRoundAbort);
+  const data = await response.json();
+  if (!Array.isArray(data?.elements) || data.remark) {
+    throw new Error("Сервіс Overpass повернув неповні дані.");
   }
+  return data.elements;
 }
 
 async function executeQuery(query: string): Promise<any[]> {
@@ -1307,68 +1406,17 @@ async function executeQuery(query: string): Promise<any[]> {
     return edge;
   }
 
-  const deadline = Date.now() + OVERALL_TIMEOUT_MS;
-  let lastError = "";
-
-  for (let round = 0; round < MAX_RACE_ROUNDS; round++) {
-    if (Date.now() >= deadline) break;
-
-    // Fire all mirrors at once; first valid response wins, losers get aborted.
-    const roundController = new AbortController();
+  for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
-      const elements = await Promise.any(
-        OVERPASS_ENDPOINTS.map((endpoint) =>
-          fetchFromEndpoint(endpoint, query, roundController.signal),
-        ),
-      );
-      roundController.abort(); // cancel the slower in-flight mirrors
-      setCachedOverpass(query, elements); // cache success (including empty)
-      await setCachedEdge(query, elements); // persist to edge cache too
+      const elements = await fetchFromEndpoint(endpoint, query);
+      setCachedOverpass(query, elements);
+      await setCachedEdge(query, elements);
       return elements;
-    } catch (err) {
-      // Promise.any rejects with an AggregateError only when every mirror failed.
-      roundController.abort();
-      if (err instanceof AggregateError && err.errors.length) {
-        const last = err.errors[err.errors.length - 1];
-        lastError = last instanceof Error ? last.message : String(last);
-      } else {
-        lastError = err instanceof Error ? err.message : String(err);
-      }
-      console.warn(
-        `[Overpass] Race round ${round + 1}/${MAX_RACE_ROUNDS} — all mirrors failed: ${lastError}`,
-      );
-
-      // Backoff before the next round, but only if there's budget left.
-      if (round < MAX_RACE_ROUNDS - 1 && Date.now() + RACE_ROUND_BACKOFF_MS < deadline) {
-        await sleep(RACE_ROUND_BACKOFF_MS);
-      }
+    } catch {
+      // Try the other full-planet service only after the first failed.
     }
   }
-
-  // Every round failed (or we ran out of time).
-  throw new Error(
-    `Усі сервери Overpass недоступні після ${MAX_RACE_ROUNDS} паралельних спроб. ` +
-    `Остання помилка: ${lastError || "перевищено час очікування"}.\n\n` +
-    `💡 Поради:\n` +
-    `• Спробуйте повторити запит через хвилину\n` +
-    `• Зменште радіус пошуку (наприклад, до 5 км)\n` +
-    `• Overpass API — це безкоштовний сервіс, який може бути перевантажений`
-  );
-}
-
-function extractOverpassError(html: string, status: number): string {
-  // Extract error message from HTML response
-  const match = html.match(/<strong[^>]*>Error<\/strong>:\s*(.+?)(?:<\/p>|<br)/i);
-  if (match) return match[1].trim();
-
-  if (html.includes("timeout")) {
-    return "Сервер Overpass перевантажений. Спробуйте зменшити радіус або кількість результатів.";
-  }
-  if (html.includes("too busy")) {
-    return "Сервер Overpass перевантажений. Спробуйте через хвилину.";
-  }
-
-  return `Overpass API помилка ${status}. Спробуйте пізніше або зменште радіус пошуку.`;
+  throw new Error("Джерело OpenStreetMap тимчасово недоступне. Повторіть пошук пізніше.");
 }
 
 // ─── Parse results ──────────────────────────────────────────

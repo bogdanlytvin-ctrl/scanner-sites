@@ -117,25 +117,8 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
   const factors: ScoreFactor[] = [];
   let totalPoints = 0;
 
-  // Copyright year checks (align with HOT_YEAR_THRESHOLD / WARM_YEAR_UPPER)
-  if (lead.copyrightYear !== null) {
-    if (lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
-      factors.push({
-        name: `Застарілий копірайт (${lead.copyrightYear})`,
-        icon: "📅",
-        points: 25,
-        severity: "critical",
-      });
-      totalPoints += 25;
-    } else if (lead.copyrightYear > HOT_YEAR_THRESHOLD && lead.copyrightYear <= WARM_YEAR_UPPER) {
-      factors.push({
-        name: `Старий копірайт (${lead.copyrightYear})`,
-        icon: "📅",
-        points: 15,
-        severity: "warning",
-      });
-      totalPoints += 15;
-    }
+  if (lead.copyrightYear !== null && lead.copyrightYear <= HOT_YEAR_THRESHOLD) {
+    factors.push({ name: `Рік у копірайті: ${lead.copyrightYear}`, icon: "📅", points: 0, severity: "info" });
   }
 
   // No mobile viewport
@@ -207,18 +190,10 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
   // Clamp score 0-100
   const clampedScore = Math.max(0, Math.min(100, totalPoints));
 
-  // Determine rating
-  let rating: ScoreBreakdown["rating"];
-  if (clampedScore >= 60) rating = "HOT";
-  else if (clampedScore >= 30) rating = "WARM";
-  else if (clampedScore >= 10) rating = "COLD";
-  else rating = "NEW";
-
-  // Calculate estimated value
-  const { min: estMin, max: estMax } = estimateValueFromScore(clampedScore);
-
-  // Generate opportunity text
-  const opportunityText = generateOpportunityText(clampedScore, estMin, estMax, rating);
+  const rating = scoreLead(lead.website, lead.copyrightYear, lead.isMobileFriendly, lead.hasSsl, lead.analysisLimited);
+  const opportunityText = factors.some(factor => factor.points > 0)
+    ? "Ці ознаки головної сторінки можна перевірити вручну. Для оцінки звернення відкрийте фонову перевірку."
+    : "Перевірка головної сторінки не виявила конкретної підстави для звернення.";
 
   // Sort factors by severity (critical first) then by points descending
   const severityOrder = { critical: 0, warning: 1, info: 2 };
@@ -233,73 +208,23 @@ export function calculateLeadScoreDetailed(lead: LeadBusiness): ScoreBreakdown {
     score: clampedScore,
     rating,
     factors,
-    totalEstimatedValue: { min: estMin, max: estMax, currency: "$" },
+    totalEstimatedValue: { min: 0, max: 0, currency: "$" },
     opportunityText,
   };
 }
 
-function estimateValueFromScore(score: number): { min: number; max: number } {
-  if (score >= 80) return { min: 800, max: 2000 };
-  if (score >= 60) return { min: 500, max: 1500 };
-  if (score >= 45) return { min: 300, max: 800 };
-  if (score >= 30) return { min: 200, max: 500 };
-  if (score >= 15) return { min: 100, max: 300 };
-  if (score >= 10) return { min: 50, max: 200 };
-  return { min: 0, max: 100 };
-}
-
-function generateOpportunityText(
-  score: number,
-  estMin: number,
-  estMax: number,
-  rating: ScoreBreakdown["rating"]
-): string {
-  const priceRange = `$${estMin}-$${estMax}`;
-
-  if (rating === "HOT") {
-    return `Знайдені ознаки вказують, що варто обговорити оновлення сайту. Оцінена вартість: ${priceRange}. Високий пріоритет контакту.`;
-  }
-
-  if (rating === "WARM") {
-    if (score >= 45) {
-      return `Сайт має кілька серйозних проблем, які потребують уваги. Оцінена вартість: ${priceRange}. Середній пріоритет.`;
-    }
-    return `Сайт має помірні проблеми. Можна запропонувати оптимізацію або частковий редизайн. Оцінена вартість: ${priceRange}. Середній пріоритет.`;
-  }
-
-  if (rating === "COLD") {
-    return `Перевірка показала небагато ознак для покращення. Можна запропонувати дрібні покращення або підтримку. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
-  }
-
-  // NEW
-  return `Перевірка не виявила значних ознак для покращення. Можна запропонувати технічну підтримку або розширення. Оцінена вартість: ${priceRange}. Низький пріоритет.`;
-}
-
-// ─── Lead priority ──────────────────
-
 export function scoreLead(
   website: string,
-  copyrightYear: number | null,
+  _copyrightYear: number | null,
   isMobileFriendly: boolean,
   hasSsl: boolean = true,
   analysisLimited: boolean = false
 ): LeadScore {
   if (getWebsiteEvidence({ website, analysisLimited }) !== "checked") return "WARM";
 
-  // Count critical issues
-  let hotSignals = 0;
-  let warmSignals = 0;
-
-  if (copyrightYear !== null) {
-    if (copyrightYear <= HOT_YEAR_THRESHOLD) hotSignals++;
-    else if (copyrightYear <= WARM_YEAR_UPPER) warmSignals++;
-  }
-
-  if (!isMobileFriendly) hotSignals++;
-  if (!hasSsl) warmSignals++;
-
-  if (hotSignals >= 1) return "HOT";
-  if (warmSignals >= 1) return "WARM";
+  // The quick HTML reading can suggest a review. A verified high-priority
+  // opportunity requires identity, contact and service-specific evidence.
+  if (!isMobileFriendly || !hasSsl) return "WARM";
   return "COLD";
 }
 

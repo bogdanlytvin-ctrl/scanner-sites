@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
-import { validCoordinates } from "@/lib/osm-search";
+import { regionalCity, validCoordinates } from "@/lib/osm-search";
 
 // City autocomplete. Given a partial name + ISO country code, returns matching
 // settlements with exact coordinates. The client passes those coordinates
@@ -113,6 +113,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ cities: [] });
   }
 
+  const region = regionalCity(q, country);
+  if (region) {
+    return NextResponse.json({ cities: [{ name: region.city, displayName: `${region.city}, Україна`, lat: region.lat, lng: region.lng, country: "ua", type: "city" }] });
+  }
   try {
     // Photon supports autocomplete. Keep public Nominatim for submitted searches.
     const hits = await fromPhoton(q, country);
