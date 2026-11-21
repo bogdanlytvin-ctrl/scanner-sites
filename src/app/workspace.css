@@ -194,3 +194,19 @@
 .lf-score.warm { background: #fff3d6; color: #6e4b00; border-color: #ecd291; }
 .lf-score.cold { color: var(--muted); }
 .lf-expiry { margin: 6px 0; padding: 6px 10px; border-radius: 7px; background: #fff1e9; color: #783521; font-size: .85rem; font-weight: 600; }
+.lf-report { margin: 10px 0; font-size: .875rem; }
+.lf-report p { margin: 0 0 6px; word-break: break-all; }
+.lf-analytics { margin-bottom: 18px; padding: 16px; }
+.lf-analytics h2 { margin: 0 0 12px; font-size: 1.1rem; }
+.lf-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.lf-stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; }
+.lf-stat strong { font-size: 1.5rem; line-height: 1.1; }
+.lf-stat span { font-size: .85rem; }
+.lf-stat small { color: var(--muted); font-size: .75rem; }
+.lf-muted { color: var(--muted); font-size: .85rem; }
+.lf-table-wrap { overflow-x: auto; margin-top: 12px; }
+.lf-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.lf-table caption { text-align: left; font-weight: 600; padding-bottom: 6px; }
+.lf-table th, .lf-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.lf-table td:first-child { white-space: normal; min-width: 140px; }
+.lf-remind { margin: 6px 0; padding: 6px 10px; border-radius: 7px; background: #eef4ff; color: #1d3a6e; font-size: .85rem; font-weight: 600; }

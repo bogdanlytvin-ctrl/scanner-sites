@@ -1,6 +1,7 @@
 import nextWorker from "../.open-next/worker.js";
 import { DurableObject } from "cloudflare:workers";
 import { Workspace, workspaceRequest } from "./workspace.js";
+import { renderReport, REPORT_HEADERS } from "./report.js";
 import { geocodeCity, discoverBusinessesAt } from "../src/lib/osm-search.ts";
 import { assessLead, domainExpiry } from "../src/lib/lead-assessment.ts";
 
@@ -48,6 +49,14 @@ export class LeadWorkspace extends DurableObject {
             ),
           ),
         ),
+      // Client reports live in the shared "admission" object so a public link can find them.
+      reportStore: async (path, payload) => {
+        const result = await env.WORKSPACES.getByName("admission").fetch("https://internal" + path, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        return result.ok;
+      },
       reserve: async () => {
         const result = await env.WORKSPACES.getByName("admission").fetch(
           "https://internal/budget",
@@ -67,9 +76,19 @@ export class LeadWorkspace extends DurableObject {
 }
 
 export default {
-  fetch(request, env, ctx) {
-    if (new URL(request.url).pathname === "/api/workspace") {
+  async fetch(request, env, ctx) {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/api/workspace") {
       return workspaceRequest(request, env.WORKSPACES);
+    }
+    const report = pathname.match(/^\/r\/([a-f0-9]{32})$/);
+    if (report) {
+      if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+      const found = await env.WORKSPACES.getByName("admission").fetch("https://internal/report-get", { method: "POST", body: report[1] });
+      if (!found.ok)
+        return new Response("<!doctype html><meta charset=utf-8><title>Звіт не знайдено</title><p style=\"font:16px system-ui;padding:24px\">Звіт не знайдено або строк його дії минув.</p>",
+          { status: 404, headers: REPORT_HEADERS });
+      return new Response(renderReport(await found.json()), { headers: REPORT_HEADERS });
     }
     return nextWorker.fetch(request, env, ctx);
   },

@@ -323,3 +323,136 @@ test("leads checked before scores existed keep a sensible place in the list", as
   const snap = await (await w.snapshot()).json();
   assert.deepEqual(snap.leads.map(l => l.id), ["new-hot", "old-high", "new-high"]);
 });
+
+test("client report: a public snapshot without notes, signed with the sender's contacts, removable and gone with its search", async () => {
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const services = {
+    assessLead: async () => ({ ...assessment, priority: "high", kind: "site", summary: "На сайті немає: HTTPS.", gaps: [{ label: "Немає HTTPS — браузер позначає сайт як «Не захищено»", strong: true }],
+      evidence: [{ label: "Перевірка в браузері (телефон, Lighthouse) · 41/100 · основний вміст за 6,2 с · повний звіт Google", url: "https://pagespeed.web.dev/x" }], screenshot: jpeg }),
+    writeOffer: async () => ({ subject: "Тема", text: "Добрий день!\n\n[Ваше ім'я], [телефон]" }),
+  };
+  const { objects, ns } = environment(services);
+  services.reportStore = async (path, payload) => (await ns.getByName("admission").fetch("https://internal" + path, { method: "POST", body: JSON.stringify(payload) })).ok;
+  const r = await workspaceRequest(makeReq(params), ns);
+  const cookie = r.headers.get("set-cookie").split(";")[0];
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  const id = (await (await w.snapshot()).json()).leads[0].id;
+  await post(w, { action: "status", id, status: "in_progress", notes: "SECRET NOTE про ціну" });
+  await post(w, { action: "settings", sender: { name: "Богдан <b>", phone: "+380 50 123 45 67", telegram: "@bogdan_web", email: "bad email", site: "javascript:alert(1)" } });
+  let snap = await (await workspaceRequest(makeReq({ action: "report", id }, cookie), ns)).json();
+  const token = snap.leads[0].report.token;
+  assert.match(token, /^[a-f0-9]{32}$/);
+  assert.deepEqual(snap.sender, { name: "Богдан <b>", phone: "+380 50 123 45 67", email: "", telegram: "@bogdan_web", site: "" }, "bad e-mail and non-http site are dropped");
+  const stored = await ns.getByName("admission").fetch("https://internal/report-get", { method: "POST", body: token });
+  const body = await stored.json();
+  assert.equal(body.speed, 41);
+  assert.equal(body.lcp, "6,2 с");
+  assert.equal(body.shot, jpeg);
+  assert.equal(body.sender.telegram, "@bogdan_web");
+  assert.ok(!JSON.stringify(body).includes("SECRET"), "notes never reach the public report");
+  assert.ok(!("score" in body) && !("status" in body));
+  // The letter is signed with the saved contacts.
+  snap = await (await workspaceRequest(makeReq({ action: "draft", id }, cookie), ns)).json();
+  assert.match(snap.leads[0].draft.text, /Богдан <b>, \+380 50 123 45 67$/);
+  // A new report replaces the old link; deleting removes it.
+  snap = await (await workspaceRequest(makeReq({ action: "report", id }, cookie), ns)).json();
+  const second = snap.leads[0].report.token;
+  assert.notEqual(second, token);
+  assert.equal((await ns.getByName("admission").fetch("https://internal/report-get", { method: "POST", body: token })).status, 404, "old link stops working");
+  await post(w, { action: "report-delete", id });
+  assert.equal((await ns.getByName("admission").fetch("https://internal/report-get", { method: "POST", body: second })).status, 404);
+  assert.equal((await (await w.snapshot()).json()).leads[0].report, undefined);
+  // Deleting the search removes its reports too.
+  snap = await (await workspaceRequest(makeReq({ action: "report", id }, cookie), ns)).json();
+  const third = snap.leads[0].report.token;
+  await post(w, { action: "delete", id: c.id });
+  assert.equal((await ns.getByName("admission").fetch("https://internal/report-get", { method: "POST", body: third })).status, 404);
+});
+
+test("report page escapes everything, accepts only image data, and explains findings in plain words", async () => {
+  const { renderReport, REPORT_HEADERS } = await import("../worker/report.js");
+  const html = renderReport({
+    name: '<img src=x onerror=alert(1)>"', kind: "site", website: "https://clinic.example/", city: "Львів",
+    gaps: [{ label: "Повільний на телефоні: швидкість 41/100", strong: true }, { label: "Немає опису для Google (meta description)", strong: false }],
+    speed: 41, lcp: "6,2 с", checkedAt: "2026-11-22T10:00:00Z", shot: "javascript:alert(1)",
+    sender: { name: "<script>alert(1)</script>", phone: "+380501234567", telegram: "@bogdan_web", email: "", site: "" },
+  });
+  assert.ok(!/<script|<img src=x/.test(html), "no live markup from data");
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.ok(!html.includes("javascript:"), "a non-image screenshot is dropped");
+  assert.match(html, /понад половина відвідувачів з телефона/);
+  assert.match(html, /href="tel:\+380501234567"/);
+  assert.match(html, /href="https:\/\/t\.me\/bogdan_web"/);
+  assert.match(REPORT_HEADERS["Content-Security-Policy"], /default-src 'none'/);
+  assert.equal(REPORT_HEADERS["X-Robots-Tag"], "noindex, nofollow");
+  const noSite = renderReport({ name: "Ромашка", kind: "no-site", summary: "На карті не вказано власного сайту компанії.", checkedAt: "2026-11-22T10:00:00Z" });
+  assert.match(noSite, /У компанії немає власного сайту/);
+});
+
+test("status changes are dated and kept in a short history that survives re-checks", async () => {
+  const { objects, ns } = environment();
+  const r = await workspaceRequest(makeReq(params), ns);
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  const id = (await (await w.snapshot()).json()).leads[0].id;
+  await post(w, { action: "status", id, status: "contacted" });
+  await post(w, { action: "status", id, status: "contacted", notes: "та сама" });
+  await post(w, { action: "status", id, status: "replied" });
+  let lead = (await (await w.snapshot()).json()).leads[0];
+  assert.deepEqual(lead.history.map(h => h.status), ["contacted", "replied"], "repeating a status adds nothing");
+  assert.ok(Date.now() - Date.parse(lead.statusAt) < 5000);
+  for (let i = 0; i < 30; i++) await post(w, { action: "status", id, status: i % 2 ? "in_progress" : "contacted" });
+  lead = (await (await w.snapshot()).json()).leads[0];
+  assert.equal(lead.history.length, 20, "history is capped");
+  await post(w, { action: "run", id: c.id }).catch(() => {});
+  w.save({ ...w.get(c.id), lastStarted: 0 }, null);
+  await post(w, { action: "run", id: c.id });
+  await tick(w, c.id);
+  await tick(w, c.id);
+  lead = (await (await w.snapshot()).json()).leads[0];
+  assert.equal(lead.history.length, 20);
+  assert.ok(lead.statusAt);
+});
+
+test("CSV export: the user's own leads, per search or all, Excel-safe and formula-safe", async () => {
+  const { objects, ns } = environment({ assessLead: async () => ({ ...assessment, priority: "high", score: 88, summary: '=HYPERLINK("http://evil")', gaps: [{ label: "Немає HTTPS", strong: true }] }) });
+  const r = await workspaceRequest(makeReq(params), ns);
+  const cookie = r.headers.get("set-cookie").split(";")[0];
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  const id = (await (await w.snapshot()).json()).leads[0].id;
+  await post(w, { action: "status", id, status: "contacted", notes: "Дзвонив, кажуть \"передзвоніть\"; +380" });
+  const get = (query, ck = cookie) => workspaceRequest(new Request("https://scanner.example/api/workspace?" + query, { headers: { cookie: ck } }), ns);
+  const res = await get("export=csv");
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /text\/csv/);
+  assert.match(res.headers.get("content-disposition"), /attachment; filename="leads-\d{4}-\d{2}-\d{2}\.csv"/);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  assert.deepEqual([...bytes.slice(0, 3)], [0xef, 0xbb, 0xbf], "UTF-8 BOM for Excel");
+  const text = new TextDecoder().decode(bytes);
+  const [head, row] = text.trim().split("\r\n");
+  assert.match(head, /^Назва,Ніша,Місто,Пріоритет,Оцінка,Статус/);
+  assert.match(row, /^Clinic,стоматологія,Львів,Високий,88,Звернувся,/);
+  assert.match(row, /,"'=HYPERLINK\(""http:\/\/evil""\)",/, "a formula is neutralised");
+  assert.match(row, /,\+380000000000,/, "a phone stays a plain phone");
+  assert.match(row, /"Дзвонив, кажуть ""передзвоніть""; \+380"/);
+  assert.equal((await (await get("export=csv&campaign=nope")).text()).trim().split("\r\n").length, 1, "only the header for another search");
+  const stranger = await (await get("export=csv", "")).text();
+  assert.equal(stranger.trim().split("\r\n").length, 1, "a new visitor gets an empty table, never someone else's leads");
+});
+
+test("CSV cells: formula tricks are neutralised, plain phones are not", async () => {
+  const { leadsCsv } = await import("../worker/workspace.js");
+  const csv = leadsCsv([{ campaignId: "x", name: "+cmd|' /C calc'!A0", phone: "-2+3", notes: "@SUM(1)", summary: "\tx", status: "new", priority: "low" }], []);
+  const row = csv.trim().split("\r\n")[1];
+  assert.match(row, /^'\+cmd\|' \/C calc'!A0,/);
+  assert.match(row, /,'-2\+3,/);
+  assert.match(row, /,'@SUM\(1\),/);
+});

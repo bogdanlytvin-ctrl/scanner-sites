@@ -1,5 +1,6 @@
 // All user records live in a separate SQLite-backed Durable Object per private session.
-const LIMITS = { campaigns: 5, perRun: 12, draftsPerDay: 40 };
+const LIMITS = { campaigns: 5, perRun: 12, draftsPerDay: 40, reportsPerDay: 60 };
+const REPORT_DAYS = 180;
 const DAY = 86_400_000;
 const MINUTE = 60_000;
 const cookieName = "__Host-lead-workspace";
@@ -185,6 +186,30 @@ export function templateOffer(f) {
   };
 }
 
+const STATUS_NAMES = { new: "Нова", in_progress: "У роботі", contacted: "Звернувся", replied: "Відповіли", won: "Є угода", skipped: "Пропущено" };
+const PRIORITY_NAMES = { high: "Високий", review: "Уточнити", low: "Низький" };
+// A cell that starts with = + - @ (or tab/CR) would run as a formula in Excel/Sheets: prefix it.
+const cell = (value) => {
+  let text = value == null ? "" : String(value).replace(/\r?\n/g, " ").trim();
+  // A phone number (+380 …) is only digits and cannot run as a formula: leave it readable.
+  if (/^[=+\-@\t\r]/.test(text) && !/^\+[\d\s().-]{6,}$/.test(text)) text = "'" + text;
+  return /[",;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+};
+/** Leads as a CSV table (UTF-8 with BOM so Excel shows Ukrainian correctly). */
+export function leadsCsv(leads, campaigns) {
+  const byId = new Map(campaigns.map((c) => [c.id, c]));
+  const head = ["Назва", "Ніша", "Місто", "Пріоритет", "Оцінка", "Статус", "Телефон", "Пошта", "Контакт для звернення", "Сайт", "Адреса",
+    "Висновок", "Чого не вистачає", "Строк домену/SSL", "Нотатка", "Звіт для клієнта", "Перевірено"];
+  const rows = leads.map((l) => {
+    const c = byId.get(l.campaignId) || {};
+    return [l.name, c.query, c.city, PRIORITY_NAMES[l.priority] || l.priority, l.score ?? "", STATUS_NAMES[l.status] || l.status,
+      filled(l.phone) ? l.phone : "", l.email || "", l.contact?.value || "", filled(l.website) ? l.website : "", filled(l.address) ? l.address : "",
+      l.summary, (l.gaps || []).map((g) => g.label).join("; "), l.expiry ? (l.expiry.what === "domain" ? "домен до " : "SSL до ") + l.expiry.date.slice(0, 10) : "",
+      l.notes || "", l.report ? "/r/" + l.report.token : "", (l.checkedAt || "").slice(0, 10)];
+  });
+  return "\ufeff" + [head, ...rows].map((r) => r.map(cell).join(",")).join("\r\n") + "\r\n";
+}
+
 export async function workspaceRequest(request, ns) {
   if (!["GET", "POST"].includes(request.method))
     return failure("Метод недоступний.", 405);
@@ -224,13 +249,13 @@ export async function workspaceRequest(request, ns) {
     if (!data || typeof data.action !== "string")
       return failure("Невідома дія.");
     if (
-      ["create", "run", "resume", "transfer", "restore", "draft"].includes(data.action)
+      ["create", "run", "resume", "transfer", "restore", "draft", "report"].includes(data.action)
     ) {
       const ip = await sha(request.headers.get("CF-Connecting-IP") || "local");
       const allowed = await directory().fetch("https://internal/admit", {
         method: "POST",
         // Offer drafts get their own hourly counter so they don't eat into search runs.
-        body: (data.action === "draft" ? "draft:" : "") + ip,
+        body: (["draft", "report"].includes(data.action) ? data.action + ":" : "") + ip,
       });
       if (!allowed.ok)
         return failure("Ліміт запусків. Спробуйте за годину.", 429);
@@ -260,9 +285,12 @@ export async function workspaceRequest(request, ns) {
   const stub = ns.getByName("user:" + token);
   // Phone screenshots are served only from the caller's own workspace (same cookie).
   const shot = !isPost && new URL(request.url).searchParams.get("shot");
+  const exportCsv = !isPost && new URL(request.url).searchParams.get("export") === "csv";
+  const campaign = (new URL(request.url).searchParams.get("campaign") || "").slice(0, 64);
   const response = await stub.fetch(
     shot
       ? "https://internal/shot?id=" + encodeURIComponent(shot.slice(0, 200))
+      : exportCsv ? "https://internal/export?campaign=" + encodeURIComponent(campaign)
       : "https://internal/workspace",
     data ? { method: "POST", body: JSON.stringify(data) } : {},
   );
@@ -294,6 +322,11 @@ export class Workspace {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS shots (id TEXT PRIMARY KEY, campaign TEXT NOT NULL, data TEXT NOT NULL)",
     );
+    this.sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    // Public client reports (kept in the shared "admission" object, looked up by their unguessable token).
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS reports (token TEXT PRIMARY KEY, owner TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL)",
+    );
   }
   transient(key) {
     return this.sql
@@ -324,6 +357,18 @@ export class Workspace {
         headers: { "Content-Type": match[1], "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" },
       });
     }
+    if (path === "/export") {
+      const only = new URL(request.url).searchParams.get("campaign") || "";
+      const { campaigns, leads } = await (await this.snapshot()).json();
+      const rows = leads.filter((l) => !only || l.campaignId === only);
+      return new Response(leadsCsv(rows, campaigns), {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="leads-${iso().slice(0, 10)}.csv"`,
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
     if (path !== "/workspace") {
       const body = await request.text(),
         now = Date.now();
@@ -338,6 +383,23 @@ export class Workspace {
           token = this.transient(key);
         this.sql.exec("DELETE FROM transient WHERE key=?", key);
         return token ? new Response(token) : failure("Недійсний код", 404);
+      }
+      if (path === "/report-put") {
+        const { token, owner, body: report } = JSON.parse(body);
+        if (!/^[a-f0-9]{32}$/.test(token) || typeof report !== "string" || report.length > 600_000)
+          return failure("Некоректний звіт.");
+        this.sql.exec("DELETE FROM reports WHERE created<?", now - REPORT_DAYS * DAY);
+        this.sql.exec("INSERT OR REPLACE INTO reports VALUES(?,?,?,?)", token, owner, report, now);
+        return json({ ok: true });
+      }
+      if (path === "/report-get") {
+        const row = this.sql.exec("SELECT body FROM reports WHERE token=? AND created>=?", body, now - REPORT_DAYS * DAY).toArray()[0];
+        return row ? new Response(row.body, { headers: { "Content-Type": "application/json" } }) : failure("Звіт не знайдено.", 404);
+      }
+      if (path === "/report-del") {
+        const { token, owner } = JSON.parse(body);
+        this.sql.exec("DELETE FROM reports WHERE token=? AND owner=?", token, owner);
+        return json({ ok: true });
       }
       if (!["/admit", "/budget"].includes(path))
         return failure("Невідомий шлях", 404);
@@ -356,7 +418,13 @@ export class Workspace {
     if (request.method === "GET") return this.snapshot();
     const data = await request.json();
     if (data?.action === "draft") return this.draft(data.id);
+    if (data?.action === "report") return this.report(data.id);
+    if (data?.action === "report-delete") return this.unreport(data.id);
     const result = this.change(data);
+    if (this.pendingReportDeletes) {
+      await Promise.all(this.pendingReportDeletes);
+      this.pendingReportDeletes = null;
+    }
     if (result) return result;
     await this.schedule();
     return this.snapshot();
@@ -384,6 +452,72 @@ export class Workspace {
       due ?? null,
     );
   }
+  setting(key) {
+    return this.sql.exec("SELECT value FROM settings WHERE key=?", key).toArray()[0]?.value;
+  }
+  sender() {
+    try {
+      return JSON.parse(this.setting("sender") || "null");
+    } catch {
+      return null;
+    }
+  }
+  owner() {
+    let id = this.setting("owner");
+    if (!id) {
+      id = randomKey();
+      this.sql.exec("INSERT INTO settings VALUES('owner',?)", id);
+    }
+    return id;
+  }
+  /** Freeze what the check found into a shareable report; replaces the lead's previous report. */
+  async report(id) {
+    const lead = this.leadRow(id);
+    if (!lead) return failure("Компанію не знайдено.", 404);
+    if (!this.services.reportStore) return failure("Звіти тимчасово недоступні.", 503);
+    const day = Math.floor(Date.now() / DAY),
+      key = "reports:" + day,
+      used = Number(this.transient(key) || 0);
+    if (used >= LIMITS.reportsPerDay)
+      return failure("На сьогодні вже створено " + LIMITS.reportsPerDay + " звітів. Завтра знову.", 429);
+    this.setTransient(key, String(used + 1), (day + 1) * DAY);
+    const campaign = this.get(lead.campaignId);
+    const probe = (lead.evidence || []).find((e) => /Lighthouse/.test(e.label))?.label || "";
+    const shot = this.sql.exec("SELECT data FROM shots WHERE id=?", id).toArray()[0]?.data;
+    const body = {
+      v: 1,
+      name: lead.name,
+      city: campaign?.city || "",
+      website: filled(lead.website) ? lead.website : "",
+      kind: lead.kind || "",
+      summary: lead.summary || "",
+      gaps: (lead.gaps || []).slice(0, 12),
+      speed: /· (\d{1,3})\/100/.test(probe) ? Number(probe.match(/· (\d{1,3})\/100/)[1]) : null,
+      lcp: probe.match(/основний вміст за ([^·]+?)\s*(?:·|$)/)?.[1] || "",
+      checkedAt: lead.checkedAt,
+      shot: shot && shot.length < 450_000 ? shot : null,
+      sender: this.sender(),
+    };
+    const token = randomKey().slice(0, 32);
+    const owner = this.owner();
+    if (lead.report?.token) await this.services.reportStore("/report-del", { token: lead.report.token, owner }).catch(() => {});
+    const saved = await this.services.reportStore("/report-put", { token, owner, body: JSON.stringify(body) });
+    if (!saved) return failure("Не вдалося зберегти звіт. Спробуйте ще раз.", 502);
+    const current = this.leadRow(id);
+    if (!current) return failure("Компанію не знайдено.", 404);
+    current.report = { token, at: iso() };
+    this.sql.exec("UPDATE leads SET body=? WHERE id=?", JSON.stringify(current), id);
+    return this.snapshot();
+  }
+  async unreport(id) {
+    const lead = this.leadRow(id);
+    if (!lead) return failure("Компанію не знайдено.", 404);
+    if (lead.report?.token && this.services.reportStore)
+      await this.services.reportStore("/report-del", { token: lead.report.token, owner: this.owner() }).catch(() => {});
+    delete lead.report;
+    this.sql.exec("UPDATE leads SET body=? WHERE id=?", JSON.stringify(lead), id);
+    return this.snapshot();
+  }
   leadRow(id) {
     if (typeof id !== "string") return null;
     const row = this.sql.exec("SELECT body FROM leads WHERE id=?", id).toArray()[0];
@@ -406,9 +540,13 @@ export class Workspace {
       written = null;
     }
     const text = typeof written?.text === "string" ? written.text.trim().slice(0, 3000) : "";
+    // Sign with the sender's own contacts when they are filled in.
+    const sender = this.sender();
+    const signature = sender && [sender.name, sender.phone || sender.telegram || sender.email].filter(Boolean).join(", ");
     const draft = text
       ? { subject: clean(written.subject, 120), text, source: "claude", at: iso() }
       : { ...templateOffer(facts), source: "template", at: iso() };
+    if (signature) draft.text = draft.text.replace("[Ваше ім'я], [телефон]", signature);
     // The lead may have been re-checked while Claude was writing: attach the draft to the current row.
     const current = this.leadRow(id);
     if (!current) return failure("Компанію не знайдено.", 404);
@@ -431,7 +569,7 @@ export class Workspace {
         legacyScore(b) - legacyScore(a) ||
         b.checkedAt.localeCompare(a.checkedAt),
     );
-    return json({ campaigns, leads, limits: LIMITS });
+    return json({ campaigns, leads, limits: LIMITS, sender: this.sender() });
   }
   queue(c) {
     c.version = crypto.randomUUID();
@@ -482,6 +620,18 @@ export class Workspace {
       this.queue({ id: crypto.randomUUID(), ...params, paused: false });
       return;
     }
+    if (data.action === "settings") {
+      const raw = data.sender && typeof data.sender === "object" ? data.sender : {};
+      const sender = {
+        name: clean(raw.name, 80),
+        phone: clean(raw.phone, 40),
+        email: /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(clean(raw.email, 120)) ? clean(raw.email, 120) : "",
+        telegram: /^@?[A-Za-z0-9_]{4,40}$/.test(clean(raw.telegram, 41)) ? clean(raw.telegram, 41) : "",
+        site: /^https?:\/\/[^\s<>"]+$/.test(clean(raw.site, 200)) ? clean(raw.site, 200) : "",
+      };
+      this.sql.exec("INSERT OR REPLACE INTO settings VALUES('sender',?)", JSON.stringify(sender));
+      return;
+    }
     if (data.action === "status") {
       if (!statuses.includes(data.status) || typeof data.id !== "string")
         return failure("Некоректний статус.");
@@ -490,6 +640,11 @@ export class Workspace {
         .toArray()[0];
       if (!row) return failure("Компанію не знайдено.", 404);
       const lead = JSON.parse(row.body);
+      // When each status was set: sales analytics and "no reply for 3 days" reminders use it.
+      if (lead.status !== data.status) {
+        lead.statusAt = iso();
+        lead.history = [...(lead.history || []), { status: data.status, at: lead.statusAt }].slice(-20);
+      }
       lead.status = data.status;
       if (typeof data.notes === "string") lead.notes = clean(data.notes, 1600);
       this.sql.exec(
@@ -502,6 +657,13 @@ export class Workspace {
     const c = this.get(data.id);
     if (!c) return failure("Пошук не знайдено.", 404);
     if (data.action === "delete") {
+      // Client links of this search stop working with it.
+      const tokens = this.sql.exec("SELECT body FROM leads WHERE campaign=?", c.id).toArray()
+        .map((r) => JSON.parse(r.body).report?.token).filter(Boolean);
+      if (tokens.length && this.services.reportStore) {
+        const owner = this.owner();
+        this.pendingReportDeletes = tokens.map((token) => this.services.reportStore("/report-del", { token, owner }).catch(() => {}));
+      }
       this.sql.exec("DELETE FROM transient WHERE key=?", "candidates:" + c.id);
       this.sql.exec("DELETE FROM leads WHERE campaign=?", c.id);
       this.sql.exec("DELETE FROM shots WHERE campaign=?", c.id);
@@ -714,6 +876,8 @@ export class Workspace {
       status: previous.status || "new",
       notes: previous.notes || "",
       ...(previous.draft && { draft: previous.draft }),
+      ...(previous.report && { report: previous.report }),
+      ...(previous.statusAt && { statusAt: previous.statusAt, history: previous.history || [] }),
     };
     this.sql.exec(
       "INSERT OR REPLACE INTO leads VALUES(?,?,?)",

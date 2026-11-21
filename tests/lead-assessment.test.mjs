@@ -8,7 +8,8 @@ registerHooks({ resolve(specifier, context, next) {
 const { assessLead } = await import("../src/lib/lead-assessment.ts");
 const clinic = { osmId: "node/123", name: "Клініка Волошка", phone: "+380501234567", email: "", website: "https://clinic.example/" };
 // A modern baseline page: mobile viewport and a description, so only what a test adds is a gap.
-const MODERN = '<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">';
+const MODERN = '<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">'
+  + '<script async src="https://www.googletagmanager.com/gtag/js?id=G-TEST123"></script><script>fbq("init", "123456")</script>';
 const html = (content, title = "Волошка", meta = MODERN) => '<html><head><title>' + title + '</title>' + meta + '</head><body><h1>' + title + '</h1><p>Тут працює команда спеціалістів. Більше інформації про послуги нашої команди є на сайті.</p>' + content + '</body></html>';
 const cta = '<a href="/appointments">Записатися</a>';
 function respond(t, home, statuses = []) {
@@ -589,4 +590,38 @@ test("lead score orders leads by how worth a call they are", async t => {
   assert.ok(chain.score > noSite.score, "a chain is a bigger client");
   assert.ok(noSite.score > noSiteNoContact.score + 25, "no contact costs a lot");
   assert.ok(fine.score < 30, "a site with nothing to fix scores low: " + fine.score);
+});
+
+
+test("analytics and Meta pixel: missing ones are listed but never change the verdict of a good site", async t => {
+  const BARE = '<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">';
+  const good = '<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><form><input type="tel"><textarea></textarea></form>';
+  serve(t, () => page(html(good, "Волошка", BARE)));
+  const r = await assessLead(clinic, "website");
+  assert.deepEqual(gapsOf(r), [
+    "Немає аналітики відвідувачів (Google Analytics чи подібної) — не видно, скільки людей заходить і звідки",
+    "Немає пікселя Meta (Facebook) — не можна показати рекламу тим, хто вже був на сайті",
+  ]);
+  assert.equal(r.priority, "low");
+  assert.doesNotMatch(r.summary, /є що покращити/);
+});
+
+test("a Tag Manager may hide the pixel: no pixel claim without the browser check, a claim after it", async t => {
+  const gtm = '<script>(function(w,d,s,l,i){})(window,document,"script","dataLayer","GTM-ABC1234");</script><script src="https://www.googletagmanager.com/gtm.js?id=GTM-ABC1234" async></script>';
+  const good = '<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><form><input type="tel"><textarea></textarea></form>';
+  serve(t, () => page(html(good, "Волошка", '<meta name="viewport" content="width=device-width"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">' + gtm)));
+  const quick = gapsOf(await assessLead(clinic, "website")).join(" | ");
+  assert.doesNotMatch(quick, /пікселя|аналітики/);
+  const browserSawPixel = await assessLead(clinic, "website", { probe: async () => ({ score: 95, html: html(good + '<script src="https://connect.facebook.net/en_US/fbevents.js"></script>', "Волошка", '<meta name="viewport" content="width=device-width">') }) });
+  assert.doesNotMatch(gapsOf(browserSawPixel).join(" | "), /пікселя/);
+  const plain = '<meta name="viewport" content="width=device-width"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">';
+  const browserNoPixel = await assessLead(clinic, "website", { probe: async () => ({ score: 95, html: html(good, "Волошка", plain) }) });
+  assert.match(gapsOf(browserNoPixel).join(" | "), /Немає пікселя Meta/);
+});
+
+test("Yandex.Metrica is named as a blocked Russian service", async t => {
+  serve(t, () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><script src="https://mc.yandex.ru/metrika/tag.js"></script>')));
+  const gaps = gapsOf(await assessLead(clinic, "website")).join(" | ");
+  assert.match(gaps, /Яндекс\.Метрика — російський сервіс/);
+  assert.doesNotMatch(gaps, /Немає аналітики/);
 });

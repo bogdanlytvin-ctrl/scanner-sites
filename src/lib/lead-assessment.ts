@@ -260,6 +260,12 @@ function parsePage(html: string, url: string) {
     deadTech: /\.swf\b|application\/x-shockwave-flash|<frameset|<marquee/i.test(html),
     cms: oldCms($('meta[name="generator" i]').attr("content") || "") || oldCms(wpAssetVersion(html)),
     description: ($('meta[name="description" i]').attr("content") || "").trim().length >= 30,
+    // Visitor analytics of any common kind (raw HTML: these are script tags).
+    analytics: /googletagmanager\.com\/(?:gtag\/js|gtm\.js)|google-analytics\.com\/(?:analytics|ga|urchin)\.js|gtag\(\s*['"]config['"]|\bGTM-[A-Z0-9]{4,}\b|matomo\.js|piwik\.js|plausible\.io\/js|clarity\.ms\/tag|static\.hotjar\.com|cdn\.usefathom\.com|ringostat|binotel/i.test(html),
+    tagManager: /googletagmanager\.com\/gtm\.js|\bGTM-[A-Z0-9]{4,}\b/i.test(html),
+    pixel: /connect\.facebook\.net\/[^"']*\/fbevents\.js|fbq\(\s*['"]init['"]/i.test(html),
+    // Yandex.Metrica: a Russian service blocked in Ukraine.
+    yandex: /mc\.yandex\.(?:ru|com|ua)\/(?:metrika|watch)|\bym\(\s*\d{5,}\s*,\s*['"]init/i.test(html),
     // A "Записатися"/"Book now" control of any kind, or a known booking system on the page.
     booking: bookingWidget.test(html) || $("a, button, [role=button], input[type=submit]").filter((_, el) => bookingLabel.test(($(el).text() || $(el).attr("value") || $(el).attr("aria-label") || "").trim())).length > 0,
   };
@@ -294,9 +300,10 @@ function oldCms(generator: string): string | null {
   return null;
 }
 
-type Gap = { label: string; strong: boolean; pitch: string; missing?: string };
+/** `extra`: worth showing and offering, but not a reason on its own to rank a working site higher. */
+type Gap = { label: string; strong: boolean; pitch: string; missing?: string; extra?: boolean };
 /** Signals that mean "the visitor has this": present in either the raw HTML or the rendered page. */
-const PRESENCE = ["viewport", "form", "telLink", "mailLink", "messengers", "widget", "socials", "contactLink", "phoneText", "description", "booking"] as const;
+const PRESENCE = ["viewport", "form", "telLink", "mailLink", "messengers", "widget", "socials", "contactLink", "phoneText", "description", "booking", "analytics", "tagManager", "pixel", "yandex"] as const;
 
 /** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
 /** Rough speed estimate without Google PageSpeed: only what the HTML and the response show. */
@@ -316,7 +323,7 @@ function slowHints(page: NonNullable<PageReading["page"]>, ms: number, bytes: nu
   return hints.length >= 2 || ms > 3500 ? hints : [];
 }
 
-function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = "", bytes = 0, httpsWorks = false): Gap[] {
+function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = "", bytes = 0, httpsWorks = false, rendered = false): Gap[] {
   const s = page.signals, gaps: Gap[] = [];
   const now = new Date().getFullYear();
   const old = s.copyright !== null && s.copyright <= now - 5;
@@ -355,6 +362,15 @@ function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: 
   }
   if (!s.description)
     gaps.push({ label: "Немає опису для Google (meta description)", strong: false, pitch: "налаштувати базове SEO" });
+  if (!page.scripted) {
+    if (s.yandex)
+      gaps.push({ label: "Стоїть Яндекс.Метрика — російський сервіс, заблокований в Україні", strong: false, pitch: "замінити Яндекс.Метрику на Google Analytics" });
+    if (!s.analytics && !s.yandex)
+      gaps.push({ label: "Немає аналітики відвідувачів (Google Analytics чи подібної) — не видно, скільки людей заходить і звідки", strong: false, pitch: "підключити Google Analytics", extra: true });
+    // A Tag Manager may load the pixel itself: without the browser check that cannot be seen, so say nothing.
+    if (!s.pixel && (!s.tagManager || rendered))
+      gaps.push({ label: "Немає пікселя Meta (Facebook) — не можна показати рекламу тим, хто вже був на сайті", strong: false, pitch: "встановити піксель Meta для реклами", extra: true });
+  }
   const speed = slowHints(page, ms, bytes);
   if (speed.length)
     gaps.push({
@@ -729,7 +745,7 @@ async function assessOnce(candidate: Candidate, service: LeadService, options: A
     if (typeof probe?.score === "number") { speed = { score: probe.score, lcp: (probe.lcp || "").replace(/\u00a0/g, " ") }; speedSource = "Перевірка в браузері"; }
   }
   if (!speed && service === "website" && options.pageSpeedKey) speed = await pageSpeed(reading.url, options.pageSpeedKey);
-  const gaps = siteGaps(judged, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0, httpsWorks);
+  const gaps = siteGaps(judged, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0, httpsWorks, judged !== page);
   const domainDate = await domainLookup;
   const dates = expiryGaps(domainDate, cert, options.now ?? Date.now());
   // Expiry comes first: it is the most urgent reason to call.
@@ -755,7 +771,8 @@ async function assessOnce(candidate: Candidate, service: LeadService, options: A
     assessment.gaps = gaps.map(({ label, strong }) => ({ label, strong }));
     const strong = gaps.filter(g => g.strong);
     // Script-built pages keep their "buttons not checked" summary unless a serious gap is certain.
-    if (service === "website" && !issue && (strong.length || !judged.scripted)) {
+    // Gaps that are only "extra" (analytics, pixel) are listed, but do not rewrite the verdict on a working site.
+    if (service === "website" && !issue && gaps.some(g => !g.extra) && (strong.length || !judged.scripted)) {
       // One confirmed serious gap is a reason to call; several small ones are worth a look.
       const pitch = (strong.length ? strong : gaps).slice(0, 3).map(g => g.pitch).join(", ");
       assessment.summary = strong.length
@@ -765,7 +782,7 @@ async function assessOnce(candidate: Candidate, service: LeadService, options: A
       if (strong.length) {
         assessment.confidence = "verified";
         assessment.priority = assessment.contact ? "high" : "review";
-      } else if (gaps.length >= 3 && assessment.priority === "low") assessment.priority = "review";
+      } else if (gaps.filter(g => !g.extra).length >= 3 && assessment.priority === "low") assessment.priority = "review";
     }
     if (service === "website") for (const g of strong) assessment.evidence.push({ label: "Сайт · " + g.label, url: reading.url });
   }

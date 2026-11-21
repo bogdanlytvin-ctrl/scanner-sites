@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Activity, ArrowUpRight, CalendarClock, Check, ChevronDown, CircleHelp, ClipboardList, Copy, Mail, PenLine, ExternalLink, KeyRound, ListFilter, LoaderCircle, MapPin, Pause, Play, Plus, Radar, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Activity, ArrowUpRight, CalendarClock, Check, ChevronDown, BarChart3, CircleHelp, ClipboardList, Copy, Download, FileText, Mail, PenLine, UserRound, ExternalLink, KeyRound, ListFilter, LoaderCircle, MapPin, Pause, Play, Plus, Radar, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { COUNTRIES, citiesForCountry, nicheChipsForCountry } from "@/lib/countries";
+import { salesAnalytics } from "@/lib/analytics";
 import "./workspace.css";
 
 const services = { website: "Сайт для бізнесу", booking: "Онлайн-запис" };
@@ -30,8 +31,11 @@ type Lead = {
   branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[]; shot?: boolean;
   draft?: { subject: string; text: string; source: "claude" | "template"; at: string };
   score?: number; expiry?: { what: "domain" | "ssl"; date: string };
+  report?: { token: string; at: string };
+  kind?: string; statusAt?: string; history?: { status: string; at: string }[];
 };
-type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
+type Sender = { name: string; phone: string; email: string; telegram: string; site: string };
+type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number }; sender?: Sender | null };
 type Action = Record<string, unknown>;
 const activePhases: Phase[] = ["queued", "discovering", "checking"];
 
@@ -130,6 +134,36 @@ function expiryLabel(e: NonNullable<Lead["expiry"]>) {
   return days < 0 ? "⏳ " + what + " закінчився " + date : "⏳ " + what + " закінчується " + date + " (через " + days + " дн.)";
 }
 
+const percent = (v: number | null) => (v === null ? "—" : v + "%");
+
+/** Sales funnel and what works: computed from the statuses you set on the leads. */
+function AnalyticsPanel({ data }: { data: Snapshot }) {
+  const a = salesAnalytics(data.leads, data.campaigns);
+  const t = a.total;
+  const stage = (label: string, value: number, hint?: string) => <div className="lf-stat"><strong>{value}</strong><span>{label}</span>{hint && <small>{hint}</small>}</div>;
+  return <section className="lf-panel lf-analytics" aria-labelledby="lf-analytics-title">
+    <h2 id="lf-analytics-title">Аналітика продажів</h2>
+    <div className="lf-stats">
+      {stage("лідів", t.leads)}{stage("гарячих", t.hot)}{stage("написав", t.contacted)}
+      {stage("відповіли", t.replied, t.contacted ? percent(t.replyRate) + " від написаних" : undefined)}
+      {stage("угод", t.won, t.contacted ? percent(Math.round(t.won / t.contacted * 100)) + " від написаних" : undefined)}
+    </div>
+    <p className="lf-muted">За 7 днів: написав {a.activity.contacted7}, відповіли {a.activity.replied7}, угод {a.activity.won7} · за 30 днів: написав {a.activity.contacted30}, відповіли {a.activity.replied30}, угод {a.activity.won30}{a.waiting ? ` · чекають нагадування: ${a.waiting}` : ""}</p>
+    {!t.contacted && <p className="lf-muted">Цифри з'являться, коли почнете ставити статуси «Звернувся», «Відповіли», «Є угода».</p>}
+    {a.byCampaign.length > 0 && <div className="lf-table-wrap"><table className="lf-table"><caption>Які пошуки працюють</caption>
+      <thead><tr><th>Пошук</th><th>Лідів</th><th>Гарячих</th><th>Написав</th><th>Відповіли</th><th>Угод</th><th>% відповідей</th></tr></thead>
+      <tbody>{a.byCampaign.map(r => <tr key={r.key}><td>{r.label}</td><td>{r.leads}</td><td>{r.hot}</td><td>{r.contacted}</td><td>{r.replied}</td><td>{r.won}</td><td>{percent(r.replyRate)}</td></tr>)}</tbody></table></div>}
+    {a.byKind.length > 0 && <div className="lf-table-wrap"><table className="lf-table"><caption>З якою причиною звернення відповідають частіше</caption>
+      <thead><tr><th>Причина</th><th>Написав</th><th>Відповіли</th><th>Угод</th><th>% відповідей</th></tr></thead>
+      <tbody>{a.byKind.map(r => <tr key={r.key}><td>{r.label}</td><td>{r.contacted}</td><td>{r.replied}</td><td>{r.won}</td><td>{percent(r.replyRate)}</td></tr>)}</tbody></table></div>}
+  </section>;
+}
+
+function daysAgo(iso?: string) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(t) ? Math.floor((Date.now() - t) / 86_400_000) : null;
+}
+
 function pointsLabel(n: number) {
   const tail = n % 10, teen = n % 100 >= 11 && n % 100 <= 14;
   return n + (teen || tail === 0 || tail >= 5 ? " точок" : tail === 1 ? " точка" : " точки");
@@ -142,6 +176,25 @@ function lookupLinks(lead: Lead, city?: string) {
     google: "https://www.google.com/search?q=" + encodeURIComponent('"' + lead.name + '" ' + (city || "") + " телефон"),
     maps: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(lead.name + (place ? ", " + place : "")),
   };
+}
+
+const reportUrl = (lead: Lead) => lead.report ? window.location.origin + "/r/" + lead.report.token : "";
+
+/** Shareable client report: a public snapshot page (no notes or statuses), created and removed on request. */
+function ReportBox({ lead, busy, act }: { lead: Lead; busy: boolean; act: (action: "report" | "report-delete") => void }) {
+  const [copied, setCopied] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  if (!lead.report) return <div className="lf-report"><button className="lf-btn lf-small" disabled={busy} onClick={() => act("report")}><FileText /> Звіт для клієнта</button></div>;
+  const url = reportUrl(lead);
+  return <div className="lf-report">
+    <p><strong>Звіт для клієнта:</strong> <a href={url} target="_blank" rel="noreferrer">{url.replace(/^https?:\/\//, "")} <ExternalLink size={13} /></a></p>
+    <div className="lf-tools">
+      <button className="lf-btn lf-small" onClick={async () => { try { await navigator.clipboard.writeText(url); setCopied(true); window.setTimeout(() => setCopied(false), 2000); } catch { /* the link stays selectable */ } }}>{copied ? <Check /> : <Copy />}{copied ? "Скопійовано" : "Копіювати посилання"}</button>
+      <button className="lf-btn lf-small" disabled={busy} onClick={() => act("report")} title="Створити новий звіт з останньої перевірки (старе посилання перестане працювати)"><RefreshCw /> Оновити</button>
+      <button className="lf-btn lf-small" disabled={busy} onClick={() => { if (confirm) { setConfirm(false); act("report-delete"); } else setConfirm(true); }}><Trash2 />{confirm ? "Так, видалити" : "Видалити"}</button>
+    </div>
+    <p className="lf-draft-hint">Посилання бачить кожен, кому ви його надішлете. Нотатки, статуси й оцінка в звіт не потрапляють.</p>
+  </div>;
 }
 
 /** Offer letter: drafted on request, edited and sent by a person (never sent automatically). */
@@ -163,12 +216,13 @@ function DraftBox({ lead, busy, drafting, write }: { lead: Lead; busy: boolean; 
     <div className="lf-tools">
       <button className="lf-btn lf-small" onClick={() => void copy()}>{copied ? <Check /> : <Copy />}{copied ? "Скопійовано" : "Копіювати"}</button>
       {email && <a className="lf-btn lf-small" href={"mailto:" + encodeURIComponent(email) + "?subject=" + encodeURIComponent(lead.draft.subject || "") + "&body=" + encodeURIComponent(text)}><Mail /> Відкрити в пошті</a>}
+      {lead.report && !text.includes(reportUrl(lead)) && <button className="lf-btn lf-small" onClick={() => setText(t => t.replace(/\s*$/, "") + "\n\nКороткий аудит вашого сайту: " + reportUrl(lead))}><FileText /> Додати посилання на звіт</button>}
       <button className="lf-btn lf-small" disabled={busy} onClick={write}><RefreshCw /> Написати інакше</button>
     </div>
   </details>;
 }
 
-function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead; campaign?: Campaign; busy: boolean; drafting: boolean; save: (status: Status, notes?: string) => void; write: () => void }) {
+function LeadCard({ lead, campaign, busy, drafting, save, write, reportAct }: { lead: Lead; campaign?: Campaign; busy: boolean; drafting: boolean; save: (status: Status, notes?: string) => void; write: () => void; reportAct: (action: "report" | "report-delete") => void }) {
   const [notes, setNotes] = useState(lead.notes || "");
   useEffect(() => { setNotes(lead.notes || ""); }, [lead.notes]);
   const rawSite = known(lead.website);
@@ -181,6 +235,7 @@ function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead;
       {typeof lead.score === "number" && <span className={"lf-score " + (lead.score >= 75 ? "hot" : lead.score >= 50 ? "warm" : "cold")} title="Наскільки перспективний лід: причина звернутися, впевненість перевірки й наявність контакту">{lead.score}<small>/100</small></span>}
       <time dateTime={lead.checkedAt}>{dateLabel(lead.checkedAt)}</time></div>
     {lead.expiry && <div className="lf-expiry">{expiryLabel(lead.expiry)}</div>}
+    {lead.status === "contacted" && (daysAgo(lead.statusAt) ?? 0) >= 3 && <div className="lf-remind">🔔 Написали {daysAgo(lead.statusAt)} дн. тому, відповіді ще немає — час нагадати про себе.</div>}
     <h3>{lead.name}</h3>
     <div className="lf-place"><MapPin size={15} /> {known(lead.address) || campaign?.city || "Адресу не вказано"}</div>
     {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
@@ -195,6 +250,7 @@ function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead;
       <a className="lf-btn lf-small" href={links.maps} target="_blank" rel="noreferrer"><MapPin /> Google Карти</a>
     </div>; })()}
     {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
+    <ReportBox lead={lead} busy={busy} act={reportAct}/>
     <DraftBox lead={lead} busy={busy} drafting={drafting} write={write}/>
     <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
       <div className="lf-proof"><strong>{confidenceNames[lead.confidence]}</strong>
@@ -213,6 +269,20 @@ function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead;
       <details className="lf-note"><summary>Нотатка{lead.notes && <Check size={14}/>}</summary><label><span className="sr-only">Нотатка про компанію</span><textarea value={notes} maxLength={1000} onChange={e => setNotes(e.target.value)} /></label><button className="lf-btn lf-small" disabled={busy || notes === (lead.notes || "")} onClick={() => save(lead.status, notes)}>Зберегти нотатку</button></details>
     </div>
   </article>;
+}
+
+/** The contacts shown at the end of every client report and used to sign letters. */
+function SenderPanel({ sender, busy, save }: { sender?: Sender | null; busy: boolean; save: (s: Sender) => void }) {
+  const empty: Sender = { name: "", phone: "", email: "", telegram: "", site: "" };
+  const [form, setForm] = useState<Sender>({ ...empty, ...(sender || {}) });
+  useEffect(() => { setForm({ ...empty, ...(sender || {}) }); }, [sender?.name, sender?.phone, sender?.email, sender?.telegram, sender?.site]); // eslint-disable-line react-hooks/exhaustive-deps
+  const field = (key: keyof Sender, label: string, placeholder: string) =>
+    <label key={key}>{label}<input value={form[key]} placeholder={placeholder} maxLength={key === "site" ? 200 : 80} onChange={e => setForm({ ...form, [key]: e.target.value })} /></label>;
+  return <details className="lf-access"><summary><UserRound size={15} /> Мої контакти для звітів <ChevronDown size={15} /></summary>
+    <p>Їх побачить клієнт унизу звіту, ними ж підписуються листи.</p>
+    {field("name", "Ім'я", "Богдан")}{field("phone", "Телефон", "+380…")}{field("telegram", "Telegram", "@username")}{field("email", "Пошта", "name@example.com")}{field("site", "Сайт-портфоліо", "https://…")}
+    <button className="lf-btn lf-small" disabled={busy} onClick={() => save(form)}>Зберегти контакти</button>
+  </details>;
 }
 
 function AccessPanel({ busy, transfer, restore }: { busy: boolean; transfer: () => Promise<string | null>; restore: (code: string) => Promise<boolean> }) {
@@ -242,6 +312,7 @@ export default function Home() {
   const [priority, setPriority] = useState<Priority | "all">("all");
   const [status, setStatus] = useState<Status | "all">("all");
   const [drafting, setDrafting] = useState("");
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const currentRequest = useRef(0);
   const locked = useRef(false);
   const read = useRef(false);
@@ -302,7 +373,8 @@ export default function Home() {
       <nav aria-label="Навігація"><a href="/" aria-current="page">Кабінет</a><a href="/manual">Разовий пошук <ArrowUpRight size={14}/></a></nav>
     </div></header>
     <main className="lf-container lf-main">
-      <div className="lf-title-row"><div><h1>Пошук клієнтів</h1><p>Задайте нішу та місто. Перевірки продовжаться, коли ви закриєте сайт.</p></div><button className="lf-btn" disabled={mutating || loading} onClick={() => void refresh()}><RefreshCw size={15}/> Оновити</button></div>
+      <div className="lf-title-row"><div><h1>Пошук клієнтів</h1><p>Задайте нішу та місто. Перевірки продовжаться, коли ви закриєте сайт.</p></div><div className="lf-tools"><button className="lf-btn" aria-pressed={showAnalytics} disabled={!data} onClick={() => setShowAnalytics(v => !v)}><BarChart3 size={15}/> Аналітика</button><button className="lf-btn" disabled={mutating || loading} onClick={() => void refresh()}><RefreshCw size={15}/> Оновити</button></div></div>
+      {showAnalytics && data && <AnalyticsPanel data={data}/>}
       <div className="lf-metrics" aria-label="Зведення кабінету">
         <div><span><CalendarClock /> Збережені пошуки</span><strong>{data ? campaigns.length : "—"}</strong></div>
         <div><span><ClipboardList /> Компанії в кабінеті</span><strong>{data ? leads.length : "—"}</strong></div>
@@ -318,11 +390,11 @@ export default function Home() {
             <button className={'lf-all ' + (!selected ? "selected" : "")} onClick={() => setSelected("")} aria-pressed={!selected}>Усі пошуки <span>{campaigns.length}</span></button>
             {campaigns.map(c => <CampaignItem key={c.id} item={c} selected={selected === c.id} select={() => setSelected(c.id)} busy={mutating} act={action => void mutate({ action, id: c.id })} setCadence={cadence => void mutate({ action: "cadence", id: c.id, cadence })} />)}
           </div>}
-        </section>{data && <AccessPanel busy={mutating} transfer={transfer} restore={code => mutate({ action: "restore", code })}/>}</aside>
+        </section>{data && <SenderPanel sender={data.sender} busy={mutating} save={sender => void mutate({ action: "settings", sender })}/>}{data && <AccessPanel busy={mutating} transfer={transfer} restore={code => mutate({ action: "restore", code })}/>}</aside>
         <section className="lf-panel lf-results" aria-labelledby="lf-results-title">
-          <div className="lf-panel-head"><div><h2 id="lf-results-title">Компанії <span className="lf-count">{scoped.length}</span></h2>{chosen && <p>{chosen.query} · {chosen.city}</p>}</div><label className="lf-status-filter"><ListFilter size={16}/><span className="sr-only">Фільтр за статусом</span><select value={status} onChange={e => setStatus(e.target.value as Status | "all")}><option value="all">Усі статуси</option>{Object.entries(statuses).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label></div>
+          <div className="lf-panel-head"><div><h2 id="lf-results-title">Компанії <span className="lf-count">{scoped.length}</span></h2>{chosen && <p>{chosen.query} · {chosen.city}</p>}</div><a className="lf-btn lf-small" href={"/api/workspace?export=csv" + (selected ? "&campaign=" + encodeURIComponent(selected) : "")} download title="Завантажити таблицю для Excel або Google Таблиць"><Download size={15}/> Таблиця</a><label className="lf-status-filter"><ListFilter size={16}/><span className="sr-only">Фільтр за статусом</span><select value={status} onChange={e => setStatus(e.target.value as Status | "all")}><option value="all">Усі статуси</option>{Object.entries(statuses).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label></div>
           <div className="lf-tabs" aria-label="Пріоритет компаній">{(["all", "high", "review", "low"] as const).map(id => <button key={id} aria-pressed={priority === id} onClick={() => setPriority(id)}>{id === "all" ? "Усі" : id === "high" ? "Високий" : id === "review" ? "Уточнити" : "Низький"} <span>{id === "all" ? byStatus.length : byStatus.filter(l => l.priority === id).length}</span></button>)}</div>
-          {visible.length ? <div className="lf-lead-list">{visible.map(l => <LeadCard key={l.id} lead={l} campaign={campaigns.find(c => c.id === l.campaignId)} busy={mutating} drafting={drafting === l.id} write={() => { setDrafting(l.id); void mutate({ action: "draft", id: l.id }).finally(() => setDrafting("")); }} save={(value, notes) => void mutate({ action: "status", id: l.id, status: value, ...(notes !== undefined && { notes }) })}/>)}</div> :
+          {visible.length ? <div className="lf-lead-list">{visible.map(l => <LeadCard key={l.id} lead={l} campaign={campaigns.find(c => c.id === l.campaignId)} busy={mutating} drafting={drafting === l.id} write={() => { setDrafting(l.id); void mutate({ action: "draft", id: l.id }).finally(() => setDrafting("")); }} reportAct={action => void mutate({ action, id: l.id })} save={(value, notes) => void mutate({ action: "status", id: l.id, status: value, ...(notes !== undefined && { notes }) })}/>)}</div> :
             <div className="lf-empty" aria-live="polite"><span className="lf-empty-icon">{loading || checkingSelection ? <LoaderCircle className="animate-spin"/> : <Search/>}</span>
               <h3>{loading ? "Відкриваємо кабінет" : !data ? "Не вдалося відкрити кабінет" : scoped.length ? "За цими фільтрами компаній немає" : checkingSelection ? "Пошук триває" : campaigns.length ? "Для цього пошуку ще немає компаній" : "Тут з’являться знайдені компанії"}</h3>
               <p>{loading ? "Завантажуємо збережені пошуки та результати." : !data ? "Спробуйте оновити дані." : scoped.length ? "Змініть пріоритет або статус, щоб побачити інші результати." : checkingSelection ? "Результати з’являтимуться в міру перевірки сайтів." : campaigns.length ? "Стан останньої перевірки вказано в картці пошуку." : "Створіть перший пошук. У кожній картці будуть висновок перевірки, його джерела та статус роботи."}</p>
