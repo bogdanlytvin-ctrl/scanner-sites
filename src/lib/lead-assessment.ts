@@ -15,7 +15,14 @@ export interface LeadAssessment {
   gaps?: { label: string; strong: boolean }[];
 }
 
-type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string };
+type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string };
+export type AssessOptions = { pageSpeedKey?: string };
+
+// Niches where clients expect to book online; hotels book rooms, the rest book a visit.
+const BOOKING_TYPES = new Set("dentist doctors clinic veterinary beauty hairdresser massage tattoo car_repair tyres car_wash driving_school language_school dancing_school music_school photographer spa sauna fitness_centre hotel hostel guest_house apartment motel".split(" "));
+const STAY_TYPES = new Set(["hotel", "hostel", "guest_house", "apartment", "motel"]);
+// Hosted booking systems used in Ukraine and Europe (widgets load from scripts, so match raw HTML).
+const bookingWidget = /alteg\.io|altegio|yclients|booksy|easyweek|dikidi|helsi\.me|doc\.ua|likarni\.com|bookon|simplybook|calendly|fresha|treatwell|appointer|onlinezapis|cleverbox|beautypro|booking\.com|travelline|exely|otelms|servio|wubook|hotellook|reservationsteps|bnovo|bookingengine|ibooking/i;
 
 /** Many small businesses on the map have only Instagram/Telegram/Facebook: a direct message is still a way to reach them. */
 function socialContact(c: Candidate, source: string): Contact | null {
@@ -143,6 +150,8 @@ function parsePage(html: string, url: string) {
     deadTech: /\.swf\b|application\/x-shockwave-flash|<frameset|<marquee/i.test(html),
     cms: oldCms($('meta[name="generator" i]').attr("content") || ""),
     description: ($('meta[name="description" i]').attr("content") || "").trim().length >= 30,
+    // A "Записатися"/"Book now" control of any kind, or a known booking system on the page.
+    booking: bookingWidget.test(html) || $("a, button, [role=button], input[type=submit]").filter((_, el) => bookingLabel.test(($(el).text() || $(el).attr("value") || $(el).attr("aria-label") || "").trim())).length > 0,
   };
   return { identityText, contacts, links, fixedWidth, signals, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
 }
@@ -169,7 +178,7 @@ function oldCms(generator: string): string | null {
 type Gap = { label: string; strong: boolean; pitch: string; missing?: string };
 
 /** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
-function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number): Gap[] {
+function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = ""): Gap[] {
   const s = page.signals, gaps: Gap[] = [];
   const now = new Date().getFullYear();
   const old = s.copyright !== null && s.copyright <= now - 5;
@@ -192,6 +201,12 @@ function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: 
         gaps.push({ label: "Телефон не натискається на мобільному (немає посилання tel:)", strong: false, pitch: "зробити телефон клікабельним" });
       if (!s.messengers && !s.widget && (s.form || s.contactLink))
         gaps.push({ label: "Немає кнопок месенджерів (Telegram, Viber, WhatsApp)", strong: false, pitch: "додати кнопки месенджерів" });
+    }
+    if (BOOKING_TYPES.has(type) && !s.booking) {
+      const stay = STAY_TYPES.has(type);
+      gaps.push(stay
+        ? { label: "Немає онлайн-бронювання (кнопки чи модуля бронювання номерів)", strong: true, pitch: "додати онлайн-бронювання номерів", missing: "онлайн-бронювання" }
+        : { label: "Немає онлайн-запису (кнопки «Записатися» чи віджета запису)", strong: true, pitch: "додати онлайн-запис", missing: "онлайн-запису" });
     }
     if (s.copyright !== null && s.copyright <= now - 3)
       // An old © alone is weak (big companies forget it); with another strong gap it confirms an abandoned site.
@@ -280,7 +295,24 @@ function matchesBusiness(candidate: Candidate, page: ReturnType<typeof parsePage
 }
 
 /** Check only links advertised by the business. Confirm an actionable issue before ranking it high. */
-export async function assessLead(candidate: Candidate, service: LeadService): Promise<LeadAssessment> {
+/** Google PageSpeed Insights (mobile). Needs an API key: the keyless quota is shared worldwide and is usually exhausted. */
+async function pageSpeed(url: string, key: string): Promise<{ score: number; lcp: string } | null> {
+  try {
+    const api = new URL("https://www.googleapis.com/pagespeedonline/v5/runPagespeed");
+    api.searchParams.set("url", url);
+    api.searchParams.set("strategy", "mobile");
+    api.searchParams.set("category", "performance");
+    api.searchParams.set("key", key);
+    const response = await fetch(api, { signal: AbortSignal.timeout(60_000) });
+    if (!response.ok) return null;
+    const data = await response.json() as any;
+    const score = data?.lighthouseResult?.categories?.performance?.score;
+    if (typeof score !== "number") return null;
+    return { score: Math.round(score * 100), lcp: data.lighthouseResult.audits?.["largest-contentful-paint"]?.displayValue || "" };
+  } catch { return null; }
+}
+
+export async function assessLead(candidate: Candidate, service: LeadService, options: AssessOptions = {}): Promise<LeadAssessment> {
   const mapUrl = /^(node|way|relation)\/\d+$/.test(candidate.osmId) ? "https://www.openstreetmap.org/" + candidate.osmId : "";
   const assessment: LeadAssessment = {
     priority: "review", confidence: "unknown", checkedAt: new Date().toISOString(),
@@ -415,7 +447,19 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
     assessment.suggestion = assessment.contact ? suggestion : "Знайдіть офіційний контакт компанії перед зверненням.";
   }
 
-  const gaps = siteGaps(page, reading.url, reading.ms || 0);
+  const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type);
+  if (service === "website" && options.pageSpeedKey) {
+    const speed = await pageSpeed(reading.url, options.pageSpeedKey);
+    if (speed) {
+      const report = "https://pagespeed.web.dev/analysis?url=" + encodeURIComponent(reading.url) + "&form_factor=mobile";
+      assessment.evidence.push({ label: "Google PageSpeed (телефон) · " + speed.score + "/100" + (speed.lcp ? " · основний вміст за " + speed.lcp : ""), url: report });
+      if (speed.score < 70)
+        gaps.push({
+          label: "Повільний на телефоні: Google PageSpeed " + speed.score + "/100" + (speed.lcp ? " (основний вміст за " + speed.lcp + ")" : ""),
+          strong: speed.score < 50, pitch: "прискорити сайт на телефоні", missing: "швидкості на телефоні (PageSpeed " + speed.score + "/100)",
+        });
+    }
+  }
   if (gaps.length) {
     assessment.gaps = gaps.map(({ label, strong }) => ({ label, strong }));
     const strong = gaps.filter(g => g.strong);

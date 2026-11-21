@@ -286,3 +286,48 @@ test("site gaps: an Instagram link or a contacts-button widget is a way to get i
   const r = await assessLead(clinic, "website");
   assert.doesNotMatch(gapsOf(r).join(" | "), /зворотного зв'язку/);
 });
+
+const contactable = '<a href="tel:+380501234567">050 123 45 67</a><a href="https://t.me/voloshka">Telegram</a><form><textarea></textarea></form>';
+
+test("online booking: a dentist site without any booking control is missing online booking", async t => {
+  serve(t, () => page(html(contactable)));
+  const r = await assessLead({ ...clinic, type: "dentist" }, "website");
+  assert.match(gapsOf(r).join(" | "), /!Немає онлайн-запису/);
+  assert.equal(r.priority, "high");
+  assert.equal(r.summary, "На сайті немає: онлайн-запису.");
+  assert.equal(r.suggestion, "Запропонуйте додати онлайн-запис.");
+});
+
+test("online booking: a 'Записатися' button or a booking widget counts; other niches and hotels are handled", async t => {
+  for (const extra of ['<button class="btn">Записатися на прийом</button>', '<script src="https://w123.alteg.io/widgetJS"></script>']) {
+    t.mock.restoreAll();
+    serve(t, () => page(html(contactable + extra)));
+    assert.doesNotMatch(gapsOf(await assessLead({ ...clinic, type: "dentist" }, "website")).join(" | "), /онлайн-запису/);
+  }
+  t.mock.restoreAll();
+  serve(t, () => page(html(contactable)));
+  assert.doesNotMatch(gapsOf(await assessLead({ ...clinic, type: "pharmacy" }, "website")).join(" | "), /онлайн/);
+  assert.match(gapsOf(await assessLead({ ...clinic, type: "hotel" }, "website")).join(" | "), /!Немає онлайн-бронювання/);
+});
+
+test("PageSpeed: a slow mobile score becomes a gap with a report link; without a key Google is not called", async t => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Answer: [{ type: 1, data: "93.184.216.34" }] });
+    calls.push(url.hostname);
+    if (url.hostname === "www.googleapis.com") {
+      assert.equal(url.searchParams.get("key"), "K");
+      assert.equal(url.searchParams.get("strategy"), "mobile");
+      return Response.json({ lighthouseResult: { categories: { performance: { score: 0.34 } }, audits: { "largest-contentful-paint": { displayValue: "9,1 с" } } } });
+    }
+    return page(html(contactable + '<footer>© ' + new Date().getFullYear() + '</footer>'));
+  });
+  const slow = await assessLead(clinic, "website", { pageSpeedKey: "K" });
+  assert.match(gapsOf(slow).join(" | "), /!Повільний на телефоні: Google PageSpeed 34\/100 \(основний вміст за 9,1 с\)/);
+  assert.equal(slow.priority, "high");
+  assert.ok(slow.evidence.some(e => e.url.startsWith("https://pagespeed.web.dev/analysis?url=")));
+  calls.length = 0;
+  await assessLead(clinic, "website");
+  assert.ok(!calls.includes("www.googleapis.com"));
+});

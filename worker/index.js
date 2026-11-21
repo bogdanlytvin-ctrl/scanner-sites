@@ -11,7 +11,8 @@ export class LeadWorkspace extends DurableObject {
     super(ctx, env);
     this.workspace = new Workspace(ctx.storage, {
       geocodeCity,
-      assessLead,
+      assessLead: (business, service) =>
+        assessLead(business, service, { pageSpeedKey: env.GOOGLE_PAGESPEED_API_KEY }),
       discoverBusinessesAt: (...args) =>
         discoverBusinessesAt(...args, (path) =>
           env.ASSETS.fetch(
