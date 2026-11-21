@@ -368,7 +368,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   const hotLead = (summary: string, suggestion: string) => {
     assessment.summary = summary;
     assessment.priority = assessment.contact ? "high" : "review";
-    assessment.suggestion = !assessment.contact ? "Знайдіть телефон або пошту компанії перед зверненням."
+    assessment.suggestion = !assessment.contact ? "Контакту на карті немає — знайдіть телефон кнопкою «Знайти телефон у Google» або в Google Картах."
       : assessment.contact.kind === "social" ? suggestion.replace("Перед дзвінком", "Перед повідомленням у соцмережі") : suggestion;
     return assessment;
   };
@@ -512,7 +512,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.confidence = "verified";
     assessment.priority = assessment.contact ? "high" : "review";
     assessment.summary = issue;
-    assessment.suggestion = assessment.contact ? suggestion : "Знайдіть офіційний контакт компанії перед зверненням.";
+    assessment.suggestion = assessment.contact ? suggestion : "Контакту на карті немає — знайдіть телефон кнопкою «Знайти телефон у Google» або в Google Картах.";
   }
 
   const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0);
@@ -541,7 +541,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
       assessment.summary = strong.length
         ? "На сайті немає: " + strong.map(g => g.missing || g.label).join(", ") + "."
         : "Сайт працює, але є що покращити (" + gaps.length + " " + (gaps.length === 1 ? "пункт" : gaps.length < 5 ? "пункти" : "пунктів") + ").";
-      assessment.suggestion = assessment.contact ? "Запропонуйте " + pitch + "." : "Знайдіть телефон або пошту компанії перед зверненням.";
+      assessment.suggestion = assessment.contact ? "Запропонуйте " + pitch + "." : "Контакту на карті немає — знайдіть телефон кнопкою «Знайти телефон у Google» або в Google Картах.";
       if (strong.length) {
         assessment.confidence = "verified";
         assessment.priority = assessment.contact ? "high" : "review";

@@ -122,6 +122,15 @@ function pointsLabel(n: number) {
   return n + (teen || tail === 0 || tail >= 5 ? " точок" : tail === 1 ? " точка" : " точки");
 }
 
+/** One-click manual lookups for companies the map has no contact for (automated Google search is not allowed). */
+function lookupLinks(lead: Lead, city?: string) {
+  const place = [known(lead.address), city].filter(Boolean).join(", ");
+  return {
+    google: "https://www.google.com/search?q=" + encodeURIComponent('"' + lead.name + '" ' + (city || "") + " телефон"),
+    maps: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(lead.name + (place ? ", " + place : "")),
+  };
+}
+
 function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campaign; busy: boolean; save: (status: Status, notes?: string) => void }) {
   const [notes, setNotes] = useState(lead.notes || "");
   useEffect(() => { setNotes(lead.notes || ""); }, [lead.notes]);
@@ -136,6 +145,10 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
     {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
     <p className="lf-summary">{lead.summary}</p>
     {!!lead.gaps?.length && <div className="lf-gaps"><strong>Чого не вистачає на сайті</strong><ul>{lead.gaps.map((g, i) => <li key={i} className={g.strong ? "strong" : undefined}>{g.label}</li>)}</ul></div>}
+    {!lead.contact && (() => { const links = lookupLinks(lead, campaign?.city); return <div className="lf-lookup" aria-label="Знайти контакт компанії">
+      <a className="lf-btn lf-small" href={links.google} target="_blank" rel="noreferrer"><Search /> Знайти телефон у Google</a>
+      <a className="lf-btn lf-small" href={links.maps} target="_blank" rel="noreferrer"><MapPin /> Google Карти</a>
+    </div>; })()}
     {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
     <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
       <div className="lf-proof"><strong>{confidenceNames[lead.confidence]}</strong>

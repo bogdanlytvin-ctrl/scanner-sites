@@ -178,3 +178,5 @@
 .lf-gaps li { color: var(--muted); }
 .lf-gaps li.strong { color: inherit; font-weight: 560; }
 .lf-gaps li.strong::marker { content: "● "; color: #c2410c; }
+.lf-lookup { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.lf-lookup a { text-decoration: none; color: inherit; }
