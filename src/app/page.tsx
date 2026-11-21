@@ -27,7 +27,7 @@ type Lead = {
   osmId: string; status: Status; notes: string; service: Service; priority: Priority; confidence: Confidence; checkedAt: string;
   summary: string; suggestion: string; evidence: { label: string; url: string }[];
   contact: { value: string; source: string; kind: "phone" | "email" | "social" } | null;
-  branches?: number; branchAddresses?: string[];
+  branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[];
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
 type Action = Record<string, unknown>;
@@ -135,6 +135,7 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
     <div className="lf-place"><MapPin size={15} /> {known(lead.address) || campaign?.city || "Адресу не вказано"}</div>
     {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
     <p className="lf-summary">{lead.summary}</p>
+    {!!lead.gaps?.length && <div className="lf-gaps"><strong>Чого не вистачає на сайті</strong><ul>{lead.gaps.map((g, i) => <li key={i} className={g.strong ? "strong" : undefined}>{g.label}</li>)}</ul></div>}
     {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
     <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
       <div className="lf-proof"><strong>{confidenceNames[lead.confidence]}</strong>

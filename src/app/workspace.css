@@ -172,3 +172,9 @@
 .lf-panel-head .lf-limit { font-size: .8rem; }
 .lf-skip { display: none; }
 @media (max-width: 660px) { .lf-skip { display: inline-block; margin-bottom: 12px; color: var(--green); text-decoration: underline; } }
+.lf-gaps { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: .875rem; }
+.lf-gaps strong { display: block; margin-bottom: 4px; font-weight: 600; }
+.lf-gaps ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.lf-gaps li { color: var(--muted); }
+.lf-gaps li.strong { color: inherit; font-weight: 560; }
+.lf-gaps li.strong::marker { content: "● "; color: #c2410c; }

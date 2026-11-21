@@ -11,6 +11,8 @@ export interface LeadAssessment {
   suggestion: string;
   evidence: { label: string; url: string }[];
   contact: { kind: "phone" | "email" | "social"; value: string; source: string } | null;
+  /** What the site is missing, each backed by something visible in its HTML. */
+  gaps?: { label: string; strong: boolean }[];
 }
 
 type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string };
@@ -121,10 +123,88 @@ function parsePage(html: string, url: string) {
   const scripted = body.length < 60 && (title.length >= 3 || metaText.length >= 20);
   const viewport = $('meta[name="viewport" i]').first().attr("content") || "";
   const fixedWidth = Number(viewport.match(/(?:^|[,;\s])width\s*=\s*(\d+)(?=[,;\s]|$)/i)?.[1] || 0);
-  return { identityText, contacts, links, fixedWidth, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
+  const hrefs = $("a[href]").map((_, el) => ($(el).attr("href") || "").trim()).get();
+  const signals = {
+    viewport: Boolean(viewport.trim()),
+    // A real enquiry form, not a site search box.
+    form: $("form").filter((_, el) => {
+      const f = $(el);
+      return f.find("textarea, input[type=tel], input[type=email]").length > 0 || f.find("input[type=text], input:not([type])").length >= 2;
+    }).length > 0,
+    telLink: hrefs.some(h => /^tel:/i.test(h)),
+    mailLink: hrefs.some(h => /^mailto:/i.test(h)),
+    messengers: hrefs.some(h => /^(viber|whatsapp|tg):|(^|\/\/)(t\.me|telegram\.me|wa\.me|api\.whatsapp\.com|m\.me)\//i.test(h)),
+    // Chat / callback widgets load from scripts, so look at the raw HTML.
+    widget: /contacts?[-_]?(?:button|widget)|call-?back[-_]?(?:button|widget)|jivosite|jivo_|code\.jivo|tawk\.to|binotel|ringostat|helpcrunch|livechat|chatra|tidio|crisp\.chat|bitrix24\.(?:ua|ru|com)\/b\d|b24-widget|kommo|callbackkiller|elfsight|wa-widget|getbutton\.io|sendpulse.*widget/i.test(html),
+    socials: hrefs.some(h => { try { return socialDomain.test(new URL(h, url).hostname); } catch { return false; } }),
+    contactLink: links.some(l => contactsLabel.test(l.label)) || hrefs.some(h => /contact|kontakt|контакт/i.test(h)),
+    phoneText: /(?:\+?38\s?)?\(?0\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}\b/.test(body),
+    copyright: copyrightYear($("footer").text() || body),
+    deadTech: /\.swf\b|application\/x-shockwave-flash|<frameset|<marquee/i.test(html),
+    cms: oldCms($('meta[name="generator" i]').attr("content") || ""),
+    description: ($('meta[name="description" i]').attr("content") || "").trim().length >= 30,
+  };
+  return { identityText, contacts, links, fixedWidth, signals, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
 }
 
-type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean; placeholder?: "parked" | "unconfigured" };
+/** Latest plausible year next to a ©/copyright marker; null when there is no trustworthy marker. */
+function copyrightYear(text: string): number | null {
+  const now = new Date().getFullYear();
+  const years = [...text.matchAll(/(?:©|&copy;|\(c\)|copyright)\s*(?:\d{4}\s*[-–—]\s*)?(\d{4})/gi)]
+    .flatMap(m => (m[0].match(/\d{4}/g) || []).map(Number))
+    .filter(y => y >= 2005 && y <= now + 1);
+  return years.length ? Math.max(...years) : null;
+}
+
+/** CMS versions that are out of support (security updates stopped). */
+function oldCms(generator: string): string | null {
+  const wp = generator.match(/wordpress\s+(\d+)\.(\d+)/i);
+  if (wp && Number(wp[1]) < 5) return "WordPress " + wp[1] + "." + wp[2];
+  const joomla = generator.match(/joomla!?\s*(?:-\s*open source content management\s*)?(?:version\s*)?([123])(?:\.\d+)?/i);
+  if (joomla) return "Joomla " + joomla[1];
+  if (/drupal\s+[4-7]\b/i.test(generator)) return generator.match(/drupal\s+\d+/i)![0];
+  return null;
+}
+
+type Gap = { label: string; strong: boolean; pitch: string };
+
+/** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
+function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number): Gap[] {
+  const s = page.signals, gaps: Gap[] = [];
+  const now = new Date().getFullYear();
+  const old = s.copyright !== null && s.copyright <= now - 5;
+  if (finalUrl.startsWith("http://"))
+    gaps.push({ label: "Немає HTTPS — браузер позначає сайт як «Не захищено»", strong: true, pitch: "налаштувати HTTPS (SSL-сертифікат)" });
+  if (!s.viewport)
+    gaps.push({ label: "Не адаптований під телефон (немає налаштування viewport)", strong: true, pitch: "зробити мобільну версію" });
+  if (s.deadTech)
+    gaps.push({ label: "Застарілі технології (Flash, рамки або бігучий рядок)", strong: true, pitch: "перезібрати сайт на сучасній основі" });
+  if (s.cms)
+    gaps.push({ label: s.cms + " — версія без оновлень безпеки", strong: true, pitch: "оновити систему керування сайтом" });
+  if (!page.scripted) {
+    const anyWay = s.form || s.telLink || s.mailLink || s.messengers || s.widget || s.contactLink || s.phoneText || s.socials;
+    if (!anyWay)
+      gaps.push({ label: "Немає зворотного зв'язку: ні форми заявки, ні кнопки дзвінка, ні месенджерів", strong: true, pitch: "додати форму заявки, кнопку дзвінка й месенджери" });
+    else {
+      if (!s.form && !s.messengers && !s.widget && !s.contactLink)
+        gaps.push({ label: s.phoneText || s.telLink ? "Немає форми заявки чи месенджерів — тільки телефон" : "Немає форми заявки чи месенджерів — тільки соцмережі або пошта", strong: false, pitch: "додати форму заявки й кнопки Telegram/Viber" });
+      if (s.phoneText && !s.telLink)
+        gaps.push({ label: "Телефон не натискається на мобільному (немає посилання tel:)", strong: false, pitch: "зробити телефон клікабельним" });
+      if (!s.messengers && !s.widget && (s.form || s.contactLink))
+        gaps.push({ label: "Немає кнопок месенджерів (Telegram, Viber, WhatsApp)", strong: false, pitch: "додати кнопки месенджерів" });
+    }
+    if (s.copyright !== null && s.copyright <= now - 3)
+      // An old © alone is weak (big companies forget it); with another strong gap it confirms an abandoned site.
+      gaps.push({ label: "Сайт давно не оновлювався (у футері © " + s.copyright + ")", strong: old && gaps.some(g => g.strong), pitch: "оновити дизайн і зміст" });
+  }
+  if (!s.description)
+    gaps.push({ label: "Немає опису для Google (meta description)", strong: false, pitch: "налаштувати базове SEO" });
+  if (ms > 5000)
+    gaps.push({ label: "Головна сторінка завантажується повільно (" + (ms / 1000).toFixed(1) + " с)", strong: false, pitch: "прискорити сайт" });
+  return gaps;
+}
+
+type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean; placeholder?: "parked" | "unconfigured"; ms?: number };
 
 /** No answer at all (DNS/connection failure, timeout) or an origin-down error. 503/429 are skipped: anti-bot walls use them. */
 function looksDead(r: PageReading): boolean {
@@ -135,6 +215,7 @@ const statusLabel = (r: PageReading) => (r.status ? "HTTP " + r.status : "нем
 
 async function readPage(url: string, statusOnly = false): Promise<PageReading> {
   const result: PageReading = { url, status: 0, page: null };
+  const started = Date.now();
   try {
     const response = await safeFetch(url, {
       headers: { Accept: "text/html,application/xhtml+xml", "Accept-Language": "uk,ru;q=0.8,en;q=0.6", "User-Agent": BROWSER_UA },
@@ -142,6 +223,7 @@ async function readPage(url: string, statusOnly = false): Promise<PageReading> {
     });
     result.url = response.url || url;
     result.status = response.status;
+    result.ms = Date.now() - started;
     const isHtml = /text\/html|application\/xhtml\+xml/i.test(response.headers.get("content-type") || "");
     if (statusOnly || !isHtml) {
       await response.body?.cancel();
@@ -331,6 +413,26 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
     assessment.priority = assessment.contact ? "high" : "review";
     assessment.summary = issue;
     assessment.suggestion = assessment.contact ? suggestion : "Знайдіть офіційний контакт компанії перед зверненням.";
+  }
+
+  const gaps = siteGaps(page, reading.url, reading.ms || 0);
+  if (gaps.length) {
+    assessment.gaps = gaps.map(({ label, strong }) => ({ label, strong }));
+    const strong = gaps.filter(g => g.strong);
+    // Script-built pages keep their "buttons not checked" summary unless a serious gap is certain.
+    if (service === "website" && !issue && (strong.length || !page.scripted)) {
+      // One confirmed serious gap is a reason to call; several small ones are worth a look.
+      const pitch = (strong.length ? strong : gaps).slice(0, 3).map(g => g.pitch).join(", ");
+      assessment.summary = strong.length
+        ? "На сайті не вистачає: " + strong.map(g => g.label.split(" (")[0].split(" — ")[0].toLowerCase()).join("; ") + "."
+        : "Сайт працює, але є що покращити (" + gaps.length + " " + (gaps.length === 1 ? "пункт" : gaps.length < 5 ? "пункти" : "пунктів") + ").";
+      assessment.suggestion = assessment.contact ? "Запропонуйте " + pitch + "." : "Знайдіть телефон або пошту компанії перед зверненням.";
+      if (strong.length) {
+        assessment.confidence = "verified";
+        assessment.priority = assessment.contact ? "high" : "review";
+      } else if (gaps.length >= 3 && assessment.priority === "low") assessment.priority = "review";
+    }
+    if (service === "website") for (const g of strong) assessment.evidence.push({ label: "Сайт · " + g.label, url: reading.url });
   }
   return assessment;
 }

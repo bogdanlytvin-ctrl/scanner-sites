@@ -7,7 +7,9 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { assessLead } = await import("../src/lib/lead-assessment.ts");
 const clinic = { osmId: "node/123", name: "Клініка Волошка", phone: "+380501234567", email: "", website: "https://clinic.example/" };
-const html = (content, title = "Волошка", meta = "") => '<html><head><title>' + title + '</title>' + meta + '</head><body><h1>' + title + '</h1><p>Тут працює команда спеціалістів. Більше інформації про послуги нашої команди є на сайті.</p>' + content + '</body></html>';
+// A modern baseline page: mobile viewport and a description, so only what a test adds is a gap.
+const MODERN = '<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Стоматологічна клініка Волошка: лікування, гігієна, імплантація.">';
+const html = (content, title = "Волошка", meta = MODERN) => '<html><head><title>' + title + '</title>' + meta + '</head><body><h1>' + title + '</h1><p>Тут працює команда спеціалістів. Більше інформації про послуги нашої команди є на сайті.</p>' + content + '</body></html>';
 const cta = '<a href="/appointments">Записатися</a>';
 function respond(t, home, statuses = []) {
   const calls = [];
@@ -47,9 +49,11 @@ test("working booking link on an external service does not flag a missing bookin
 });
 
 test("old copyright and a JS-only booking button do not justify high priority", async t => {
-  respond(t, html('<button>Записатися</button><footer>© 2005</footer>'));
+  respond(t, html('<button>Записатися</button><a href="tel:+380501234567">+380 50 123 45 67</a><a href="https://t.me/voloshka">Telegram</a><form><input type="text"><input type="tel"></form><footer>© 2005</footer>'));
   assert.equal((await assessLead(clinic, "booking")).priority, "review");
-  assert.equal((await assessLead(clinic, "website")).priority, "low");
+  const site = await assessLead(clinic, "website");
+  assert.equal(site.priority, "low");
+  assert.ok(site.gaps.some(g => /© 2005/.test(g.label) && !g.strong));
 });
 
 test("company mismatch, absent website and third-party profile stay unverified", async t => {
@@ -169,7 +173,7 @@ test("requests look like a browser so bot walls on datacenter IPs let them throu
 });
 
 test("a script-rendered page with a title and a JSON-LD phone is readable and matched", async t => {
-  serve(t, () => page('<html><head><title>Волошка — стоматологія</title><script type="application/ld+json">{"@type":"Dentist","telephone":"+380 50 123 45 67"}</script></head><body><div id="root"></div></body></html>'));
+  serve(t, () => page('<html><head><title>Волошка — стоматологія</title><meta name="viewport" content="width=device-width"><script type="application/ld+json">{"@type":"Dentist","telephone":"+380 50 123 45 67"}</script></head><body><div id="root"></div></body></html>'));
   const result = await assessLead(clinic, "website");
   assert.equal(result.confidence, "partial");
   assert.equal(result.priority, "low");
@@ -210,7 +214,7 @@ test("a hosted menu page (choiceqr) is 'no own site' for website, but is read fo
 
 test("names match across apostrophes and Cyrillic/Latin spelling, but not unrelated words", async t => {
   serve(t, () => page(html("", "Піца Celentano — доставка")));
-  assert.equal((await assessLead({ ...clinic, name: "Челентано", phone: "" }, "website")).confidence, "partial");
+  assert.notEqual((await assessLead({ ...clinic, name: "Челентано", phone: "" }, "website")).confidence, "unknown");
   t.mock.restoreAll();
   serve(t, () => page(html("", "LA П’ЄЦ нормальна доставка")));
   assert.notEqual((await assessLead({ ...clinic, name: "La П'єц", phone: "" }, "website")).summary, "Назву або контакт на сайті не вдалося звірити з карткою компанії.");
@@ -220,7 +224,7 @@ test("names match across apostrophes and Cyrillic/Latin spelling, but not unrela
 });
 
 test("a removed branch page (deep link 404) is judged by the working home page, not as a dead site", async t => {
-  const calls = serve(t, url => url.pathname === "/" ? page(html("")) : page("<html><body>Not found</body></html>", 404));
+  const calls = serve(t, url => url.pathname === "/" ? page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a>')) : page("<html><body>Not found</body></html>", 404));
   const result = await assessLead({ ...clinic, website: "https://clinic.example/branch/lviv-1" }, "website");
   assert.notEqual(result.priority, "high");
   assert.doesNotMatch(result.summary, /не відкрився/);
@@ -237,4 +241,48 @@ test("without phone or email an Instagram/Telegram profile is the contact for a 
   assert.equal(tg.contact.value, "https://t.me/voloshka_dent");
   const none = await assessLead({ ...clinic, website: "N/A", phone: "", telegram: "not a handle!" }, "website");
   assert.equal(none.priority, "review");
+});
+
+const gapsOf = r => (r.gaps || []).map(g => (g.strong ? "!" : "") + g.label);
+
+test("site gaps: no mobile viewport, no HTTPS, old WordPress and no contact way are serious and evidenced", async t => {
+  serve(t, () => page('<html><head><title>Волошка</title><meta name="generator" content="WordPress 4.9.8"></head><body><h1>Волошка</h1><p>Ми працюємо для вас щодня. Сучасне лікування зубів для всієї родини у Львові.</p><footer>© 2016 Волошка</footer></body></html>'));
+  const r = await assessLead({ ...clinic, website: "http://clinic.example/" }, "website");
+  const gaps = gapsOf(r).join(" | ");
+  for (const re of [/!Немає HTTPS/, /!Не адаптований під телефон/, /!WordPress 4\.9/, /!Немає зворотного зв'язку/, /!Сайт давно не оновлювався \(у футері © 2016\)/, /Немає опису для Google/])
+    assert.match(gaps, re);
+  assert.equal(r.priority, "high");
+  assert.equal(r.confidence, "verified");
+  assert.match(r.summary, /^На сайті не вистачає:/);
+  assert.match(r.suggestion, /^Запропонуйте /);
+  assert.ok(r.evidence.some(e => /Сайт · Не адаптований/.test(e.label)));
+});
+
+test("site gaps: phone shown as text only — minor gaps, worth a look but not a call", async t => {
+  serve(t, () => page(html('<p>Телефон: 050 123 45 67</p><p>вул. Зелена 1</p>')));
+  const r = await assessLead(clinic, "website");
+  const gaps = gapsOf(r).join(" | ");
+  assert.match(gaps, /^Немає форми заявки чи месенджерів/);
+  assert.match(gaps, /Телефон не натискається/);
+  assert.doesNotMatch(gaps, /!/);
+  assert.notEqual(r.priority, "high");
+});
+
+test("site gaps: a modern site with form, clickable phone and Telegram has nothing missing", async t => {
+  serve(t, () => page(html('<a href="tel:+380501234567">050 123 45 67</a><a href="https://t.me/voloshka">Telegram</a><form><textarea name="m"></textarea></form><footer>© ' + new Date().getFullYear() + '</footer>')));
+  const r = await assessLead(clinic, "website");
+  assert.equal(r.gaps, undefined);
+  assert.equal(r.priority, "low");
+});
+
+test("site gaps: a chat/callback widget counts as a way to get in touch; a search box is not a form", async t => {
+  serve(t, () => page(html('<form><input type="search" name="s"></form><script src="//code.jivo.ru/widget/abc"></script>')));
+  const r = await assessLead(clinic, "website");
+  assert.doesNotMatch(gapsOf(r).join(" | "), /зворотного зв'язку|форми заявки/);
+});
+
+test("site gaps: an Instagram link or a contacts-button widget is a way to get in touch", async t => {
+  serve(t, () => page(html('<a href="https://www.instagram.com/voloshka">Instagram</a><link rel="stylesheet" href="/css/contacts-button-widget.css">')));
+  const r = await assessLead(clinic, "website");
+  assert.doesNotMatch(gapsOf(r).join(" | "), /зворотного зв'язку/);
 });
