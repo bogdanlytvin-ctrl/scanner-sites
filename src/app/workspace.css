@@ -95,6 +95,7 @@
 .lf-campaign.selected { border-color: #749b7b; }
 .lf-campaign-select { width: 100%; text-align: left; padding: 10px 11px 5px; display: grid; gap: 3px; }
 .lf-campaign-select strong, .lf-lead h3 { overflow-wrap: anywhere; }
+.lf-branches { display: inline-block; margin-top: 6px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; color: var(--muted); }
 .lf-campaign-select span, .lf-place, .lf-inline, .lf-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .lf-campaign-select span, .lf-place, .lf-campaign-info, .lf-lead time { color: var(--muted); font-size: .875rem; }
 .lf-campaign-info { padding: 5px 11px 11px; }

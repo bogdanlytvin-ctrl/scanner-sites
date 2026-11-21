@@ -16,13 +16,36 @@ const statuses = [
 const hasContact = (b) =>
   Boolean((b.phone && b.phone !== "N/A") || (b.email && b.email !== "N/A"));
 const genericWord =
-  /^(піца|піци|пицца|піцерія|пиццерия|pizza|pizzeria|кафе|cafe|ресторан|restaurant|доставка|суші|sushi|бар|паб|кав'?ярня|coffee|салон|студія|studio|клініка|clinic|стоматологія|dental|аптека|магазин|центр|готель|hotel|львів|львівська|львівський|київ|київська|київський|the|and)$/;
-const brandKey = (name) =>
-  (name || "")
-    .toLowerCase()
-    .normalize("NFKC")
-    .split(/[^\p{L}\p{N}]+/u)
-    .find((w) => w.length >= 4 && !genericWord.test(w));
+  /^(піца|піци|пицца|піцерія|пиццерия|pizza|pizzeria|кафе|cafe|ресторан|restaurant|доставка|доставки|суші|sushi|бар|паб|кавярня|coffee|салон|студія|studio|клініка|клініки|клиника|clinic|стоматологія|стоматологічна|стоматологічний|стоматологічний|стоматология|стоматологическая|dental|dentistry|медична|медичний|медицинский|центр|center|centre|аптека|магазин|готель|hotel|кабінет|офіс|мережа|львів|львівська|львівський|київ|київська|київський|the|and|для|при|біля)$/;
+// Brand identity of a name: its distinctive words, generic ones dropped, order ignored.
+// "Піцерія «Челентано»" = "Челентано піца" = "Челентано", but "Дента плюс" ≠ "Дента люкс".
+export const brandKey = (name) =>
+  [
+    ...new Set(
+      (name || "")
+        .toLowerCase()
+        .normalize("NFKC")
+        .replace(/['’ʼ`‘]/g, "")
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((w) => w.length >= 3 && !genericWord.test(w)),
+    ),
+  ]
+    .sort()
+    .join(" ");
+const socialHost =
+  /(^|\.)(instagram\.com|facebook\.com|fb\.com|fb\.me|t\.me|linktr\.ee|wa\.me|tiktok\.com)$/i;
+// Same website = same company. Social profiles share a host, so for them the whole address counts.
+const siteKey = (website) => {
+  try {
+    const url = new URL(/^https?:\/\//i.test(website) ? website : "https://" + website);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+    return socialHost.test(host)
+      ? host + url.pathname.replace(/\/+$/, "").toLowerCase()
+      : host;
+  } catch {
+    return "";
+  }
+};
 // A chain branch often has no website on the map while another branch does.
 // Borrow that brand site so the branch is not mistaken for a company without a site.
 export function shareBrandSites(businesses) {
@@ -35,6 +58,38 @@ export function shareBrandSites(businesses) {
     const site = !hasWebsite(b) && sites.get(brandKey(b.name));
     return site ? { ...b, website: site } : b;
   });
+}
+// One card per chain: branches with the same site or the same brand name collapse into the
+// first (nearest) one, which keeps the branch count, the other addresses and missing contacts.
+export function groupBranches(businesses) {
+  const groups = [];
+  const index = new Map();
+  for (const b of businesses) {
+    if (!b.osmId || !b.name) continue;
+    const keys = [
+      hasWebsite(b) && "site:" + siteKey(b.website),
+      brandKey(b.name) && "name:" + brandKey(b.name),
+    ].filter((k) => k && !k.endsWith(":"));
+    let group = keys.map((k) => index.get(k)).find(Boolean);
+    // Same name but two different own websites: two companies, not branches.
+    if (group && hasWebsite(b) && hasWebsite(group) && siteKey(b.website) !== siteKey(group.website))
+      group = undefined;
+    if (!group) {
+      const head = { ...b, branches: 1, branchAddresses: [], branchIds: [] };
+      groups.push(head);
+      keys.forEach((k) => index.has(k) || index.set(k, head));
+      continue;
+    }
+    group.branches++;
+    group.branchIds.push(b.osmId);
+    if (b.address && b.address !== "N/A" && group.branchAddresses.length < 8)
+      group.branchAddresses.push(b.address);
+    for (const field of ["phone", "email", "website"])
+      if ((!group[field] || group[field] === "N/A") && b[field] && b[field] !== "N/A")
+        group[field] = b[field];
+    keys.forEach((k) => index.has(k) || index.set(k, group));
+  }
+  return groups;
 }
 // Least recently checked first. For "booking" sites go first (the check needs a site);
 // for "website" half of the run goes to contactable companies without an own site — the hottest leads.
@@ -455,7 +510,17 @@ export class Workspace {
             return [lead.osmId, lead.checkedAt];
           }),
       );
-      c.queue = pickQueue(shareBrandSites(businesses), seen, c.service);
+      const groups = groupBranches(shareBrandSites(businesses));
+      // Cards of branches now folded into a chain card go away unless the user already worked on them.
+      for (const g of groups)
+        for (const osmId of g.branchIds) {
+          const id = c.id + "/" + osmId;
+          const row = this.sql.exec("SELECT body FROM leads WHERE id=?", id).toArray()[0];
+          if (!row) continue;
+          const old = JSON.parse(row.body);
+          if (old.status === "new" && !old.notes) this.sql.exec("DELETE FROM leads WHERE id=?", id);
+        }
+      c.queue = pickQueue(groups, seen, c.service);
       c.checked = 0;
       c.total = c.queue.length;
       c.attempt = 0;
@@ -522,6 +587,8 @@ export class Workspace {
       phone: b.phone,
       email: b.email,
       address: b.address,
+      branches: b.branches || 1,
+      branchAddresses: b.branchAddresses || [],
       ...assessment,
       status: previous.status || "new",
       notes: previous.notes || "",

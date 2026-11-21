@@ -27,6 +27,7 @@ type Lead = {
   osmId: string; status: Status; notes: string; service: Service; priority: Priority; confidence: Confidence; checkedAt: string;
   summary: string; suggestion: string; evidence: { label: string; url: string }[];
   contact: { value: string; source: string; kind: "phone" | "email" } | null;
+  branches?: number; branchAddresses?: string[];
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
 type Action = Record<string, unknown>;
@@ -116,6 +117,11 @@ function CampaignItem({ item, busy, selected, select, act }: { item: Campaign; b
   </article>;
 }
 
+function pointsLabel(n: number) {
+  const tail = n % 10, teen = n % 100 >= 11 && n % 100 <= 14;
+  return n + (teen || tail === 0 || tail >= 5 ? " точок" : tail === 1 ? " точка" : " точки");
+}
+
 function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campaign; busy: boolean; save: (status: Status, notes?: string) => void }) {
   const [notes, setNotes] = useState(lead.notes || "");
   useEffect(() => { setNotes(lead.notes || ""); }, [lead.notes]);
@@ -127,6 +133,7 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
     <div className="lf-lead-head"><span className={'lf-priority ' + lead.priority}>{priorities[lead.priority]}</span><time dateTime={lead.checkedAt}>{dateLabel(lead.checkedAt)}</time></div>
     <h3>{lead.name}</h3>
     <div className="lf-place"><MapPin size={15} /> {known(lead.address) || campaign?.city || "Адресу не вказано"}</div>
+    {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
     <p className="lf-summary">{lead.summary}</p>
     {lead.suggestion && <p className="lf-suggestion"><strong>{lead.priority === "high" ? "Що запропонувати" : "Наступна дія"}</strong> {lead.suggestion}</p>}
     <details><summary>Докази й контакти <ChevronDown size={15} /></summary>
@@ -135,6 +142,7 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
         {!lead.evidence.length && <div>Підтверджених спостережень поки немає.</div>}
         {website && <div><a href={website} target="_blank" rel="noreferrer">Сайт компанії <ExternalLink size={13} /></a></div>}
         {osm && <div><a href={osm} target="_blank" rel="noreferrer">Картка на мапі <ExternalLink size={13}/></a></div>}
+        {!!lead.branchAddresses?.length && <div>Інші точки мережі · {lead.branchAddresses.join("; ")}</div>}
         {known(lead.phone) && <div>Телефон · {lead.phone}</div>}
         {known(lead.email) && <div>Пошта · {lead.email}</div>}
         {lead.contact && <div>Контакт для звернення · {lead.contact.value} {source && <a href={source} target="_blank" rel="noreferrer">Джерело <ExternalLink size={13}/></a>}</div>}
