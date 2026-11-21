@@ -324,6 +324,21 @@ function matchesBusiness(candidate: Candidate, page: ReturnType<typeof parsePage
 }
 
 /** Check only links advertised by the business. Confirm an actionable issue before ranking it high. */
+/** DNS over HTTPS: "missing" = the domain is not registered any more (NXDOMAIN). */
+async function dnsStatus(host: string): Promise<"missing" | "dead-dns" | "ok" | "unknown"> {
+  try {
+    const response = await fetch("https://cloudflare-dns.com/dns-query?name=" + encodeURIComponent(host) + "&type=A", {
+      headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) return "unknown";
+    const data = await response.json() as { Status?: number; Comment?: string[] };
+    if (data.Status === 3) return "missing";
+    // SERVFAIL because the domain's own name servers are gone: the hosting was switched off.
+    if (data.Status === 2 && /no reachable authority/i.test((data.Comment || []).join(" "))) return "dead-dns";
+    return data.Status === 0 ? "ok" : "unknown";
+  } catch { return "unknown"; }
+}
+
 /** Google PageSpeed Insights (mobile). Needs an API key: the keyless quota is shared worldwide and is usually exhausted. */
 async function pageSpeed(url: string, key: string): Promise<{ score: number; lcp: string } | null> {
   try {
@@ -397,6 +412,30 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.evidence.push({ label: "Повторна перевірка · " + statusLabel(repeat), url: repeat.url });
     if (looksDead(repeat)) {
       assessment.confidence = "verified";
+      // Name the cause when it can be confirmed: a lapsed domain or a broken certificate sells better than "it is down".
+      const host = new URL(home).hostname;
+      const dns = await dnsStatus(host);
+      if (dns === "dead-dns") {
+        assessment.evidence.push({ label: "DNS · сервери імен домену " + host + " не відповідають", url: "https://cloudflare-dns.com/dns-query?name=" + host + "&type=A" });
+        return hotLead("Сайт не працює: DNS-сервери домену " + host + " не відповідають — схоже, хостинг відключено.",
+          "Запропонуйте перенести сайт на робочий хостинг або зробити новий.");
+      }
+      if (dns === "missing") {
+        assessment.evidence.push({ label: "DNS · домену " + host + " не існує (NXDOMAIN)", url: "https://cloudflare-dns.com/dns-query?name=" + host + "&type=A" });
+        return hotLead("Домен сайту " + host + " більше не існує (не продовжено) — посилання з карти веде в нікуди.",
+          "Запропонуйте відновити домен або зробити новий сайт.");
+      }
+      if (home.startsWith("https://")) {
+        const plain = await readPage(home.replace(/^https:/i, "http:"), true);
+        if (plain.status >= 200 && plain.status < 300 && plain.url.startsWith("http://")) {
+          assessment.evidence.push({ label: "Та сама адреса по http:// · HTTP " + plain.status, url: plain.url });
+          return hotLead("Сайт не відкривається по HTTPS (помилка сертифіката) — браузер показує «Підключення не захищене», працює лише по http.",
+            "Запропонуйте полагодити SSL-сертифікат і налаштувати HTTPS.");
+        }
+      }
+      if (reading.status === 525 || reading.status === 526)
+        return hotLead("Сайт не відкривається через помилку SSL-сертифіката (" + statusLabel(reading) + ").",
+          "Запропонуйте полагодити SSL-сертифікат і налаштувати HTTPS.");
       return hotLead("Сайт компанії двічі не відкрився (" + statusLabel(reading) + ", потім " + statusLabel(repeat) + ").",
         "Запропонуйте відновити або зробити новий сайт: зараз клієнти бачать помилку.");
     }

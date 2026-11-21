@@ -133,7 +133,7 @@ test("a site that fails twice (no answer / 5xx) is a verified high lead", async 
   assert.equal(dead.priority, "high");
   assert.equal(dead.confidence, "verified");
   assert.match(dead.summary, /двічі не відкрився/);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3); // two reads + one http:// check for a broken certificate
   t.mock.restoreAll();
   serve(t, () => new Response("bad gateway", { status: 522, headers: { "content-type": "text/html" } }));
   assert.equal((await assessLead(clinic, "booking")).priority, "high");
@@ -198,7 +198,7 @@ test("a plain homepage 404 twice counts as a dead site", async t => {
   const calls = serve(t, () => page("<html><body>Not Found</body></html>", 404));
   const result = await assessLead(clinic, "website");
   assert.equal(result.priority, "high");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
 });
 
 test("a hosted menu page (choiceqr) is 'no own site' for website, but is read for booking", async t => {
@@ -341,4 +341,30 @@ test("speed without a key: heavy render-blocking pages are 'probably slow'; one 
   t.mock.restoreAll();
   serve(t, () => page('<html><head><title>Волошка</title>' + MODERN + scripts + '</head><body><h1>Волошка</h1><p>Ми працюємо щодня для всієї родини, сучасне лікування та профілактика.</p>' + contactable + '</body></html>'));
   assert.doesNotMatch(gapsOf(await assessLead(clinic, "website")).join(" | "), /повільний/);
+});
+
+test("dead site causes: a lapsed domain (NXDOMAIN) and a broken HTTPS certificate are named", async t => {
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Status: 3 });
+    throw new TypeError("fetch failed");
+  });
+  const gone = await assessLead(clinic, "website");
+  assert.equal(gone.priority, "high");
+  assert.match(gone.summary, /^Домен сайту clinic\.example більше не існує/);
+  assert.ok(gone.evidence.some(e => /NXDOMAIN/.test(e.label)));
+  t.mock.restoreAll();
+  t.mock.method(globalThis, "fetch", async input => {
+    if (new URL(input).hostname === "cloudflare-dns.com") return Response.json({ Status: 2, Comment: ["EDE(22): No Reachable Authority at delegation clinic.example."] });
+    throw new TypeError("fetch failed");
+  });
+  assert.match((await assessLead(clinic, "website")).summary, /DNS-сервери домену clinic\.example не відповідають/);
+  t.mock.restoreAll();
+  serve(t, url => { if (url.protocol === "https:") throw new TypeError("certificate"); return page(html(contactable)); });
+  const ssl = await assessLead(clinic, "website");
+  assert.equal(ssl.priority, "high");
+  assert.match(ssl.summary, /^Сайт не відкривається по HTTPS \(помилка сертифіката\)/);
+  t.mock.restoreAll();
+  serve(t, () => page("x", 526));
+  assert.match((await assessLead(clinic, "website")).summary, /помилку SSL-сертифіката \(HTTP 526\)/);
 });
