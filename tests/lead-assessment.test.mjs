@@ -216,3 +216,11 @@ test("names match across apostrophes and Cyrillic/Latin spelling, but not unrela
   serve(t, () => page(html("", "Мармелад кондитерська")));
   assert.match((await assessLead({ ...clinic, name: "Маргарита", phone: "" }, "website")).summary, /не вдалося звірити/);
 });
+
+test("a removed branch page (deep link 404) is judged by the working home page, not as a dead site", async t => {
+  const calls = serve(t, url => url.pathname === "/" ? page(html("")) : page("<html><body>Not found</body></html>", 404));
+  const result = await assessLead({ ...clinic, website: "https://clinic.example/branch/lviv-1" }, "website");
+  assert.notEqual(result.priority, "high");
+  assert.doesNotMatch(result.summary, /не відкрився/);
+  assert.equal(calls[1], "https://clinic.example/");
+});

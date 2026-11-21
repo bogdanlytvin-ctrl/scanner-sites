@@ -228,6 +228,13 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
     return hotLead(parked ? "На домені компанії замість сайту — заглушка «домен продається»." : "На домені компанії замість сайту — технічна заглушка хостингу (сайт не налаштовано).",
       "Запропонуйте новий сайт: зараз клієнти з карти потрапляють на заглушку.");
   }
+  // The map often links a branch page that the chain has since removed: judge the site by its home page.
+  const root = new URL("/", reading.url).href;
+  if ((reading.status === 404 || reading.status === 410) && reading.url !== root) {
+    const rootReading = await readPage(root);
+    assessment.evidence.push({ label: "Посилання з карти не існує; головна сайту · " + statusLabel(rootReading), url: rootReading.url });
+    if (rootReading.status >= 200 && rootReading.status < 300) reading = rootReading;
+  }
   if (looksDead(reading)) {
     // Full second read: after a transient failure it gives a page we can still assess.
     const repeat = await readPage(home);
