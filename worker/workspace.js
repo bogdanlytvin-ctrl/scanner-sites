@@ -114,6 +114,8 @@ export function pickQueue(businesses, seen, service) {
   return picked;
 }
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
+// Leads checked before scores existed sort by their priority until the next check scores them.
+const legacyScore = (l) => l.score ?? { high: 70, review: 40, low: 15 }[l.priority] ?? 0;
 const json = (data, status = 200) =>
   Response.json(data, {
     status,
@@ -426,7 +428,7 @@ export class Workspace {
     leads.sort(
       (a, b) =>
         rank[a.priority] - rank[b.priority] ||
-        (b.score ?? 0) - (a.score ?? 0) ||
+        legacyScore(b) - legacyScore(a) ||
         b.checkedAt.localeCompare(a.checkedAt),
     );
     return json({ campaigns, leads, limits: LIMITS });

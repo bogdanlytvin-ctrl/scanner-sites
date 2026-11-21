@@ -119,6 +119,9 @@ function CampaignItem({ item, busy, selected, select, act, setCadence }: { item:
   </article>;
 }
 
+/** Leads checked before scores existed sort by priority until their next check. */
+const legacyScore = (l: Lead) => l.score ?? { high: 70, review: 40, low: 15 }[l.priority] ?? 0;
+
 function expiryLabel(e: NonNullable<Lead["expiry"]>) {
   const days = Math.floor((Date.parse(e.date) - Date.now()) / 86_400_000);
   const what = e.what === "domain" ? "Домен" : "SSL-сертифікат";
@@ -287,7 +290,7 @@ export default function Home() {
   const scoped = leads.filter(l => !selected || l.campaignId === selected);
   const byStatus = scoped.filter(l => status === "all" || l.status === status);
   const ranks: Record<Priority, number> = { high: 0, review: 1, low: 2 };
-  const visible = byStatus.filter(l => priority === "all" || priority === l.priority).sort((a, b) => ranks[a.priority] - ranks[b.priority] || (b.score ?? 0) - (a.score ?? 0) || b.checkedAt.localeCompare(a.checkedAt));
+  const visible = byStatus.filter(l => priority === "all" || priority === l.priority).sort((a, b) => ranks[a.priority] - ranks[b.priority] || legacyScore(b) - legacyScore(a) || b.checkedAt.localeCompare(a.checkedAt));
   const chosen = campaigns.find(c => c.id === selected);
   const checkingSelection = chosen ? !chosen.paused && activePhases.includes(chosen.phase) : running;
   const formVisible = showForm || !campaigns.length;

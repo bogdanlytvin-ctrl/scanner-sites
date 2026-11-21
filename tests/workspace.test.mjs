@@ -311,3 +311,15 @@ test("leads keep their score and expiry and are listed by score within a priorit
   assert.deepEqual(snap.leads.map(l => l.score), [91, 70, 55]);
   assert.deepEqual(snap.leads[0].expiry, { what: "domain", date: "2026-12-01T00:00:00.000Z" });
 });
+
+test("leads checked before scores existed keep a sensible place in the list", async () => {
+  const { objects, ns } = environment();
+  await workspaceRequest(makeReq(params), ns);
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  const put = (id, body) => w.sql.exec("INSERT INTO leads VALUES(?,?,?)", id, "c", JSON.stringify({ id, checkedAt: "2026-11-01T00:00:00Z", ...body }));
+  put("old-high", { priority: "high" });
+  put("new-high", { priority: "high", score: 60 });
+  put("new-hot", { priority: "high", score: 90 });
+  const snap = await (await w.snapshot()).json();
+  assert.deepEqual(snap.leads.map(l => l.id), ["new-hot", "old-high", "new-high"]);
+});
