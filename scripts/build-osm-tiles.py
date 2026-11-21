@@ -21,7 +21,7 @@ AMENITIES = set("""restaurant cafe fast_food bar pub ice_cream food_court bierga
 pharmacy doctors clinic bank bureau_de_change money_transfer car_wash car_rental fuel driving_school
 language_school music_school dancing_school prep_school kindergarten childcare cinema theatre nightclub
 karaoke_box hookah_lounge internet_cafe coworking_space events_venue studio marketplace animal_boarding
-bicycle_rental boat_rental vehicle_inspection""".split())
+bicycle_rental boat_rental vehicle_inspection public_bath""".split())
 FIELDS = CATEGORIES | set("""name name:uk name:en cuisine website contact:website url phone contact:phone
 contact:mobile email contact:email contact:facebook contact:instagram contact:telegram opening_hours
 addr:street addr:housenumber addr:city addr:town addr:village addr:postcode""".split())
