@@ -226,3 +226,15 @@ test("a removed branch page (deep link 404) is judged by the working home page, 
   assert.doesNotMatch(result.summary, /не відкрився/);
   assert.equal(calls[1], "https://clinic.example/");
 });
+
+test("without phone or email an Instagram/Telegram profile is the contact for a no-site lead", async t => {
+  respond(t, "");
+  const ig = await assessLead({ ...clinic, website: "N/A", phone: "", instagram: "https://www.instagram.com/voloshka" }, "website");
+  assert.equal(ig.priority, "high");
+  assert.deepEqual(ig.contact, { kind: "social", value: "https://www.instagram.com/voloshka", source: "https://www.openstreetmap.org/node/123" });
+  assert.match(ig.suggestion, /повідомленням у соцмережі/);
+  const tg = await assessLead({ ...clinic, website: "N/A", phone: "", telegram: "@voloshka_dent" }, "website");
+  assert.equal(tg.contact.value, "https://t.me/voloshka_dent");
+  const none = await assessLead({ ...clinic, website: "N/A", phone: "", telegram: "not a handle!" }, "website");
+  assert.equal(none.priority, "review");
+});

@@ -13,8 +13,9 @@ const statuses = [
   "won",
   "skipped",
 ];
+const filled = (v) => Boolean(v && v !== "N/A");
 const hasContact = (b) =>
-  Boolean((b.phone && b.phone !== "N/A") || (b.email && b.email !== "N/A"));
+  [b.phone, b.email, b.instagram, b.telegram, b.facebook].some(filled);
 const genericWord =
   /^(піца|піци|пицца|піцерія|пиццерия|pizza|pizzeria|кафе|cafe|ресторан|restaurant|доставка|доставки|суші|sushi|бар|паб|кавярня|coffee|салон|студія|studio|клініка|клініки|клиника|clinic|стоматологія|стоматологічна|стоматологічний|стоматологічний|стоматология|стоматологическая|dental|dentistry|медична|медичний|медицинский|центр|center|centre|аптека|магазин|готель|hotel|кабінет|офіс|мережа|львів|львівська|львівський|київ|київська|київський|the|and|для|при|біля)$/;
 // Brand identity of a name: its distinctive words, generic ones dropped, order ignored.

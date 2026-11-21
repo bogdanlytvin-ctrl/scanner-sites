@@ -73,3 +73,8 @@ test("different companies are never merged", async () => {
   assert.equal(g.length, 8);
   assert.equal(brandKey("Стоматологічна клініка Кузнєцова"), brandKey("Стоматологія Кузнєцова"));
 });
+
+test("a company reachable only via Instagram counts as contactable", () => {
+  const list = [{ osmId: "n/1", name: "A", website: "N/A", phone: "", instagram: "https://instagram.com/a" }, ...[...Array(20)].map((_, i) => biz(10 + i, true))];
+  assert.equal(pickQueue(list, new Map(), "website")[0].osmId, "n/1");
+});

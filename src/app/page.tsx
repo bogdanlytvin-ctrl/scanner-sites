@@ -26,7 +26,7 @@ type Lead = {
   id: string; campaignId: string; name: string; website: string; phone: string; email: string; address: string;
   osmId: string; status: Status; notes: string; service: Service; priority: Priority; confidence: Confidence; checkedAt: string;
   summary: string; suggestion: string; evidence: { label: string; url: string }[];
-  contact: { value: string; source: string; kind: "phone" | "email" } | null;
+  contact: { value: string; source: string; kind: "phone" | "email" | "social" } | null;
   branches?: number; branchAddresses?: string[];
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
@@ -145,7 +145,7 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
         {!!lead.branchAddresses?.length && <div>Інші точки мережі · {lead.branchAddresses.join("; ")}</div>}
         {known(lead.phone) && <div>Телефон · {lead.phone}</div>}
         {known(lead.email) && <div>Пошта · {lead.email}</div>}
-        {lead.contact && <div>Контакт для звернення · {lead.contact.value} {source && <a href={source} target="_blank" rel="noreferrer">Джерело <ExternalLink size={13}/></a>}</div>}
+        {lead.contact && <div>Контакт для звернення · {lead.contact.kind === "social" && publicLink(lead.contact.value) ? <a href={publicLink(lead.contact.value)} target="_blank" rel="noreferrer">написати в соцмережі ({new URL(lead.contact.value).hostname.replace(/^www\./, "")}) <ExternalLink size={13}/></a> : lead.contact.value} {source && <a href={source} target="_blank" rel="noreferrer">Джерело <ExternalLink size={13}/></a>}</div>}
         {!lead.contact && !known(lead.phone) && !known(lead.email) && <div>Публічний контакт поки не підтверджено.</div>}
       </div>
     </details>

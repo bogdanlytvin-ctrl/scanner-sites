@@ -10,10 +10,21 @@ export interface LeadAssessment {
   summary: string;
   suggestion: string;
   evidence: { label: string; url: string }[];
-  contact: { kind: "phone" | "email"; value: string; source: string } | null;
+  contact: { kind: "phone" | "email" | "social"; value: string; source: string } | null;
 }
 
-type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string };
+type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string };
+
+/** Many small businesses on the map have only Instagram/Telegram/Facebook: a direct message is still a way to reach them. */
+function socialContact(c: Candidate, source: string): Contact | null {
+  for (const raw of [c.instagram, c.telegram, c.facebook, c.website]) {
+    const value = (raw || "").trim();
+    if (!value || value === "N/A") continue;
+    const url = /^@?[a-z0-9_]{4,32}$/i.test(value) && raw === c.telegram ? "https://t.me/" + value.replace(/^@/, "") : webUrl(value);
+    if (url && socialDomain.test(new URL(url).hostname)) return { kind: "social", value: url, source };
+  }
+  return null;
+}
 type Contact = NonNullable<LeadAssessment["contact"]>;
 
 const bookingLabel = /записат|запис на|онлайн.запис|заброню|бронюва|book (?:now|online|a |an )|appointment|reserv(?:e|ation)|umów|rezerw|записать/i;
@@ -165,6 +176,7 @@ async function readPage(url: string, statusOnly = false): Promise<PageReading> {
 }
 
 function sameContact(candidate: Candidate, item: Contact): boolean {
+  if (item.kind === "social") return false;
   if (item.kind === "email") return item.value.toLowerCase() === candidate.email?.trim().toLowerCase();
   const map = candidate.phone || "";
   const mapDigits = map.replace(/\D/g, "");
@@ -192,13 +204,14 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
     priority: "review", confidence: "unknown", checkedAt: new Date().toISOString(),
     summary: "У картці немає підтвердженого власного сайту.", suggestion: "Уточніть офіційну адресу сайту компанії.",
     evidence: mapUrl ? [{ label: "Картка компанії в OpenStreetMap", url: mapUrl }] : [],
-    contact: contact("phone", candidate.phone, mapUrl) || contact("email", candidate.email, mapUrl),
+    contact: contact("phone", candidate.phone, mapUrl) || contact("email", candidate.email, mapUrl) || socialContact(candidate, mapUrl),
   };
   const home = candidate.website && candidate.website !== "N/A" ? webUrl(candidate.website) : null;
   const hotLead = (summary: string, suggestion: string) => {
     assessment.summary = summary;
     assessment.priority = assessment.contact ? "high" : "review";
-    assessment.suggestion = assessment.contact ? suggestion : "Знайдіть телефон або пошту компанії перед зверненням.";
+    assessment.suggestion = !assessment.contact ? "Знайдіть телефон або пошту компанії перед зверненням."
+      : assessment.contact.kind === "social" ? suggestion.replace("Перед дзвінком", "Перед повідомленням у соцмережі") : suggestion;
     return assessment;
   };
   const homeHost = home ? new URL(home).hostname : "";
