@@ -15,6 +15,27 @@ const statuses = [
 ];
 const hasContact = (b) =>
   Boolean((b.phone && b.phone !== "N/A") || (b.email && b.email !== "N/A"));
+const genericWord =
+  /^(піца|піци|пицца|піцерія|пиццерия|pizza|pizzeria|кафе|cafe|ресторан|restaurant|доставка|суші|sushi|бар|паб|кав'?ярня|coffee|салон|студія|studio|клініка|clinic|стоматологія|dental|аптека|магазин|центр|готель|hotel|львів|львівська|львівський|київ|київська|київський|the|and)$/;
+const brandKey = (name) =>
+  (name || "")
+    .toLowerCase()
+    .normalize("NFKC")
+    .split(/[^\p{L}\p{N}]+/u)
+    .find((w) => w.length >= 4 && !genericWord.test(w));
+// A chain branch often has no website on the map while another branch does.
+// Borrow that brand site so the branch is not mistaken for a company without a site.
+export function shareBrandSites(businesses) {
+  const sites = new Map();
+  for (const b of businesses) {
+    const key = hasWebsite(b) && brandKey(b.name);
+    if (key && !sites.has(key)) sites.set(key, b.website);
+  }
+  return businesses.map((b) => {
+    const site = !hasWebsite(b) && sites.get(brandKey(b.name));
+    return site ? { ...b, website: site } : b;
+  });
+}
 // Least recently checked first. For "booking" sites go first (the check needs a site);
 // for "website" half of the run goes to contactable companies without an own site — the hottest leads.
 export function pickQueue(businesses, seen, service) {
@@ -434,7 +455,7 @@ export class Workspace {
             return [lead.osmId, lead.checkedAt];
           }),
       );
-      c.queue = pickQueue(businesses, seen, c.service);
+      c.queue = pickQueue(shareBrandSites(businesses), seen, c.service);
       c.checked = 0;
       c.total = c.queue.length;
       c.attempt = 0;

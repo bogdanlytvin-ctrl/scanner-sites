@@ -25,3 +25,15 @@ test("least recently checked companies come first", () => {
   const q = pickQueue(list, new Map([["node/1", "2026-11-20"]]), "website");
   assert.equal(q[0].osmId, "node/2");
 });
+
+test("a chain branch without a site borrows the brand site of another branch", async () => {
+  const { shareBrandSites } = await import("../worker/workspace.js");
+  const out = shareBrandSites([
+    { osmId: "n/1", name: "Челентано", website: "https://celentano.ua" },
+    { osmId: "n/2", name: "Челентано піца", website: "N/A" },
+    { osmId: "n/3", name: "Піца Марко", website: "N/A" },
+    { osmId: "n/4", name: "Піцерія Ностра", website: "https://nostra.example" },
+  ]);
+  assert.equal(out[1].website, "https://celentano.ua");
+  assert.equal(out[2].website, "N/A"); // "піца" is generic, no false match with "Піцерія Ностра"
+});
