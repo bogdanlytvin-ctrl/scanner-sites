@@ -331,3 +331,14 @@ test("PageSpeed: a slow mobile score becomes a gap with a report link; without a
   await assessLead(clinic, "website");
   assert.ok(!calls.includes("www.googleapis.com"));
 });
+
+test("speed without a key: heavy render-blocking pages are 'probably slow'; one weak hint is not", async t => {
+  const scripts = [...Array(8)].map((_, i) => '<script src="/js/' + i + '.js"></script>').join("");
+  const imgs = [...Array(30)].map((_, i) => '<img src="/i/' + i + '.jpg">').join("");
+  serve(t, () => page('<html><head><title>Волошка</title>' + MODERN + scripts + '</head><body><h1>Волошка</h1><p>Ми працюємо щодня для всієї родини, сучасне лікування та профілактика.</p>' + contactable + imgs + '</body></html>'));
+  const r = await assessLead(clinic, "website");
+  assert.match(gapsOf(r).join(" | "), /Сайт, ймовірно, повільний на телефоні: 8 скриптів у шапці гальмують показ, 30 картинок вантажаться одразу/);
+  t.mock.restoreAll();
+  serve(t, () => page('<html><head><title>Волошка</title>' + MODERN + scripts + '</head><body><h1>Волошка</h1><p>Ми працюємо щодня для всієї родини, сучасне лікування та профілактика.</p>' + contactable + '</body></html>'));
+  assert.doesNotMatch(gapsOf(await assessLead(clinic, "website")).join(" | "), /повільний/);
+});

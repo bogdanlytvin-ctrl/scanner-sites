@@ -104,6 +104,13 @@ function parsePage(html: string, url: string) {
     if (item) rawContacts.push(item);
   }
   const metaText = [$('meta[name="description" i]').attr("content"), $('meta[property="og:title"]').attr("content"), $('meta[property="og:description"]').attr("content")].filter(Boolean).join(" ");
+  // Speed hints, counted before scripts are stripped: render-blocking files and unlazy images.
+  const weight = {
+    blockingScripts: $("head script[src]").filter((_, el) => { const e = $(el); return e.attr("async") === undefined && e.attr("defer") === undefined && e.attr("type") !== "module"; }).length,
+    stylesheets: $('link[rel~="stylesheet" i]').length,
+    images: $("img").length,
+    lazyImages: $('img[loading="lazy" i], img[data-src], img[data-lazy-src], img[data-srcset]').length,
+  };
   $("script, style, template, noscript, [hidden], [aria-hidden=true]").remove();
   $("a[href]").each((_, el) => {
     const anchor = $(el);
@@ -153,7 +160,7 @@ function parsePage(html: string, url: string) {
     // A "Записатися"/"Book now" control of any kind, or a known booking system on the page.
     booking: bookingWidget.test(html) || $("a, button, [role=button], input[type=submit]").filter((_, el) => bookingLabel.test(($(el).text() || $(el).attr("value") || $(el).attr("aria-label") || "").trim())).length > 0,
   };
-  return { identityText, contacts, links, fixedWidth, signals, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
+  return { identityText, contacts, links, fixedWidth, signals, weight, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
 }
 
 /** Latest plausible year next to a ©/copyright marker; null when there is no trustworthy marker. */
@@ -178,7 +185,24 @@ function oldCms(generator: string): string | null {
 type Gap = { label: string; strong: boolean; pitch: string; missing?: string };
 
 /** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
-function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = ""): Gap[] {
+/** Rough speed estimate without Google PageSpeed: only what the HTML and the response show. */
+const plural = (n: number, one: string, few: string, many: string) => {
+  const t = n % 10, teen = n % 100 >= 11 && n % 100 <= 14;
+  return n + " " + (teen || t === 0 || t >= 5 ? many : t === 1 ? one : few);
+};
+
+function slowHints(page: NonNullable<PageReading["page"]>, ms: number, bytes: number): string[] {
+  const w = page.weight, hints: string[] = [];
+  if (ms > 2000) hints.push("сервер відповідає за " + (ms / 1000).toFixed(1).replace(".", ",") + " с");
+  if (bytes > 1_500_000) hints.push("сама сторінка важить " + (bytes / 1_048_576).toFixed(1).replace(".", ",") + " МБ");
+  if (w.blockingScripts >= 6) hints.push(plural(w.blockingScripts, "скрипт", "скрипти", "скриптів") + " у шапці гальмують показ");
+  if (w.stylesheets >= 10) hints.push(plural(w.stylesheets, "окремий файл", "окремі файли", "окремих файлів") + " стилів");
+  if (w.images >= 25 && w.lazyImages < w.images / 3) hints.push(plural(w.images, "картинка вантажиться", "картинки вантажаться", "картинок вантажаться") + " одразу");
+  // One weak hint alone is noise; a very slow server is a hint on its own.
+  return hints.length >= 2 || ms > 3500 ? hints : [];
+}
+
+function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number, type = "", bytes = 0): Gap[] {
   const s = page.signals, gaps: Gap[] = [];
   const now = new Date().getFullYear();
   const old = s.copyright !== null && s.copyright <= now - 5;
@@ -214,12 +238,16 @@ function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: 
   }
   if (!s.description)
     gaps.push({ label: "Немає опису для Google (meta description)", strong: false, pitch: "налаштувати базове SEO" });
-  if (ms > 5000)
-    gaps.push({ label: "Головна сторінка завантажується повільно (" + (ms / 1000).toFixed(1) + " с)", strong: false, pitch: "прискорити сайт" });
+  const speed = slowHints(page, ms, bytes);
+  if (speed.length)
+    gaps.push({
+      label: "Сайт, ймовірно, повільний на телефоні: " + speed.join(", "),
+      strong: speed.length >= 3, pitch: "прискорити сайт", missing: "швидкості (" + speed.join(", ") + ")",
+    });
   return gaps;
 }
 
-type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean; placeholder?: "parked" | "unconfigured"; ms?: number };
+type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean; placeholder?: "parked" | "unconfigured"; ms?: number; bytes?: number };
 
 /** No answer at all (DNS/connection failure, timeout) or an origin-down error. 503/429 are skipped: anti-bot walls use them. */
 function looksDead(r: PageReading): boolean {
@@ -262,6 +290,7 @@ async function readPage(url: string, statusOnly = false): Promise<PageReading> {
         break;
       }
     }
+    result.bytes = size;
     const page = parsePage(html + decoder.decode(), result.url);
     result.placeholder = page.parked ? "parked" : page.unconfigured ? "unconfigured" : undefined;
     if (response.ok) result.page = page;
@@ -447,10 +476,13 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.suggestion = assessment.contact ? suggestion : "Знайдіть офіційний контакт компанії перед зверненням.";
   }
 
-  const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type);
+  const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0);
   if (service === "website" && options.pageSpeedKey) {
     const speed = await pageSpeed(reading.url, options.pageSpeedKey);
     if (speed) {
+      // The real measurement replaces the rough estimate.
+      const rough = gaps.findIndex(g => g.label.startsWith("Сайт, ймовірно, повільний"));
+      if (rough >= 0) gaps.splice(rough, 1);
       const report = "https://pagespeed.web.dev/analysis?url=" + encodeURIComponent(reading.url) + "&form_factor=mobile";
       assessment.evidence.push({ label: "Google PageSpeed (телефон) · " + speed.score + "/100" + (speed.lcp ? " · основний вміст за " + speed.lcp : ""), url: report });
       if (speed.score < 70)
