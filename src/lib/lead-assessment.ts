@@ -166,7 +166,7 @@ function oldCms(generator: string): string | null {
   return null;
 }
 
-type Gap = { label: string; strong: boolean; pitch: string };
+type Gap = { label: string; strong: boolean; pitch: string; missing?: string };
 
 /** What a visitor would miss, judged only from what the HTML shows. Script-built pages skip checks they cannot see. */
 function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: number): Gap[] {
@@ -174,17 +174,17 @@ function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: 
   const now = new Date().getFullYear();
   const old = s.copyright !== null && s.copyright <= now - 5;
   if (finalUrl.startsWith("http://"))
-    gaps.push({ label: "Немає HTTPS — браузер позначає сайт як «Не захищено»", strong: true, pitch: "налаштувати HTTPS (SSL-сертифікат)" });
+    gaps.push({ label: "Немає HTTPS — браузер позначає сайт як «Не захищено»", strong: true, pitch: "налаштувати HTTPS (SSL-сертифікат)", missing: "HTTPS" });
   if (!s.viewport)
-    gaps.push({ label: "Не адаптований під телефон (немає налаштування viewport)", strong: true, pitch: "зробити мобільну версію" });
+    gaps.push({ label: "Не адаптований під телефон (немає налаштування viewport)", strong: true, pitch: "зробити мобільну версію", missing: "мобільної версії" });
   if (s.deadTech)
-    gaps.push({ label: "Застарілі технології (Flash, рамки або бігучий рядок)", strong: true, pitch: "перезібрати сайт на сучасній основі" });
+    gaps.push({ label: "Застарілі технології (Flash, рамки або бігучий рядок)", strong: true, pitch: "перезібрати сайт на сучасній основі", missing: "сучасної основи (застарілі Flash/рамки)" });
   if (s.cms)
-    gaps.push({ label: s.cms + " — версія без оновлень безпеки", strong: true, pitch: "оновити систему керування сайтом" });
+    gaps.push({ label: s.cms + " — версія без оновлень безпеки", strong: true, pitch: "оновити систему керування сайтом", missing: "оновлень безпеки (" + s.cms + ")" });
   if (!page.scripted) {
     const anyWay = s.form || s.telLink || s.mailLink || s.messengers || s.widget || s.contactLink || s.phoneText || s.socials;
     if (!anyWay)
-      gaps.push({ label: "Немає зворотного зв'язку: ні форми заявки, ні кнопки дзвінка, ні месенджерів", strong: true, pitch: "додати форму заявки, кнопку дзвінка й месенджери" });
+      gaps.push({ label: "Немає зворотного зв'язку: ні форми заявки, ні кнопки дзвінка, ні месенджерів", strong: true, pitch: "додати форму заявки, кнопку дзвінка й месенджери", missing: "зворотного зв'язку" });
     else {
       if (!s.form && !s.messengers && !s.widget && !s.contactLink)
         gaps.push({ label: s.phoneText || s.telLink ? "Немає форми заявки чи месенджерів — тільки телефон" : "Немає форми заявки чи месенджерів — тільки соцмережі або пошта", strong: false, pitch: "додати форму заявки й кнопки Telegram/Viber" });
@@ -195,7 +195,7 @@ function siteGaps(page: NonNullable<PageReading["page"]>, finalUrl: string, ms: 
     }
     if (s.copyright !== null && s.copyright <= now - 3)
       // An old © alone is weak (big companies forget it); with another strong gap it confirms an abandoned site.
-      gaps.push({ label: "Сайт давно не оновлювався (у футері © " + s.copyright + ")", strong: old && gaps.some(g => g.strong), pitch: "оновити дизайн і зміст" });
+      gaps.push({ label: "Сайт давно не оновлювався (у футері © " + s.copyright + ")", strong: old && gaps.some(g => g.strong), pitch: "оновити дизайн і зміст", missing: "оновлень з " + s.copyright + " року" });
   }
   if (!s.description)
     gaps.push({ label: "Немає опису для Google (meta description)", strong: false, pitch: "налаштувати базове SEO" });
@@ -424,7 +424,7 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
       // One confirmed serious gap is a reason to call; several small ones are worth a look.
       const pitch = (strong.length ? strong : gaps).slice(0, 3).map(g => g.pitch).join(", ");
       assessment.summary = strong.length
-        ? "На сайті не вистачає: " + strong.map(g => g.label.split(" (")[0].split(" — ")[0].toLowerCase()).join("; ") + "."
+        ? "На сайті немає: " + strong.map(g => g.missing || g.label).join(", ") + "."
         : "Сайт працює, але є що покращити (" + gaps.length + " " + (gaps.length === 1 ? "пункт" : gaps.length < 5 ? "пункти" : "пунктів") + ").";
       assessment.suggestion = assessment.contact ? "Запропонуйте " + pitch + "." : "Знайдіть телефон або пошту компанії перед зверненням.";
       if (strong.length) {

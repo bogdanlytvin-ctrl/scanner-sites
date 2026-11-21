@@ -253,7 +253,7 @@ test("site gaps: no mobile viewport, no HTTPS, old WordPress and no contact way 
     assert.match(gaps, re);
   assert.equal(r.priority, "high");
   assert.equal(r.confidence, "verified");
-  assert.match(r.summary, /^На сайті не вистачає:/);
+  assert.equal(r.summary, "На сайті немає: HTTPS, мобільної версії, оновлень безпеки (WordPress 4.9), зворотного зв'язку, оновлень з 2016 року.");
   assert.match(r.suggestion, /^Запропонуйте /);
   assert.ok(r.evidence.some(e => /Сайт · Не адаптований/.test(e.label)));
 });
