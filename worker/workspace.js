@@ -426,6 +426,7 @@ export class Workspace {
     leads.sort(
       (a, b) =>
         rank[a.priority] - rank[b.priority] ||
+        (b.score ?? 0) - (a.score ?? 0) ||
         b.checkedAt.localeCompare(a.checkedAt),
     );
     return json({ campaigns, leads, limits: LIMITS });

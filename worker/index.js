@@ -2,7 +2,7 @@ import nextWorker from "../.open-next/worker.js";
 import { DurableObject } from "cloudflare:workers";
 import { Workspace, workspaceRequest } from "./workspace.js";
 import { geocodeCity, discoverBusinessesAt } from "../src/lib/osm-search.ts";
-import { assessLead } from "../src/lib/lead-assessment.ts";
+import { assessLead, domainExpiry } from "../src/lib/lead-assessment.ts";
 
 export * from "../.open-next/worker.js";
 
@@ -37,6 +37,7 @@ export class LeadWorkspace extends DurableObject {
         assessLead(business, service, {
           pageSpeedKey: env.GOOGLE_PAGESPEED_API_KEY,
           probe: env.PROBE_URL && env.PROBE_TOKEN ? (url) => probeSite(env, url) : undefined,
+          domainInfo: domainExpiry,
         }),
       writeOffer: env.PROBE_URL && env.PROBE_TOKEN ? (lead) => writeOffer(env, lead) : undefined,
       discoverBusinessesAt: (...args) =>

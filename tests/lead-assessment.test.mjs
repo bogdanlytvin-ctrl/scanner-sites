@@ -508,3 +508,85 @@ test("a Russian-language hosting placeholder title is recognised too", async t =
   serve(t, () => page("<html><head><title>Поздравляем, сайт создан!</title></head><body><div><h1>Site is ready to use</h1><p>Upload your files to the site folder to replace this page.</p></div></body></html>"));
   assert.match((await assessLead(clinic, "website")).summary, /заглушка хостингу/);
 });
+
+// ---- domain / SSL expiry and the lead score ----
+const NOW = Date.parse("2026-11-22T10:00:00Z");
+const inDays = n => new Date(NOW + n * 86_400_000).toISOString();
+const okSite = () => page(html('<a href="tel:+380501234567">Подзвонити</a><a href="https://t.me/x">Telegram</a><form><input type="tel"><textarea></textarea></form>'));
+
+test("a domain that expires within a month is a hot lead with the date; within two months a small note", async t => {
+  serve(t, okSite);
+  const soon = await assessLead(clinic, "website", { now: NOW, domainInfo: async () => inDays(12) });
+  assert.equal(soon.priority, "high");
+  assert.match(gapsOf(soon)[0], /^!Домен закінчується \d\d\.\d\d\.2026 \(через 12 днів\)/);
+  assert.equal(soon.expiry.what, "domain");
+  assert.ok(soon.score >= 90, "score " + soon.score);
+  assert.ok(soon.evidence.some(e => /Домен оплачено до/.test(e.label)));
+  const later = await assessLead(clinic, "website", { now: NOW, domainInfo: async () => inDays(45) });
+  assert.match(gapsOf(later)[0], /^Домен закінчується .* \(через 45 днів\)/);
+  assert.notEqual(later.priority, "high");
+  const far = await assessLead(clinic, "website", { now: NOW, domainInfo: async () => inDays(300) });
+  assert.equal(far.expiry, undefined);
+  assert.ok(!gapsOf(far).some(g => /Домен/.test(g)));
+  const lapsed = await assessLead(clinic, "website", { now: NOW, domainInfo: async () => inDays(-3) });
+  assert.match(gapsOf(lapsed)[0], /^!Домен прострочено/);
+  const broken = await assessLead(clinic, "website", { now: NOW, domainInfo: async () => { throw new Error("rdap down"); } });
+  assert.equal(broken.expiry, undefined);
+});
+
+test("SSL expiry: auto-renewing issuers only when renewal is clearly broken (≤7 days), others from 21 days", async t => {
+  serve(t, okSite);
+  const probe = cert => async () => ({ score: 95, cert });
+  const le20 = await assessLead(clinic, "website", { now: NOW, probe: probe({ validTo: inDays(20), issuer: "Let's Encrypt" }) });
+  assert.ok(!gapsOf(le20).some(g => /SSL/.test(g)));
+  const le5 = await assessLead(clinic, "website", { now: NOW, probe: probe({ validTo: inDays(5), issuer: "Let's Encrypt" }) });
+  assert.match(gapsOf(le5)[0], /^!SSL-сертифікат закінчується .* \(через 5 днів\)/);
+  assert.equal(le5.expiry.what, "ssl");
+  const paid15 = await assessLead(clinic, "website", { now: NOW, probe: probe({ validTo: inDays(15), issuer: "DigiCert Inc" }) });
+  assert.match(gapsOf(paid15)[0], /^!SSL-сертифікат закінчується/);
+});
+
+test("registry lookup: the right RDAP server per zone, nothing for zones without one", async t => {
+  const { domainExpiry } = await import("../src/lib/lead-assessment.ts");
+  const asked = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    asked.push(String(input));
+    return Response.json({ events: [{ eventAction: "registration", eventDate: "2010-01-01T00:00:00Z" }, { eventAction: "expiration", eventDate: "2027-12-03T09:28:03+02:00" }] });
+  });
+  assert.equal(await domainExpiry("www.katandent.com.ua"), "2027-12-03T07:28:03.000Z");
+  await domainExpiry("prizma.ua");
+  await domainExpiry("shop.allureinn.com");
+  await domainExpiry("hotel.example.org");
+  assert.deepEqual(asked, [
+    "https://rdap.hostmaster.ua/domain/katandent.com.ua",
+    "https://rdap.hostmaster.ua/domain/prizma.ua",
+    "https://rdap.verisign.com/com/v1/domain/allureinn.com",
+    "https://rdap.publicinterestregistry.org/rdap/domain/example.org",
+  ]);
+  assert.equal(await domainExpiry("firma.de"), null);
+  assert.equal(asked.length, 4, "no request for an unsupported zone");
+});
+
+test("lead score orders leads by how worth a call they are", async t => {
+  serve(t, () => { throw new TypeError("fetch failed"); });
+  const dead = await assessLead(clinic, "website", { now: NOW });
+  t.mock.restoreAll();
+  serve(t, okSite);
+  const fine = await assessLead(clinic, "website", { now: NOW });
+  t.mock.restoreAll();
+  respond(t, "");
+  const noSiteNoContact = await assessLead({ ...clinic, website: "N/A", phone: "", email: "" }, "website", { now: NOW });
+  const social = await assessLead({ ...clinic, website: "https://instagram.com/voloshka" }, "website", { now: NOW });
+  const chain = await assessLead({ ...clinic, website: "N/A", branches: 4 }, "website", { now: NOW });
+  const noSite = await assessLead({ ...clinic, website: "N/A" }, "website", { now: NOW });
+  for (const r of [dead, fine, noSiteNoContact, social, chain, noSite]) assert.ok(r.score >= 1 && r.score <= 99);
+  assert.equal(dead.kind, "dead");
+  assert.equal(social.kind, "social");
+  assert.equal(noSite.kind, "no-site");
+  assert.equal(fine.kind, "site");
+  assert.ok(dead.score > noSite.score, `dead ${dead.score} > no site ${noSite.score}`);
+  assert.ok(social.score > noSite.score);
+  assert.ok(chain.score > noSite.score, "a chain is a bigger client");
+  assert.ok(noSite.score > noSiteNoContact.score + 25, "no contact costs a lot");
+  assert.ok(fine.score < 30, "a site with nothing to fix scores low: " + fine.score);
+});

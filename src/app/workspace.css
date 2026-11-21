@@ -188,3 +188,9 @@
 .lf-draft-subject { margin: 8px 0 0; }
 .lf-draft-hint, .lf-draft-wait { margin: 2px 0 8px; color: var(--muted); font-size: .8rem; display: flex; gap: 6px; align-items: center; }
 .lf-cadence { width: auto; padding: 2px 6px; font-size: .8rem; }
+.lf-score { margin-left: auto; margin-right: 8px; font-weight: 700; font-size: .85rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
+.lf-score small { font-weight: 400; opacity: .7; }
+.lf-score.hot { background: #fde4dc; color: #8a2a12; border-color: #f0b7a5; }
+.lf-score.warm { background: #fff3d6; color: #6e4b00; border-color: #ecd291; }
+.lf-score.cold { color: var(--muted); }
+.lf-expiry { margin: 6px 0; padding: 6px 10px; border-radius: 7px; background: #fff1e9; color: #783521; font-size: .85rem; font-weight: 600; }

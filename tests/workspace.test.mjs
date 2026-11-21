@@ -296,3 +296,18 @@ test("a saved search can switch between manual and daily runs", async () => {
   assert.equal(w.get(c.id).nextAt, null);
   assert.equal((await post(w, { action: "cadence", id: c.id, cadence: "hourly" })).status, 400);
 });
+
+test("leads keep their score and expiry and are listed by score within a priority", async () => {
+  const scores = { "node/1": 55, "node/2": 91, "node/3": 70 };
+  const { objects, ns } = environment({
+    discoverBusinessesAt: async () => ({ businesses: Object.keys(scores).map(osmId => ({ ...site, osmId, name: "Clinic " + osmId, website: "https://" + osmId.replace("/", "") + ".example" })), source: "Map" }),
+    assessLead: async b => ({ ...assessment, priority: "high", score: scores[b.osmId], expiry: b.osmId === "node/2" ? { what: "domain", date: "2026-12-01T00:00:00.000Z" } : undefined }),
+  });
+  const r = await workspaceRequest(makeReq(params), ns);
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  for (let i = 0; i < 5; i++) await tick(w, c.id);
+  const snap = await (await w.snapshot()).json();
+  assert.deepEqual(snap.leads.map(l => l.score), [91, 70, 55]);
+  assert.deepEqual(snap.leads[0].expiry, { what: "domain", date: "2026-12-01T00:00:00.000Z" });
+});

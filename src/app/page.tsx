@@ -29,6 +29,7 @@ type Lead = {
   contact: { value: string; source: string; kind: "phone" | "email" | "social" } | null;
   branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[]; shot?: boolean;
   draft?: { subject: string; text: string; source: "claude" | "template"; at: string };
+  score?: number; expiry?: { what: "domain" | "ssl"; date: string };
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
 type Action = Record<string, unknown>;
@@ -118,6 +119,13 @@ function CampaignItem({ item, busy, selected, select, act, setCadence }: { item:
   </article>;
 }
 
+function expiryLabel(e: NonNullable<Lead["expiry"]>) {
+  const days = Math.floor((Date.parse(e.date) - Date.now()) / 86_400_000);
+  const what = e.what === "domain" ? "Домен" : "SSL-сертифікат";
+  const date = new Date(e.date).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return days < 0 ? "⏳ " + what + " закінчився " + date : "⏳ " + what + " закінчується " + date + " (через " + days + " дн.)";
+}
+
 function pointsLabel(n: number) {
   const tail = n % 10, teen = n % 100 >= 11 && n % 100 <= 14;
   return n + (teen || tail === 0 || tail >= 5 ? " точок" : tail === 1 ? " точка" : " точки");
@@ -164,7 +172,10 @@ function LeadCard({ lead, campaign, busy, drafting, save, write }: { lead: Lead;
   const source = publicLink(lead.contact?.source);
   const osm = /^(node|way|relation)\/\d+$/.test(lead.osmId) ? "https://www.openstreetmap.org/" + lead.osmId : undefined;
   return <article className="lf-lead">
-    <div className="lf-lead-head"><span className={'lf-priority ' + lead.priority}>{priorities[lead.priority]}</span><time dateTime={lead.checkedAt}>{dateLabel(lead.checkedAt)}</time></div>
+    <div className="lf-lead-head"><span className={'lf-priority ' + lead.priority}>{priorities[lead.priority]}</span>
+      {typeof lead.score === "number" && <span className={"lf-score " + (lead.score >= 75 ? "hot" : lead.score >= 50 ? "warm" : "cold")} title="Наскільки перспективний лід: причина звернутися, впевненість перевірки й наявність контакту">{lead.score}<small>/100</small></span>}
+      <time dateTime={lead.checkedAt}>{dateLabel(lead.checkedAt)}</time></div>
+    {lead.expiry && <div className="lf-expiry">{expiryLabel(lead.expiry)}</div>}
     <h3>{lead.name}</h3>
     <div className="lf-place"><MapPin size={15} /> {known(lead.address) || campaign?.city || "Адресу не вказано"}</div>
     {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
@@ -276,7 +287,7 @@ export default function Home() {
   const scoped = leads.filter(l => !selected || l.campaignId === selected);
   const byStatus = scoped.filter(l => status === "all" || l.status === status);
   const ranks: Record<Priority, number> = { high: 0, review: 1, low: 2 };
-  const visible = byStatus.filter(l => priority === "all" || priority === l.priority).sort((a, b) => ranks[a.priority] - ranks[b.priority] || b.checkedAt.localeCompare(a.checkedAt));
+  const visible = byStatus.filter(l => priority === "all" || priority === l.priority).sort((a, b) => ranks[a.priority] - ranks[b.priority] || (b.score ?? 0) - (a.score ?? 0) || b.checkedAt.localeCompare(a.checkedAt));
   const chosen = campaigns.find(c => c.id === selected);
   const checkingSelection = chosen ? !chosen.paused && activePhases.includes(chosen.phase) : running;
   const formVisible = showForm || !campaigns.length;

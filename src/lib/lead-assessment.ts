@@ -15,12 +15,107 @@ export interface LeadAssessment {
   gaps?: { label: string; strong: boolean }[];
   /** Phone screenshot (JPEG data URI) from the real-browser check; stored apart from the lead. */
   screenshot?: string;
+  /** What kind of lead this is (drives the score). */
+  kind?: LeadKind;
+  /** The nearest domain or SSL certificate expiry, when it is close (≤ 60 days) or already past. */
+  expiry?: { what: "domain" | "ssl"; date: string };
+  /** How promising the lead is, 0–100: the reason to call, how sure we are and whether there is a contact. */
+  score?: number;
 }
+
+export type LeadKind = "no-site" | "social" | "placeholder" | "closed" | "dead" | "site" | "unclear";
 
 type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string };
 /** Real-browser check (Chromium + Lighthouse on the VPS): mobile score and a phone screenshot. */
-export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null; html?: string | null };
-export type AssessOptions = { pageSpeedKey?: string; probe?: (url: string) => Promise<ProbeResult | null> };
+export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null; html?: string | null; cert?: { validTo: string; issuer?: string } | null };
+export type AssessOptions = {
+  pageSpeedKey?: string;
+  probe?: (url: string) => Promise<ProbeResult | null>;
+  /** Domain registration expiry (RDAP); see domainExpiry. */
+  domainInfo?: (host: string) => Promise<string | null>;
+  /** "Today" for expiry maths (tests). */
+  now?: number;
+};
+
+const DAY_MS = 86_400_000;
+const dateUa = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Europe/Kyiv" });
+
+const UA_SECOND = /^(com|net|org|in|biz|co|pp|edu|gov|kiev|kyiv|lviv|dp|od|odessa|kharkov|kh|zp|vn|if|te|lutsk|rv|pl|ck|cn|cv|zt|uz|km|mk|ks|sm|lg|dn|kr|crimea|ternopil|poltava|sumy|kherson|uzhgorod|volyn|zhitomir|rovno|cherkassy|chernigov|chernovtsy|nikolaev|donetsk|lugansk)$/;
+
+/** Registry RDAP servers (official, free): .ua zones at hostmaster.ua, .com/.net at Verisign, .org at PIR. Regional .lviv.ua etc. are not covered. */
+function rdapUrl(host: string): string | null {
+  const labels = host.toLowerCase().replace(/^www\./, "").split(".");
+  const tld = labels[labels.length - 1];
+  if (tld === "ua") {
+    // com.ua, in.ua, kiev.ua … are registered one level deeper than plain .ua names.
+    const name = labels.length >= 3 && UA_SECOND.test(labels[labels.length - 2]) ? labels.slice(-3) : labels.slice(-2);
+    return "https://rdap.hostmaster.ua/domain/" + name.join(".");
+  }
+  const base = { com: "https://rdap.verisign.com/com/v1/", net: "https://rdap.verisign.com/net/v1/", org: "https://rdap.publicinterestregistry.org/rdap/" }[tld];
+  return base ? base + "domain/" + labels.slice(-2).join(".") : null;
+}
+
+/** Expiry date (ISO) of the domain behind a host, or null when the registry does not say. */
+export async function domainExpiry(host: string): Promise<string | null> {
+  const url = rdapUrl(host);
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { headers: { accept: "application/rdap+json, application/json" }, signal: AbortSignal.timeout(6000) });
+    if (!response.ok) return null;
+    const data = await response.json() as { events?: { eventAction?: string; eventDate?: string }[] };
+    const date = data.events?.find(e => /expir/i.test(e.eventAction || ""))?.eventDate;
+    return date && Number.isFinite(Date.parse(date)) ? new Date(date).toISOString() : null;
+  } catch { return null; }
+}
+
+// Certificates from these issuers renew themselves ~30 days before expiry; only a near date means renewal is broken.
+const autoRenewing = /let.s encrypt|zerossl|google trust|cloudflare|amazon|buypass|sectigo.*cpanel|cpanel/i;
+
+function expiryGaps(domain: string | null, cert: ProbeResult["cert"], now: number): { gaps: Gap[]; expiry?: LeadAssessment["expiry"] } {
+  const gaps: Gap[] = [];
+  let expiry: LeadAssessment["expiry"];
+  const days = (iso: string) => Math.floor((Date.parse(iso) - now) / DAY_MS);
+  if (domain) {
+    const left = days(domain);
+    if (left < 0) {
+      gaps.push({ label: "Домен прострочено " + dateUa(domain) + " — сайт може зникнути будь-якої миті", strong: true, pitch: "терміново продовжити домен", missing: "продовженого домену (закінчився " + dateUa(domain) + ")" });
+      expiry = { what: "domain", date: domain };
+    } else if (left <= 60) {
+      gaps.push({ label: "Домен закінчується " + dateUa(domain) + " (через " + plural(left, "день", "дні", "днів") + ") — якщо не продовжити, сайт зникне", strong: left <= 30, pitch: "продовжити домен", missing: "продовженого домену (до " + dateUa(domain) + ")" });
+      expiry = { what: "domain", date: domain };
+    }
+  }
+  if (cert?.validTo && Number.isFinite(Date.parse(cert.validTo))) {
+    const left = days(cert.validTo);
+    const limit = autoRenewing.test(cert.issuer || "") ? 7 : 21;
+    if (left >= 0 && left <= limit) {
+      gaps.push({ label: "SSL-сертифікат закінчується " + dateUa(cert.validTo) + " (через " + plural(left, "день", "дні", "днів") + ") — далі браузер покаже «Небезпечний сайт»", strong: true, pitch: "оновити SSL-сертифікат і налаштувати автопродовження", missing: "чинного SSL-сертифіката (до " + dateUa(cert.validTo) + ")" });
+      if (!expiry || Date.parse(cert.validTo) < Date.parse(expiry.date)) expiry = { what: "ssl", date: new Date(cert.validTo).toISOString() };
+    }
+  }
+  return { gaps, expiry };
+}
+
+/** 0–100: how worth a call the lead is. Clear reason to sell + certainty + a way to reach them. */
+export function leadScore(a: LeadAssessment, branches = 1, now = Date.now()): number {
+  const strong = (a.gaps || []).filter(g => g.strong).length;
+  const minor = (a.gaps || []).length - strong;
+  const base: Record<LeadKind, number> = {
+    "no-site": 62, social: 68, placeholder: 80, closed: 82, dead: 78, unclear: 20,
+    site: a.priority === "low" && !strong ? 12 + Math.min(4, minor) * 3 : 30 + Math.min(4, strong) * 12 + Math.min(4, minor) * 3,
+  };
+  let score = base[a.kind || "unclear"];
+  if (a.expiry) {
+    const left = (Date.parse(a.expiry.date) - now) / DAY_MS;
+    if (left <= 30) score = Math.max(score, a.expiry.what === "domain" ? 90 : 84);
+  }
+  if ((a.gaps || []).some(g => /^Повільний на телефоні/.test(g.label) && g.strong)) score += 4;
+  score += !a.contact ? -30 : a.contact.kind === "phone" ? 10 : a.contact.kind === "email" ? 6 : 3;
+  if (a.confidence === "verified") score += 3;
+  if (branches > 1) score += 4;
+  if (/^Назви компанії на сторінці немає/.test(a.summary)) score = Math.min(score, 45);
+  return Math.max(1, Math.min(99, Math.round(score)));
+}
 
 // Niches where clients expect to book online; hotels book rooms, the rest book a visit.
 const BOOKING_TYPES = new Set("dentist doctors clinic veterinary beauty hairdresser massage tattoo car_repair tyres car_wash driving_school language_school dancing_school music_school photographer spa sauna fitness_centre hotel hostel guest_house apartment motel".split(" "));
@@ -399,7 +494,14 @@ async function pageSpeed(url: string, key: string): Promise<{ score: number; lcp
   } catch { return null; }
 }
 
-export async function assessLead(candidate: Candidate, service: LeadService, options: AssessOptions = {}): Promise<LeadAssessment> {
+export async function assessLead(candidate: Candidate & { branches?: number }, service: LeadService, options: AssessOptions = {}): Promise<LeadAssessment> {
+  const result = await assessOnce(candidate, service, options);
+  result.kind ||= "unclear";
+  result.score = leadScore(result, candidate.branches || 1, options.now ?? Date.now());
+  return result;
+}
+
+async function assessOnce(candidate: Candidate, service: LeadService, options: AssessOptions): Promise<LeadAssessment> {
   const mapUrl = /^(node|way|relation)\/\d+$/.test(candidate.osmId) ? "https://www.openstreetmap.org/" + candidate.osmId : "";
   const assessment: LeadAssessment = {
     priority: "review", confidence: "unknown", checkedAt: new Date().toISOString(),
@@ -408,7 +510,8 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     contact: contact("phone", candidate.phone, mapUrl) || contact("email", candidate.email, mapUrl) || socialContact(candidate, mapUrl),
   };
   const home = candidate.website && candidate.website !== "N/A" ? webUrl(candidate.website) : null;
-  const hotLead = (summary: string, suggestion: string) => {
+  const hotLead = (summary: string, suggestion: string, kind: LeadKind = "dead") => {
+    assessment.kind = kind;
     assessment.summary = summary;
     assessment.priority = assessment.contact ? "high" : "review";
     assessment.suggestion = !assessment.contact ? "Контакту на карті немає — знайдіть телефон кнопкою «Знайти телефон у Google» або в Google Картах."
@@ -430,6 +533,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
         : platformDomain.test(new URL(profile).hostname) ? "Замість власного сайту — лише сторінка на платформі (" + new URL(profile).hostname + ")."
         : "Замість власного сайту — лише сторінка в соцмережі.",
       "Перед дзвінком перевірте в Google, чи сайту справді немає. Запропонуйте простий сайт із контактами, цінами й онлайн-записом.",
+      profile ? "social" : "no-site",
     );
   }
 
@@ -440,7 +544,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     assessment.confidence = "verified";
     assessment.evidence.push({ label: parked ? "Домен показує заглушку продажу / паркування" : "Хостинг показує заглушку «сайт не налаштовано»", url: reading.url });
     return hotLead(parked ? "На домені компанії замість сайту — заглушка «домен продається»." : "На домені компанії замість сайту — технічна заглушка хостингу (сайт не налаштовано).",
-      "Запропонуйте новий сайт: зараз клієнти з карти потрапляють на заглушку.");
+      "Запропонуйте новий сайт: зараз клієнти з карти потрапляють на заглушку.", "placeholder");
   }
   // The map often links a branch page that the chain has since removed: judge the site by its home page.
   const root = new URL("/", reading.url).href;
@@ -458,7 +562,7 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
     if (looksDead(repeat) && /(^|\.)business\.site$/i.test(host)) {
       assessment.confidence = "verified";
       return hotLead("Сайт на business.site (безкоштовний сайт Google-профілю) Google закрив у 2024 році — посилання з карти веде на помилку.",
-        "Запропонуйте власний сайт замість закритого сайту Google: компанія, ймовірно, не знає, що його вже немає.");
+        "Запропонуйте власний сайт замість закритого сайту Google: компанія, ймовірно, не знає, що його вже немає.", "closed");
     }
     const dns = looksDead(repeat) ? await dnsStatus(host) : "ok";
     // Silence from a server whose domain resolves can be a short outage: one slower, later try before calling it dead.
@@ -538,6 +642,9 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   // Only the domain spells the name: the page itself never names the company, so the domain may have changed hands.
   const domainOnly = !matchesBusiness(candidate, page) && !(contactPage?.page && matchesBusiness(candidate, contactPage.page));
   assessment.confidence = "partial";
+  assessment.kind = "site";
+  // Ask the registry about the domain while the page checks run.
+  const domainLookup = service === "website" && options.domainInfo ? options.domainInfo(new URL(reading.url).hostname).catch(() => null) : Promise.resolve(null);
   assessment.evidence.push({ label: domainOnly ? "Назва компанії збігається з адресою сайту (на самій сторінці назви немає)" : "Назва або контакт збігається з карткою компанії", url: identityPage.url });
   const siteContacts = [...page.contacts, ...(contactPage?.page?.contacts || [])];
   assessment.contact = siteContacts.find(item => sameContact(candidate, item)) || siteContacts[0] || assessment.contact;
@@ -596,8 +703,10 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   let speed: { score: number; lcp: string } | null = null;
   let speedSource = "Google PageSpeed";
   let judged = page;
+  let cert: ProbeResult["cert"] = null;
   if (service === "website" && options.probe) {
     const probe = await options.probe(reading.url).catch(() => null);
+    cert = probe?.cert || null;
     // Widgets, messenger and booking buttons are often added by scripts: what the browser shows counts as present.
     if (typeof probe?.html === "string" && probe.html.length > 200) {
       const rendered = parsePage(probe.html, reading.url);
@@ -614,6 +723,13 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   }
   if (!speed && service === "website" && options.pageSpeedKey) speed = await pageSpeed(reading.url, options.pageSpeedKey);
   const gaps = siteGaps(judged, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0, httpsWorks);
+  const domainDate = await domainLookup;
+  const dates = expiryGaps(domainDate, cert, options.now ?? Date.now());
+  // Expiry comes first: it is the most urgent reason to call.
+  gaps.unshift(...dates.gaps);
+  if (dates.expiry) assessment.expiry = dates.expiry;
+  if (domainDate) assessment.evidence.push({ label: "Домен оплачено до " + dateUa(domainDate) + " (реєстр доменів, RDAP)", url: rdapUrl(new URL(reading.url).hostname) || reading.url });
+  if (cert?.validTo) assessment.evidence.push({ label: "SSL-сертифікат дійсний до " + dateUa(cert.validTo) + (cert.issuer ? " (" + cert.issuer + ")" : ""), url: reading.url });
   {
     if (speed) {
       // The real measurement replaces the rough estimate.
