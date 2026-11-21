@@ -110,7 +110,7 @@ function parsePage(html: string, url: string) {
   const scripted = body.length < 60 && (title.length >= 3 || metaText.length >= 20);
   const viewport = $('meta[name="viewport" i]').first().attr("content") || "";
   const fixedWidth = Number(viewport.match(/(?:^|[,;\s])width\s*=\s*(\d+)(?=[,;\s]|$)/i)?.[1] || 0);
-  return { identityText, contacts, links, fixedWidth, parked, unconfigured, scripted, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
+  return { identityText, contacts, links, fixedWidth, parked, unconfigured, scripted, blocked, readable: !blocked && !parked && !unconfigured && (body.length >= 60 || scripted) };
 }
 
 type PageReading = { url: string; status: number; page: ReturnType<typeof parsePage> | null; refused?: boolean; placeholder?: "parked" | "unconfigured" };
@@ -248,8 +248,10 @@ export async function assessLead(candidate: Candidate, service: LeadService): Pr
   }
   const page = reading.page;
   if (!page?.readable || socialDomain.test(new URL(reading.url).hostname)) {
-    assessment.summary = "Сторінку не вдалося прочитати достатньо для висновку.";
-    assessment.suggestion = "Перевірте сторінку пізніше або відкрийте її у браузері.";
+    // Bot protection is respected, not bypassed: say so instead of a vague "unreadable".
+    const wall = [401, 403, 429, 503].includes(reading.status) || page?.blocked;
+    assessment.summary = wall ? "Сайт працює, але закритий від автоматичних перевірок (захист від ботів)." : "Сторінку не вдалося прочитати достатньо для висновку.";
+    assessment.suggestion = wall ? "Відкрийте сайт у браузері й перегляньте вручну." : "Перевірте сторінку пізніше або відкрийте її у браузері.";
     return assessment;
   }
   const contactLink = page.links.find(link => contactsLabel.test(link.label));

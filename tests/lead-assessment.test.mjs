@@ -140,7 +140,9 @@ test("one failure followed by a working page, 503 walls and our own guard are no
   assert.notEqual((await assessLead(clinic, "website")).priority, "high");
   t.mock.restoreAll();
   serve(t, () => new Response("Just a moment", { status: 503, headers: { "content-type": "text/html" } }));
-  assert.equal((await assessLead(clinic, "website")).priority, "review");
+  const wall = await assessLead(clinic, "website");
+  assert.equal(wall.priority, "review");
+  assert.match(wall.summary, /захист від ботів/);
   t.mock.restoreAll();
   serve(t, () => assert.fail("guard must stop the request"));
   assert.equal((await assessLead({ ...clinic, website: "http://clinic.example:8080/" }, "website")).priority, "review");
