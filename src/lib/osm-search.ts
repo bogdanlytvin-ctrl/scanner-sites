@@ -1121,7 +1121,7 @@ export function regionalCity(city: string, country?: string) {
 
 type ReadAsset = (path: string) => Promise<Response>;
 const readPublishedAsset: ReadAsset = path => fetch(new URL(path, "https://scanner-sites.b-litvin2023.workers.dev"), {
-  signal: AbortSignal.timeout(4000), redirect: "error",
+  signal: AbortSignal.timeout(4000), redirect: "manual",
 });
 
 type SnapshotRow = ["n" | "w", number, number, number, Record<string, string>];
@@ -1159,7 +1159,7 @@ async function updatedSnapshot(region: SnapshotRegion): Promise<CitySnapshot | u
   const url = `https://raw.githubusercontent.com/bogdanlytvin-ctrl/scanner-sites/osm-data/${region.key}-osm.json`;
   try {
     const options = {
-      redirect: "error" as const, signal: AbortSignal.timeout(3500),
+      redirect: "manual" as const, signal: AbortSignal.timeout(3500),
       cf: { cacheTtl: 3600, cacheEverything: true },
     };
     const response = await fetch(url, options);
@@ -1240,7 +1240,7 @@ async function fetchTileFile<T>(path: string, ttlMs: number, check: (data: any) 
   for (const base of TILE_SOURCES) {
     try {
       const response = await fetch(base + path, {
-        redirect: "error", signal: AbortSignal.timeout(8000),
+        redirect: "manual", signal: AbortSignal.timeout(8000),
         cf: { cacheTtl: 6 * 3600, cacheEverything: true },
       } as RequestInit);
       if (!response.ok) continue;

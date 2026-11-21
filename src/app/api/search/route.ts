@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
       } catch { /* A standalone Next.js server has no Cloudflare bindings. */ }
       const local = new URL(request.url);
       const base = ["localhost", "127.0.0.1", "[::1]"].includes(local.hostname) ? local.origin : canonical.origin;
-      return fetch(new URL(path, base), { redirect: "error", signal: AbortSignal.timeout(4000) });
+      return fetch(new URL(path, base), { redirect: "manual", signal: AbortSignal.timeout(4000) });
     }
     const discovery = await discoverBusinessesAt(geo.lat, geo.lng, trimmedQuery, parsedMax, parsedRadius, false, readAsset);
     const results = discovery.businesses;
