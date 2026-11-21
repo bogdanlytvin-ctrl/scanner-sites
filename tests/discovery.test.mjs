@@ -72,3 +72,35 @@ test("an unreadable weekly file falls back to the shipped directory during a liv
   assert.equal(result.asOf, snapshot.asOf);
   assert.equal(result.businesses.length, 3);
 });
+
+import { gzipSync } from "node:zlib";
+import { tileCells } from "../src/lib/osm-search.ts";
+
+const tileOf = (cell, rows) => ({
+  city: "tile:" + cell, asOf: "2026-11-19T01:48:17Z",
+  groups: { '{"amenity":"dentist"}': gzipSync(JSON.stringify(rows)).toString("base64") },
+});
+
+test("a city outside Lviv/Kyiv is served from country tiles, falling back to the CDN mirror", async t => {
+  const rows = [...Array(8)].map((_, i) => ["n", 1000 + i, 48.4647 + i * 0.002, 35.0462, { amenity: "dentist", name: "Дент " + i, phone: "+38056" + (1000000 + i) }]);
+  rows.push(["n", 2000, 48.9, 35.0462, { amenity: "dentist", name: "Далеко" }]);
+  const urls = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("raw.githubusercontent.com") && url.includes("/tiles/")) return new Response(null, { status: 503 });
+    if (url.endsWith("index.json")) return Response.json({ asOf: "2026-11-19T01:48:17Z", tiles: { "48_35": 9 } });
+    if (url.endsWith("tiles/48_35.json")) return Response.json(tileOf("48_35", rows));
+    return new Response(null, { status: 503 });
+  });
+  const found = await discoverBusinessesAt(48.4647, 35.0462, "стоматологія", 20, 5, false, readAsset);
+  assert.equal(found.businesses.length, 8);
+  assert.match(found.source, /OpenStreetMap · 2026-11-19/);
+  assert.ok(urls.some(u => u.includes("cdn.jsdelivr.net") && u.endsWith("tiles/48_35.json")));
+  assert.ok(!urls.some(u => u.includes("overpass")));
+});
+
+test("tile cells cover the search circle", () => {
+  assert.deepEqual(tileCells(48.46, 35.04, 5), ["48_34", "48_35"]);
+  assert.equal(tileCells(50.45, 30.52, 50).length, 6);
+});

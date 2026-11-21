@@ -1224,6 +1224,61 @@ async function filterSnapshot(
   return { elements, asOf: snapshot.asOf };
 }
 
+// ─── Country-wide tiles (built weekly by refresh-osm.yml from the Ukraine extract) ───
+// Public Overpass mirrors are slow or refuse shared Cloudflare IPs, so every Ukrainian
+// city is served from 1°×1° tiles on the osm-tiles branch; Overpass is only a last resort.
+const TILE_SOURCES = [
+  "https://raw.githubusercontent.com/bogdanlytvin-ctrl/scanner-sites/osm-tiles/",
+  "https://cdn.jsdelivr.net/gh/bogdanlytvin-ctrl/scanner-sites@osm-tiles/",
+];
+type TileIndex = { asOf: string; tiles: Record<string, number> };
+const tileCache = new Map<string, { value: unknown; expires: number }>();
+
+async function fetchTileFile<T>(path: string, ttlMs: number, check: (data: any) => boolean): Promise<T> {
+  const hit = tileCache.get(path);
+  if (hit && hit.expires > Date.now()) return hit.value as T;
+  for (const base of TILE_SOURCES) {
+    try {
+      const response = await fetch(base + path, {
+        redirect: "error", signal: AbortSignal.timeout(8000),
+        cf: { cacheTtl: 6 * 3600, cacheEverything: true },
+      } as RequestInit);
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (!check(data)) continue;
+      // Keep the index and a handful of tiles warm without holding the whole country in memory.
+      if (tileCache.size > 12) tileCache.delete(tileCache.keys().next().value as string);
+      tileCache.set(path, { value: data, expires: Date.now() + ttlMs });
+      return data as T;
+    } catch { /* try the mirror */ }
+  }
+  throw new Error("Каталог компаній тимчасово недоступний.");
+}
+
+export function tileCells(lat: number, lng: number, radiusKm: number): string[] {
+  const dLat = radiusKm / 111;
+  const dLng = radiusKm / (111 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  const cells: string[] = [];
+  for (let y = Math.floor(lat - dLat); y <= Math.floor(lat + dLat); y++)
+    for (let x = Math.floor(lng - dLng); x <= Math.floor(lng + dLng); x++) cells.push(`${y}_${x}`);
+  return cells;
+}
+
+async function readTiles(selectors: string[], namePattern: string | undefined, lat: number, lng: number, radius: number) {
+  const index = await fetchTileFile<TileIndex>("index.json", 3600_000,
+    data => Number.isFinite(Date.parse(data?.asOf)) && data?.tiles && typeof data.tiles === "object");
+  const cells = tileCells(lat, lng, radius);
+  // Outside the country (or the index) tiles have nothing to say: let the caller use Overpass.
+  if (!cells.some(cell => index.tiles[cell])) throw new Error("Немає каталогу для цієї місцевості.");
+  const elements: Awaited<ReturnType<typeof filterSnapshot>>["elements"] = [];
+  for (const cell of cells.filter(cell => index.tiles[cell])) {
+    const tile = await fetchTileFile<CitySnapshot>(`tiles/${cell}.json`, 6 * 3600_000,
+      data => data?.city === "tile:" + cell && data?.groups && typeof data.groups === "object");
+    elements.push(...(await filterSnapshot(tile, selectors, namePattern, lat, lng, radius)).elements);
+  }
+  return { elements, asOf: index.asOf };
+}
+
 export async function discoverBusinessesAt(
   lat: number, lng: number, keyword: string, maxResults = 20, radiusKm = 10,
   preferSites = false, readAsset: ReadAsset = readPublishedAsset,
@@ -1262,6 +1317,16 @@ export async function discoverBusinessesAt(
       // Cloudflare serves snapshots as static assets. If one is unavailable,
       // continue to the live source rather than treating this as an empty result.
     }
+  }
+  try {
+    const tiles = await readTiles(selectors, namePattern, lat, lng, radius);
+    const date = tiles.asOf.slice(0, 10);
+    return {
+      businesses: select(tiles.elements), source: `OpenStreetMap · ${date}`, asOf: tiles.asOf,
+      note: `Вибірка відкритих даних OpenStreetMap на ${date}; позначки на мапі можуть бути неповними.`,
+    };
+  } catch {
+    // No tile coverage or the data branch is unreachable: ask Overpass directly.
   }
   try {
     const elements = await executeQuery(buildSearchQuery(selectors, lat, lng, radius, pool, namePattern));

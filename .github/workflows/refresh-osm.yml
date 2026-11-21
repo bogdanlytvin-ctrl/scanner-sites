@@ -51,3 +51,36 @@ jobs:
           if git diff --cached --quiet; then exit 0; fi
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Refresh OSM business directories"
           git push origin HEAD:refs/heads/osm-data
+
+  ukraine-tiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build country-wide business tiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check osmium==4.3.2
+          data="$RUNNER_TEMP/ukraine"
+          mkdir -p "$data"
+          curl --fail --location --retry 2 --connect-timeout 15 --max-time 1200 \
+            --output "$data/ukraine.osm.pbf" "https://download.geofabrik.de/europe/ukraine-latest.osm.pbf"
+          python scripts/build-osm-tiles.py "$data/ukraine.osm.pbf" "$data/out"
+      - name: Publish tiles as a single-commit data branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/ukraine/out"
+          cd "$out"
+          printf '%s\n' "Business tiles for Lead Finder. © OpenStreetMap contributors, ODbL 1.0." > README.md
+          git init -q -b osm-tiles
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -q -m "Ukraine business tiles $(date -u +%F)"
+          # One commit replaces the previous week: the data branch never grows.
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/osm-tiles
