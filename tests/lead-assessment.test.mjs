@@ -152,3 +152,67 @@ test("a parked 'domain for sale' page is a high lead", async t => {
   assert.equal(result.priority, "high");
   assert.match(result.summary, /заглушка/);
 });
+
+const page = (body, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+
+test("requests look like a browser so bot walls on datacenter IPs let them through", async t => {
+  let agent = "";
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    if (new URL(input).hostname === "cloudflare-dns.com") return Response.json({ Answer: [{ type: 1, data: "93.184.216.34" }] });
+    agent = new Headers(init.headers).get("User-Agent");
+    return page(html(""));
+  });
+  await assessLead(clinic, "website");
+  assert.match(agent, /Mozilla\/5\.0/);
+});
+
+test("a script-rendered page with a title and a JSON-LD phone is readable and matched", async t => {
+  serve(t, () => page('<html><head><title>Волошка — стоматологія</title><script type="application/ld+json">{"@type":"Dentist","telephone":"+380 50 123 45 67"}</script></head><body><div id="root"></div></body></html>'));
+  const result = await assessLead(clinic, "website");
+  assert.equal(result.confidence, "partial");
+  assert.equal(result.priority, "low");
+  assert.match(result.summary, /скрипти/);
+  assert.equal(result.contact.value, "+380 50 123 45 67");
+});
+
+test("a page above the size limit is parsed up to the limit instead of being dropped", async t => {
+  serve(t, () => page(html("") + "<!--" + "x".repeat(900 * 1024) + "-->"));
+  const result = await assessLead(clinic, "website");
+  assert.doesNotMatch(result.summary, /не вдалося прочитати/);
+});
+
+test("a hosting 'website not configured' 404 is a verified high lead", async t => {
+  serve(t, () => page("<html><head><title>Website clinic.example not configured</title></head><body>Website clinic.example not configured. Domain address record points to our server but this site is not served.</body></html>", 404));
+  const result = await assessLead(clinic, "website");
+  assert.equal(result.priority, "high");
+  assert.match(result.summary, /заглушка хостингу/);
+});
+
+test("a plain homepage 404 twice counts as a dead site", async t => {
+  const calls = serve(t, () => page("<html><body>Not Found</body></html>", 404));
+  const result = await assessLead(clinic, "website");
+  assert.equal(result.priority, "high");
+  assert.equal(calls.length, 2);
+});
+
+test("a hosted menu page (choiceqr) is 'no own site' for website, but is read for booking", async t => {
+  const calls = serve(t, () => page('<html><head><title>Волошка - Бронювання</title></head><body></body></html>'));
+  const site = await assessLead({ ...clinic, website: "https://voloshka.choiceqr.com" }, "website");
+  assert.equal(site.priority, "high");
+  assert.match(site.summary, /платформі \(voloshka\.choiceqr\.com\)/);
+  assert.equal(calls.length, 0);
+  const booking = await assessLead({ ...clinic, website: "https://voloshka.choiceqr.com" }, "booking");
+  assert.equal(calls.length, 1);
+  assert.notEqual(booking.priority, "high");
+});
+
+test("names match across apostrophes and Cyrillic/Latin spelling, but not unrelated words", async t => {
+  serve(t, () => page(html("", "Піца Celentano — доставка")));
+  assert.equal((await assessLead({ ...clinic, name: "Челентано", phone: "" }, "website")).confidence, "partial");
+  t.mock.restoreAll();
+  serve(t, () => page(html("", "LA П’ЄЦ нормальна доставка")));
+  assert.notEqual((await assessLead({ ...clinic, name: "La П'єц", phone: "" }, "website")).summary, "Назву або контакт на сайті не вдалося звірити з карткою компанії.");
+  t.mock.restoreAll();
+  serve(t, () => page(html("", "Мармелад кондитерська")));
+  assert.match((await assessLead({ ...clinic, name: "Маргарита", phone: "" }, "website")).summary, /не вдалося звірити/);
+});
