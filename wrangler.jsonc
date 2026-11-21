@@ -20,6 +20,8 @@
   // DATABASE_URL is intentionally absent: no route imports the Prisma client
   // (src/lib/db.ts is unused) and a file: SQLite URL cannot run on workerd.
   "vars": {
-    "NODE_ENV": "production"
+    "NODE_ENV": "production",
+    // Chromium + Lighthouse on the VPS (/opt/ScannerProbe). Its token is the PROBE_TOKEN secret.
+    "PROBE_URL": "https://probe.unionholding-crm.duckdns.org"
   }
 }

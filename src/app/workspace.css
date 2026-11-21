@@ -180,3 +180,6 @@
 .lf-gaps li.strong::marker { content: "● "; color: #c2410c; }
 .lf-lookup { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .lf-lookup a { text-decoration: none; color: inherit; }
+.lf-shot { font-size: .875rem; margin: 8px 0; }
+.lf-shot img { display: block; margin-top: 8px; width: 180px; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+.lf-shot p { margin: 4px 0 0; color: var(--muted); font-size: .8rem; }

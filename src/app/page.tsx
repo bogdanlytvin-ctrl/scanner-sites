@@ -27,7 +27,7 @@ type Lead = {
   osmId: string; status: Status; notes: string; service: Service; priority: Priority; confidence: Confidence; checkedAt: string;
   summary: string; suggestion: string; evidence: { label: string; url: string }[];
   contact: { value: string; source: string; kind: "phone" | "email" | "social" } | null;
-  branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[];
+  branches?: number; branchAddresses?: string[]; gaps?: { label: string; strong: boolean }[]; shot?: boolean;
 };
 type Snapshot = { campaigns: Campaign[]; leads: Lead[]; limits: { campaigns: number; perRun: number } };
 type Action = Record<string, unknown>;
@@ -145,6 +145,10 @@ function LeadCard({ lead, campaign, busy, save }: { lead: Lead; campaign?: Campa
     {(lead.branches || 1) > 1 && <div className="lf-branches">Мережа · {pointsLabel(lead.branches || 1)} у радіусі пошуку</div>}
     <p className="lf-summary">{lead.summary}</p>
     {!!lead.gaps?.length && <div className="lf-gaps"><strong>Чого не вистачає на сайті</strong><ul>{lead.gaps.map((g, i) => <li key={i} className={g.strong ? "strong" : undefined}>{g.label}</li>)}</ul></div>}
+    {lead.shot && (() => { const src = "/api/workspace?shot=" + encodeURIComponent(lead.id); return <details className="lf-shot"><summary>Як сайт виглядає на телефоні <ChevronDown size={15} /></summary>
+      <a href={src} target="_blank" rel="noreferrer"><img src={src} loading="lazy" alt={"Знімок сайту " + lead.name + " на телефоні"} /></a>
+      <p>Знімок з перевірки в браузері — можна показати клієнту.</p>
+    </details>; })()}
     {!lead.contact && (() => { const links = lookupLinks(lead, campaign?.city); return <div className="lf-lookup" aria-label="Знайти контакт компанії">
       <a className="lf-btn lf-small" href={links.google} target="_blank" rel="noreferrer"><Search /> Знайти телефон у Google</a>
       <a className="lf-btn lf-small" href={links.maps} target="_blank" rel="noreferrer"><MapPin /> Google Карти</a>

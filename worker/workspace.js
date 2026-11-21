@@ -206,8 +206,12 @@ export async function workspaceRequest(request, ns) {
     }
   }
   const stub = ns.getByName("user:" + token);
+  // Phone screenshots are served only from the caller's own workspace (same cookie).
+  const shot = !isPost && new URL(request.url).searchParams.get("shot");
   const response = await stub.fetch(
-    "https://internal/workspace",
+    shot
+      ? "https://internal/shot?id=" + encodeURIComponent(shot.slice(0, 200))
+      : "https://internal/workspace",
     data ? { method: "POST", body: JSON.stringify(data) } : {},
   );
   const out = new Response(response.body, response);
@@ -235,6 +239,9 @@ export class Workspace {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS transient (key TEXT PRIMARY KEY, value TEXT NOT NULL, expires INTEGER NOT NULL)",
     );
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS shots (id TEXT PRIMARY KEY, campaign TEXT NOT NULL, data TEXT NOT NULL)",
+    );
   }
   transient(key) {
     return this.sql
@@ -255,6 +262,16 @@ export class Workspace {
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === "/shot") {
+      const id = new URL(request.url).searchParams.get("id") || "";
+      const row = this.sql.exec("SELECT data FROM shots WHERE id=?", id).toArray()[0];
+      const match = row && /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(row.data);
+      if (!match) return failure("Знімка немає.", 404);
+      const bytes = Uint8Array.from(atob(match[2]), (ch) => ch.charCodeAt(0));
+      return new Response(bytes, {
+        headers: { "Content-Type": match[1], "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" },
+      });
+    }
     if (path !== "/workspace") {
       const body = await request.text(),
         now = Date.now();
@@ -401,6 +418,7 @@ export class Workspace {
     if (data.action === "delete") {
       this.sql.exec("DELETE FROM transient WHERE key=?", "candidates:" + c.id);
       this.sql.exec("DELETE FROM leads WHERE campaign=?", c.id);
+      this.sql.exec("DELETE FROM shots WHERE campaign=?", c.id);
       this.sql.exec("DELETE FROM campaigns WHERE id=?", c.id);
     } else if (data.action === "pause") {
       c.paused = true;
@@ -519,7 +537,10 @@ export class Workspace {
           const row = this.sql.exec("SELECT body FROM leads WHERE id=?", id).toArray()[0];
           if (!row) continue;
           const old = JSON.parse(row.body);
-          if (old.status === "new" && !old.notes) this.sql.exec("DELETE FROM leads WHERE id=?", id);
+          if (old.status === "new" && !old.notes) {
+            this.sql.exec("DELETE FROM leads WHERE id=?", id);
+            this.sql.exec("DELETE FROM shots WHERE id=?", id);
+          }
         }
       c.queue = pickQueue(groups, seen, c.service);
       c.checked = 0;
@@ -578,6 +599,9 @@ export class Workspace {
       .exec("SELECT body FROM leads WHERE id=?", id)
       .toArray()[0];
     const previous = old ? JSON.parse(old.body) : {};
+    const { screenshot, ...result } = assessment;
+    if (screenshot) this.sql.exec("INSERT OR REPLACE INTO shots VALUES(?,?,?)", id, c.id, screenshot);
+    else this.sql.exec("DELETE FROM shots WHERE id=?", id);
     const lead = {
       id,
       campaignId: c.id,
@@ -590,7 +614,8 @@ export class Workspace {
       address: b.address,
       branches: b.branches || 1,
       branchAddresses: b.branchAddresses || [],
-      ...assessment,
+      ...result,
+      shot: Boolean(screenshot),
       status: previous.status || "new",
       notes: previous.notes || "",
     };

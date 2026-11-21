@@ -202,3 +202,26 @@ test("a paused in-flight discovery cannot resurrect its queue", async () => {
   assert.equal(w.get(c.id).paused, true);
   assert.equal(w.store.due, null);
 });
+
+test("phone screenshots are stored apart from leads, served only to the owner and removed with the search", async () => {
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const { objects, ns } = environment({ assessLead: async () => ({ ...assessment, screenshot: jpeg }) });
+  const r = await workspaceRequest(makeReq(params), ns);
+  const cookie = r.headers.get("set-cookie").split(";")[0];
+  const { campaigns: [c] } = await r.json();
+  const w = [...objects.entries()].find(([name]) => name.startsWith("user:"))[1];
+  await tick(w, c.id);
+  await tick(w, c.id);
+  const snap = await (await workspaceRequest(makeReq(null, cookie), ns)).json();
+  const lead = snap.leads[0];
+  assert.equal(lead.shot, true);
+  assert.equal(lead.screenshot, undefined, "the image is not inside the lead list");
+  const shotReq = cookie => new Request("https://scanner.example/api/workspace?shot=" + encodeURIComponent(lead.id), { headers: { cookie } });
+  const img = await workspaceRequest(shotReq(cookie), ns);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get("content-type"), "image/jpeg");
+  assert.deepEqual([...new Uint8Array(await img.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
+  assert.equal((await workspaceRequest(shotReq(""), ns)).status, 404, "another visitor gets nothing");
+  await post(w, { action: "delete", id: c.id });
+  assert.equal((await workspaceRequest(shotReq(cookie), ns)).status, 404);
+});

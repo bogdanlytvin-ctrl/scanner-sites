@@ -13,10 +13,14 @@ export interface LeadAssessment {
   contact: { kind: "phone" | "email" | "social"; value: string; source: string } | null;
   /** What the site is missing, each backed by something visible in its HTML. */
   gaps?: { label: string; strong: boolean }[];
+  /** Phone screenshot (JPEG data URI) from the real-browser check; stored apart from the lead. */
+  screenshot?: string;
 }
 
 type Candidate = { name: string; website: string; phone?: string; email?: string; osmId: string; facebook?: string; instagram?: string; telegram?: string; type?: string };
-export type AssessOptions = { pageSpeedKey?: string };
+/** Real-browser check (Chromium + Lighthouse on the VPS): mobile score and a phone screenshot. */
+export type ProbeResult = { score: number | null; lcp?: string | null; screenshot?: string | null };
+export type AssessOptions = { pageSpeedKey?: string; probe?: (url: string) => Promise<ProbeResult | null> };
 
 // Niches where clients expect to book online; hotels book rooms, the rest book a visit.
 const BOOKING_TYPES = new Set("dentist doctors clinic veterinary beauty hairdresser massage tattoo car_repair tyres car_wash driving_school language_school dancing_school music_school photographer spa sauna fitness_centre hotel hostel guest_house apartment motel".split(" "));
@@ -516,18 +520,27 @@ export async function assessLead(candidate: Candidate, service: LeadService, opt
   }
 
   const gaps = siteGaps(page, reading.url, reading.ms || 0, candidate.type, reading.bytes || 0);
-  if (service === "website" && options.pageSpeedKey) {
-    const speed = await pageSpeed(reading.url, options.pageSpeedKey);
+  // Prefer our own browser on the VPS (free, also gives a screenshot); fall back to Google with a key.
+  let speed: { score: number; lcp: string } | null = null;
+  let speedSource = "Google PageSpeed";
+  if (service === "website" && options.probe) {
+    const probe = await options.probe(reading.url).catch(() => null);
+    if (probe?.screenshot && /^data:image\/(jpeg|png|webp);base64,/.test(probe.screenshot) && probe.screenshot.length < 400_000)
+      assessment.screenshot = probe.screenshot;
+    if (typeof probe?.score === "number") { speed = { score: probe.score, lcp: (probe.lcp || "").replace(/\u00a0/g, " ") }; speedSource = "Перевірка в браузері"; }
+  }
+  if (!speed && service === "website" && options.pageSpeedKey) speed = await pageSpeed(reading.url, options.pageSpeedKey);
+  {
     if (speed) {
       // The real measurement replaces the rough estimate.
       const rough = gaps.findIndex(g => g.label.startsWith("Сайт, ймовірно, повільний"));
       if (rough >= 0) gaps.splice(rough, 1);
       const report = "https://pagespeed.web.dev/analysis?url=" + encodeURIComponent(reading.url) + "&form_factor=mobile";
-      assessment.evidence.push({ label: "Google PageSpeed (телефон) · " + speed.score + "/100" + (speed.lcp ? " · основний вміст за " + speed.lcp : ""), url: report });
+      assessment.evidence.push({ label: speedSource + " (телефон, Lighthouse) · " + speed.score + "/100" + (speed.lcp ? " · основний вміст за " + speed.lcp : "") + " · повний звіт Google", url: report });
       if (speed.score < 70)
         gaps.push({
-          label: "Повільний на телефоні: Google PageSpeed " + speed.score + "/100" + (speed.lcp ? " (основний вміст за " + speed.lcp + ")" : ""),
-          strong: speed.score < 50, pitch: "прискорити сайт на телефоні", missing: "швидкості на телефоні (PageSpeed " + speed.score + "/100)",
+          label: "Повільний на телефоні: швидкість " + speed.score + "/100" + (speed.lcp ? " (основний вміст за " + speed.lcp + ")" : ""),
+          strong: speed.score < 50, pitch: "прискорити сайт на телефоні", missing: "швидкості на телефоні (" + speed.score + "/100)",
         });
     }
   }

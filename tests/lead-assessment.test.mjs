@@ -324,7 +324,7 @@ test("PageSpeed: a slow mobile score becomes a gap with a report link; without a
     return page(html(contactable + '<footer>© ' + new Date().getFullYear() + '</footer>'));
   });
   const slow = await assessLead(clinic, "website", { pageSpeedKey: "K" });
-  assert.match(gapsOf(slow).join(" | "), /!Повільний на телефоні: Google PageSpeed 34\/100 \(основний вміст за 9,1 с\)/);
+  assert.match(gapsOf(slow).join(" | "), /!Повільний на телефоні: швидкість 34\/100 \(основний вміст за 9,1 с\)/);
   assert.equal(slow.priority, "high");
   assert.ok(slow.evidence.some(e => e.url.startsWith("https://pagespeed.web.dev/analysis?url=")));
   calls.length = 0;
@@ -367,4 +367,24 @@ test("dead site causes: a lapsed domain (NXDOMAIN) and a broken HTTPS certificat
   t.mock.restoreAll();
   serve(t, () => page("x", 526));
   assert.match((await assessLead(clinic, "website")).summary, /помилку SSL-сертифіката \(HTTP 526\)/);
+});
+
+test("real-browser probe: its score and phone screenshot are used; Google is not called; a failed probe is harmless", async t => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com") return Response.json({ Answer: [{ type: 1, data: "93.184.216.34" }] });
+    calls.push(url.hostname);
+    return page(html(contactable + '<footer>© ' + new Date().getFullYear() + '</footer>'));
+  });
+  const shot = "data:image/jpeg;base64,/9j/AAAA";
+  const r = await assessLead(clinic, "website", { pageSpeedKey: "K", probe: async url => (assert.equal(url, clinic.website), { score: 38, lcp: "28,1\u00a0с", screenshot: shot }) });
+  assert.equal(r.screenshot, shot);
+  assert.match(gapsOf(r).join(" | "), /!Повільний на телефоні: швидкість 38\/100 \(основний вміст за 28,1 с\)/);
+  assert.ok(r.evidence.some(e => /^Перевірка в браузері \(телефон, Lighthouse\) · 38\/100/.test(e.label)));
+  assert.ok(!calls.includes("www.googleapis.com"));
+  const broken = await assessLead(clinic, "website", { probe: async () => { throw new Error("down"); } });
+  assert.equal(broken.screenshot, undefined);
+  const junk = await assessLead(clinic, "website", { probe: async () => ({ score: 90, screenshot: "javascript:alert(1)" }) });
+  assert.equal(junk.screenshot, undefined);
 });
